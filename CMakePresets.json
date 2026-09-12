@@ -1,0 +1,107 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "msvc",
+      "displayName": "MSVC (Ninja Multi-Config)",
+      "description": "The generator is pinned on purpose. Without it, Visual Studio's Open Folder flow defaults to plain Ninja -single-configuration, i.e. Debug-only. Ninja Multi-Config gives Debug and Release from a single configured tree, which is what VS's own configuration selector expects.",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "msvc-ipo",
+      "displayName": "MSVC (Ninja Multi-Config, IPO)",
+      "description": "Release-oriented configuration with whole-program optimization enabled - MSVC's /GL + /LTCG, driven through CMake's portable INTERPROCEDURAL_OPTIMIZATION property. The plain msvc preset never turns this on by itself.",
+      "inherits": "msvc",
+      "binaryDir": "${sourceDir}/build/msvc-ipo",
+      "cacheVariables": {
+        "CERESC_ENABLE_IPO": "ON"
+      }
+    },
+    {
+      "name": "ninja",
+      "displayName": "Ninja Multi-Config (default compiler)",
+      "description": "The environment's default compiler, with ninja. The fastest option for iterating from the command line.",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/ninja"
+    },
+    {
+      "name": "gcc",
+      "displayName": "GCC (Ninja Multi-Config)",
+      "description": "A second compiler on the same source tree - the kind of thing that turns an MSVC-only extension or a silently-accepted non-conformance into a build error instead of a runtime surprise.",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/gcc",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "gcc-ipo",
+      "displayName": "GCC (Ninja Multi-Config, IPO)",
+      "description": "Release-oriented configuration with portable CMake IPO/LTO enabled.",
+      "inherits": "gcc",
+      "binaryDir": "${sourceDir}/build/gcc-ipo",
+      "cacheVariables": {
+        "CERESC_ENABLE_IPO": "ON"
+      }
+    },
+    {
+      "name": "clang",
+      "displayName": "Clang (Ninja Multi-Config)",
+      "description": "The third compiler, checked for the same reason as gcc: a warning or a codegen quirk that only one front end catches shouldn't have to wait for someone building with it by accident to find it.",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/clang",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "clang-ipo",
+      "displayName": "Clang (Ninja Multi-Config, IPO)",
+      "description": "Release-oriented configuration with portable CMake IPO/LTO enabled, same as gcc-ipo.",
+      "inherits": "clang",
+      "binaryDir": "${sourceDir}/build/clang-ipo",
+      "cacheVariables": {
+        "CERESC_ENABLE_IPO": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "msvc-debug",        "configurePreset": "msvc",     "configuration": "Debug" },
+    { "name": "msvc-release",      "configurePreset": "msvc",     "configuration": "Release" },
+    { "name": "msvc-ipo-release",  "configurePreset": "msvc-ipo", "configuration": "Release" },
+    { "name": "ninja-debug",       "configurePreset": "ninja",    "configuration": "Debug" },
+    { "name": "ninja-release",     "configurePreset": "ninja",    "configuration": "Release" },
+    { "name": "gcc-debug",         "configurePreset": "gcc",      "configuration": "Debug" },
+    { "name": "gcc-release",       "configurePreset": "gcc",      "configuration": "Release" },
+    { "name": "gcc-ipo-release",   "configurePreset": "gcc-ipo",  "configuration": "Release" },
+    { "name": "clang-debug",       "configurePreset": "clang",    "configuration": "Debug" },
+    { "name": "clang-release",     "configurePreset": "clang",    "configuration": "Release" },
+    { "name": "clang-ipo-release", "configurePreset": "clang-ipo","configuration": "Release" }
+  ],
+
+  "testPresets": [
+    { "name": "msvc-debug",        "configurePreset": "msvc",     "configuration": "Debug",   "output": { "outputOnFailure": true } },
+    { "name": "msvc-release",      "configurePreset": "msvc",     "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "msvc-ipo-release",  "configurePreset": "msvc-ipo", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "ninja-debug",       "configurePreset": "ninja",    "configuration": "Debug",   "output": { "outputOnFailure": true } },
+    { "name": "ninja-release",     "configurePreset": "ninja",    "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "gcc-debug",         "configurePreset": "gcc",      "configuration": "Debug",   "output": { "outputOnFailure": true } },
+    { "name": "gcc-release",       "configurePreset": "gcc",      "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "gcc-ipo-release",   "configurePreset": "gcc-ipo",  "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "clang-debug",       "configurePreset": "clang",    "configuration": "Debug",   "output": { "outputOnFailure": true } },
+    { "name": "clang-release",     "configurePreset": "clang",    "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "clang-ipo-release", "configurePreset": "clang-ipo","configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}
