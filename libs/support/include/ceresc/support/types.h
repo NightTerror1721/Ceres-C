@@ -147,3 +147,13 @@ namespace ceresc
 	template <typename T, typename U>
 	concept ViewDerivedFrom = std::ranges::view<T> && std::derived_from<std::ranges::range_value_t<T>, U>;
 }
+
+#ifndef forceinline
+#	ifdef _MSC_VER
+#		define forceinline __forceinline
+#	elif defined(__GNUC__) || defined(__clang__)
+#		define forceinline inline __attribute__((always_inline))
+#	else
+#		define forceinline inline
+#	endif
+#endif

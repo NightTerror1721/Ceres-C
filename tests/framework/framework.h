@@ -162,7 +162,7 @@ namespace ceresc::testing
 	static void CERESC_TEST_CONCAT(ceresc_test_, __LINE__)();                                 \
 	static const int CERESC_TEST_CONCAT(ceresc_test_reg_, __LINE__) =                         \
 		::ceresc::testing::Registry::instance().add(                                          \
-			{ #suiteName, #testName, &CERESC_TEST_CONCAT(ceresc_test_, __LINE__) });          \
+			{ #suiteName, #testName, &CERESC_TEST_CONCAT(ceresc_test_, __LINE__), false, {} }); \
 	static void CERESC_TEST_CONCAT(ceresc_test_, __LINE__)()
 
 // Pins a bug that is still open. The body asserts the *correct* behaviour, so the test fails
