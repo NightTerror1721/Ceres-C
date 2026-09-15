@@ -32,6 +32,8 @@ namespace ceresc::ir
 			case IrUnOp::Neg: return "neg";
 			case IrUnOp::Not: return "not";
 			case IrUnOp::LogicalNot: return "lnot";
+			case IrUnOp::IntToFloat: return "itof";
+			case IrUnOp::FloatToInt: return "ftoi";
 		}
 		return "<unknown-unop>";
 	}
@@ -110,27 +112,32 @@ namespace ceresc::ir
 			case IrOpcode::BinOp:
 			{
 				const auto& payload = instr.as<IrBinOpPayload>();
-				_output += std::format("{} = {}{} {}, {}\n", valueName(payload.result), opName(payload.op), payload.isUnsigned ? ".u" : "",
+				_output += std::format("{} = {}{}{} {}, {}\n", valueName(payload.result), opName(payload.op),
+					payload.isFloat ? ".f" : "", payload.isUnsigned ? ".u" : "",
 					valueName(payload.lhs), valueName(payload.rhs));
 				break;
 			}
 			case IrOpcode::UnOp:
 			{
 				const auto& payload = instr.as<IrUnOpPayload>();
-				_output += std::format("{} = {} {}\n", valueName(payload.result), opName(payload.op), valueName(payload.operand));
+				_output += std::format("{} = {}{}{} {}\n", valueName(payload.result), opName(payload.op),
+					payload.isFloat ? ".f" : "", payload.isUnsigned ? ".u" : "", valueName(payload.operand));
 				break;
 			}
 			case IrOpcode::Cmp:
 			{
 				const auto& payload = instr.as<IrCmpPayload>();
-				_output += std::format("{} = cmp.{}{} {}, {}\n", valueName(payload.result), predName(payload.predicate), payload.isUnsigned ? ".u" : "",
+				_output += std::format("{} = cmp.{}{}{} {}, {}\n", valueName(payload.result), predName(payload.predicate),
+					payload.isFloat ? ".f" : "", payload.isUnsigned ? ".u" : "",
 					valueName(payload.lhs), valueName(payload.rhs));
 				break;
 			}
 			case IrOpcode::Copy:
 			{
 				const auto& payload = instr.as<IrCopyPayload>();
-				_output += std::format("{} = {}\n", valueName(payload.result), valueName(payload.source));
+				_output += payload.isFloat
+					? std::format("{} = copy.f {}\n", valueName(payload.result), valueName(payload.source))
+					: std::format("{} = {}\n", valueName(payload.result), valueName(payload.source));
 				break;
 			}
 			case IrOpcode::FrameAddr:
@@ -148,26 +155,30 @@ namespace ceresc::ir
 			case IrOpcode::Load:
 			{
 				const auto& payload = instr.as<IrLoadPayload>();
-				_output += std::format("{} = load.{} [{}]\n", valueName(payload.result), sizeName(payload.size), valueName(payload.address));
+				_output += std::format("{} = load.{}{} [{}]\n", valueName(payload.result), sizeName(payload.size),
+					payload.isFloat ? ".f" : "", valueName(payload.address));
 				break;
 			}
 			case IrOpcode::Store:
 			{
 				const auto& payload = instr.as<IrStorePayload>();
-				_output += std::format("store.{} [{}], {}\n", sizeName(payload.size), valueName(payload.address), valueName(payload.value));
+				_output += std::format("store.{}{} [{}], {}\n", sizeName(payload.size), payload.isFloat ? ".f" : "",
+					valueName(payload.address), valueName(payload.value));
 				break;
 			}
 			case IrOpcode::Param:
 			{
 				const auto& payload = instr.as<IrParamPayload>();
-				_output += std::format("param {}\n", valueName(payload.value));
+				_output += std::format("param{} {}\n", payload.isFloat ? ".f" : "", valueName(payload.value));
 				break;
 			}
 			case IrOpcode::Call:
 			{
 				const auto& payload = instr.as<IrCallPayload>();
 				if (payload.hasResult)
-					_output += std::format("{} = call {}, {}\n", valueName(payload.result), payload.callee, payload.argCount);
+					_output += payload.isFloat
+						? std::format("{} = call.f {}, {}\n", valueName(payload.result), payload.callee, payload.argCount)
+						: std::format("{} = call {}, {}\n", valueName(payload.result), payload.callee, payload.argCount);
 				else
 					_output += std::format("call {}, {}\n", payload.callee, payload.argCount);
 				break;
@@ -181,7 +192,7 @@ namespace ceresc::ir
 			case IrOpcode::CondJump:
 			{
 				const auto& payload = instr.as<IrCondJumpPayload>();
-				_output += std::format("br.{}{} {}, {}, {}, {}\n", predName(payload.predicate), payload.isUnsigned ? ".u" : "",
+				_output += std::format("br.{}{}{} {}, {}, {}, {}\n", predName(payload.predicate), payload.isFloat ? ".f" : "", payload.isUnsigned ? ".u" : "",
 					valueName(payload.lhs), valueName(payload.rhs), blockName(*payload.trueTarget), blockName(*payload.falseTarget));
 				break;
 			}
@@ -189,7 +200,7 @@ namespace ceresc::ir
 			{
 				const auto& payload = instr.as<IrReturnPayload>();
 				if (payload.hasValue)
-					_output += std::format("ret {}\n", valueName(payload.value));
+					_output += std::format("ret{} {}\n", payload.isFloat ? ".f" : "", valueName(payload.value));
 				else
 					_output += "ret\n";
 				break;

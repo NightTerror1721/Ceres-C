@@ -138,6 +138,14 @@ namespace ceresc::ir
 		// dispatch (mirroring sema.cpp's own isLValue()/evalConstantExpr()) rather than a second
 		// AstVisitor.
 		IrValue lowerAddress(ast::Expr* expr);
+		// The rvalue of `expr`, decaying an array-typed result to the address of its own storage
+		// instead of loading through it - real C's array-to-pointer decay (mirrors sema::Sema's own
+		// decayArray(), sema.cpp), needed because unlike every other rvalue an array never sits
+		// behind a separately-stored address the way a pointer variable does: its frame/global slot
+		// already holds the elements directly, so "the array's value" and "the array's address" are
+		// the same IrValue. Shared by every Expr kind whose annotated type can be an array as well as
+		// an ordinary scalar (NameExpr, IndexExpr, MemberExpr, `*p`) - see the ".cpp".
+		IrValue lowerRValue(ast::Expr* expr);
 		// Lowers `cond` as a branch directly to trueBlock/falseBlock, short-circuiting && and ||
 		// (and De Morgan-swapping ! ) instead of first materializing a 0/1 value and then branching
 		// on it.
@@ -151,6 +159,22 @@ namespace ceresc::ir
 		// scaling and the Shr/Sar and isUnsigned choice.
 		IrValue lowerArithmetic(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* resultType,
 			const ast::Type* lhsType, const ast::Type* rhsType, IrValue lhsVal, IrValue rhsVal);
+
+		// Sema unifies mixed int/float operands onto one common `resultType` (commonArithmeticType(),
+		// sema.cpp) without inserting an implicit-cast node anywhere in the AST - the operands simply
+		// keep their own original types, and the promotion is only ever recorded as the *node's*
+		// type. So wherever an operation needs both sides in the SAME register bank (arithmetic,
+		// comparison), this converts `value` (whose real type is `type`) up to float first when
+		// `type` says it is not one already - a no-op (returns `value` unchanged) when it already is.
+		// Mirrors real C's usual arithmetic conversions, just realized here instead of in sema.
+		IrValue toFloatIfNeeded(support::SourceLocation loc, IrValue value, const ast::Type* type);
+		// The general form of toFloatIfNeeded() above, for a value moving into storage of a
+		// DIFFERENT declared type than the one it was computed as - `float x; x = 5;` (int value,
+		// float storage) or `int x; x += 1.5f;` (compound assignment's promoted float result,
+		// narrowing back to `x`'s real int storage) both need this, unlike a plain BinOp/Cmp operand
+		// pair, which sema has already unified onto one common type by the time IrBuilder sees it.
+		// A no-op when `fromType`/`toType` agree on isFloat().
+		IrValue convertForStore(support::SourceLocation loc, IrValue value, const ast::Type* fromType, const ast::Type* toType);
 
 		// Reports "using a struct by value here is not supported in this version" when `type` is a
 		// struct - called right before every place this file materializes an ordinary rvalue via a
@@ -187,13 +211,13 @@ namespace ceresc::ir
 		IrValue emitConstInt(support::SourceLocation loc, i64 value);
 		IrValue emitConstFloat(support::SourceLocation loc, f32 value);
 		void emitConstInto(support::SourceLocation loc, IrValue result, i64 value); // reuses a temp id already allocated - see materializeBoolean()
-		void emitCopyInto(support::SourceLocation loc, IrValue result, IrValue source); // ditto - see visit(TernaryExpr&)
-		IrValue emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size);
-		void emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value);
+		void emitCopyInto(support::SourceLocation loc, IrValue result, IrValue source, bool isFloat = false); // ditto - see visit(TernaryExpr&)
+		IrValue emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat = false);
+		void emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat = false);
 		IrValue emitFrameAddr(support::SourceLocation loc, u32 localIndex);
 		IrValue emitGlobalAddr(support::SourceLocation loc, std::string_view name);
-		IrValue emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned);
-		IrValue emitUnOp(support::SourceLocation loc, IrUnOp op, IrValue operand);
+		IrValue emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat = false);
+		IrValue emitUnOp(support::SourceLocation loc, IrUnOp op, IrValue operand, bool isFloat = false, bool isUnsigned = false);
 
 		// Copies `text` into `_arena` and returns a stable string_view over that copy - used to
 		// synthesize a string literal's label (".str0", ...), which needs a lifetime outliving the

@@ -188,6 +188,28 @@ namespace ceresc::parser
 		bool parseParamList(std::vector<Param>& outParams);
 		Decl* parseTypedefDecl();
 
+		// direct-declarator's "[" INT_LITERAL? "]")* suffix (§7's grammar) - called after an
+		// identifier at every declarator site (local/global VarDecl, struct field, typedef, param)
+		// once `elementType` (everything parseTypeName() already built, i.e. the base type plus any
+		// leading `*`s) and the name are both known. Builds nested Array types outermost-first
+		// (`int m[3][4]` -> Array(Array(int, 4), 3), matching real C), so it must see every `[...]`
+		// group before constructing any single Type.
+		//
+		// `isParameter` selects real C's own special case for a parameter declarator: an array
+		// dimension there is not a real array, it decays to a pointer immediately (`void f(int a[10])`
+		// means `void f(int* a)`, the 10 is documentation only - real C ignores it) - and, precisely
+		// because it decays, the outermost `[...]` may be empty there (`int a[]`, `int m[][4]`) with
+		// no diagnostic. Everywhere else (a plain variable, a struct field, a typedef) there is no
+		// decay and no brace-initializer support in this subset to infer a missing size from (see the
+		// architecture plan §3 - "fixed-size arrays" is the stated v1 scope), so every dimension must
+		// carry an INT_LITERAL or this reports a diagnostic and treats that dimension as size 1 to
+		// keep building a usable (if wrong) type instead of returning null and losing the declarator
+		// entirely - consistent with this parser's panic-mode philosophy of never letting one bad
+		// piece take down a whole declaration it doesn't have to (see the header comment above).
+		//
+		// Only called once `check(TokenKind::LBracket)` is already true - see call sites.
+		const Type* parseArrayDeclaratorSuffix(const Type* elementType, bool isParameter);
+
 		// struct/enum are parsed as part of the type-spec grammar, not as their own top-level
 		// productions - see the header comment above.
 		const Type* parseStructTypeSpec();

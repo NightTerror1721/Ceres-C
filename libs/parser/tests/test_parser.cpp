@@ -70,6 +70,11 @@ namespace
 	}
 }
 
+TEST(parser, array_typedef_parameter_decays_to_pointer)
+{
+	CHECK_EQ(printUnit("typedef int A[3]; void f(A a);"), "(unit (typedef A int[3]) (func f void (params (int* a)) <null>))");
+}
+
 // ---- primary expressions -----------------------------------------------------------------------
 
 TEST(parser, literals_and_names)
@@ -410,6 +415,135 @@ TEST(parser, function_with_void_parameter_list_means_no_parameters)
 TEST(parser, function_with_empty_parameter_list)
 {
 	CHECK_EQ(printDecl("void main() { }"), "(func main void (params) (block))");
+}
+
+// ---- array/pointer declarators -------------------------------------------------------------------
+//
+// direct-declarator's `("[" INT_LITERAL? "]")*` suffix (§7's grammar), wired into every declarator
+// site: local/global VarDecl, struct field, typedef, and function parameter (which additionally
+// decays its outermost dimension to a pointer, real C's own rule - see parseArrayDeclaratorSuffix()'s
+// header comment in parser.h).
+
+TEST(parser, local_array_declaration)
+{
+	CHECK_EQ(printStmt("int arr[10];"), "(decl-stmt (var arr int[10] <null>))");
+}
+
+TEST(parser, global_array_declaration)
+{
+	CHECK_EQ(printDecl("int arr[10];"), "(var arr int[10] <null>)");
+}
+
+TEST(parser, two_dimensional_array_declaration)
+{
+	CHECK_EQ(printDecl("int m[3][4];"), "(var m int[4][3] <null>)");
+}
+
+TEST(parser, array_of_pointers_declaration)
+{
+	CHECK_EQ(printDecl("int* arr[5];"), "(var arr int*[5] <null>)");
+}
+
+TEST(parser, pointer_to_array_element_type_is_still_an_ordinary_pointer_declarator)
+{
+	// The leading `*` belongs to parseTypeName() (the base type), not to the array suffix - so
+	// `int* p;` with no brackets is unaffected by any of this.
+	CHECK_EQ(printDecl("int* p;"), "(var p int* <null>)");
+}
+
+TEST(parser, struct_field_array_declaration)
+{
+	CHECK_EQ(printDecl("struct Point { int coords[3]; };"), "(struct Point (fields (int[3] coords)))");
+}
+
+TEST(parser, typedef_of_an_array_type)
+{
+	CHECK_EQ(printUnit("typedef int IntArray[4]; IntArray x;"),
+		"(unit (typedef IntArray int[4]) (var x int[4] <null>))");
+}
+
+TEST(parser, parameter_array_decays_to_a_pointer)
+{
+	CHECK_EQ(printDecl("void f(int a[10]) { }"), "(func f void (params (int* a)) (block))");
+}
+
+TEST(parser, parameter_array_with_no_size_decays_to_a_pointer_just_like_a_sized_one)
+{
+	CHECK_EQ(printDecl("void f(int a[]) { }"), "(func f void (params (int* a)) (block))");
+}
+
+TEST(parser, two_dimensional_parameter_array_decays_only_its_outermost_dimension)
+{
+	CHECK_EQ(printDecl("void f(int m[][4]) { }"), "(func f void (params (int[4]* m)) (block))");
+}
+
+TEST(parser, array_size_is_required_outside_a_parameter_declarator)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int arr[];", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::Decl* decl = parser.parseExternalDecl();
+	CHECK(decl != nullptr); // still recovers to *a* type (size 1) instead of losing the declarator
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, array_size_must_be_a_positive_integer_literal)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int arr[0];", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	CHECK(parser.parseExternalDecl() != nullptr);
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, array_size_must_be_a_constant_not_an_arbitrary_expression)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	// `n` is an identifier, not an INT_LITERAL - not implemented in this version (see §3: "fixed-size
+	// arrays" only), and must not be confused with a syntax error that loses the rest of the file.
+	lexer::Lexer lexer("int arr[n]; int y;", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	CHECK_EQ(unit->decls().size(), usize(2));
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, array_of_void_is_an_error)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("void arr[3];", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	CHECK(parser.parseExternalDecl() != nullptr);
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, array_brace_initializer_is_reported_as_not_implemented_but_still_recovers)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int arr[3] = { 1, 2, 3 }; int y;", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	// The brace list is skipped by depth (not by panic-mode resynchronization), so the second
+	// declaration still parses as its own, unrelated `y` - not swallowed as part of recovery.
+	CHECK_EQ(unit->decls().size(), usize(2));
+	CHECK(diagnostics.hasErrors());
 }
 
 // ---- translation unit (Fase 3) -------------------------------------------------------------------

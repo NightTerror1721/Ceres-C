@@ -41,7 +41,12 @@ namespace ceresc::ir
 		// shape, not signed/unsigned dispatch - see the header comment on IrBuilder's contract.
 		bool isUnsignedComparison(const Type* lhs, const Type* rhs) noexcept
 		{
-			if ((lhs && lhs->isPointer()) || (rhs && rhs->isPointer()))
+			// A float operand always reads through the unsigned branch family after FCMP, regardless
+			// of Type::isSigned() - a hardware quirk of the ISA, not a signedness question: FCMP
+			// clears Overflow and puts `fs < ft` directly in Carry (05-Instruction-Set.md), which is
+			// exactly what the unsigned comparison jumps read (§10).
+			if ((lhs && (lhs->isPointer() || lhs->isArray() || lhs->isFloat())) ||
+				(rhs && (rhs->isPointer() || rhs->isArray() || rhs->isFloat())))
 				return true;
 			if (lhs && !lhs->isSigned())
 				return true;
@@ -235,26 +240,36 @@ namespace ceresc::ir
 		return payload.result;
 	}
 
-	void IrBuilder::emitCopyInto(support::SourceLocation loc, IrValue result, IrValue source)
+	void IrBuilder::emitCopyInto(support::SourceLocation loc, IrValue result, IrValue source, bool isFloat)
 	{
 		if (result == source)
 			return;
-		emitVoid(loc, IrCopyPayload{ result, source });
+		IrCopyPayload payload;
+		payload.result = result;
+		payload.isFloat = isFloat;
+		payload.source = source;
+		emitVoid(loc, payload);
 	}
 
-	IrValue IrBuilder::emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size)
+	IrValue IrBuilder::emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat)
 	{
 		IrLoadPayload payload;
 		payload.result = _currentFunction->newTemp();
 		payload.size = size;
+		payload.isFloat = isFloat;
 		payload.address = address;
 		emitVoid(loc, payload);
 		return payload.result;
 	}
 
-	void IrBuilder::emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value)
+	void IrBuilder::emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat)
 	{
-		emitVoid(loc, IrStorePayload{ size, address, value });
+		IrStorePayload payload;
+		payload.size = size;
+		payload.isFloat = isFloat;
+		payload.address = address;
+		payload.value = value;
+		emitVoid(loc, payload);
 	}
 
 	IrValue IrBuilder::emitFrameAddr(support::SourceLocation loc, u32 localIndex)
@@ -275,23 +290,26 @@ namespace ceresc::ir
 		return payload.result;
 	}
 
-	IrValue IrBuilder::emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned)
+	IrValue IrBuilder::emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat)
 	{
 		IrBinOpPayload payload;
 		payload.result = _currentFunction->newTemp();
 		payload.op = op;
 		payload.isUnsigned = isUnsigned;
+		payload.isFloat = isFloat;
 		payload.lhs = lhs;
 		payload.rhs = rhs;
 		emitVoid(loc, payload);
 		return payload.result;
 	}
 
-	IrValue IrBuilder::emitUnOp(support::SourceLocation loc, IrUnOp op, IrValue operand)
+	IrValue IrBuilder::emitUnOp(support::SourceLocation loc, IrUnOp op, IrValue operand, bool isFloat, bool isUnsigned)
 	{
 		IrUnOpPayload payload;
 		payload.result = _currentFunction->newTemp();
 		payload.op = op;
+		payload.isFloat = isFloat;
+		payload.isUnsigned = isUnsigned;
 		payload.operand = operand;
 		emitVoid(loc, payload);
 		return payload.result;
@@ -484,6 +502,18 @@ namespace ceresc::ir
 		return lowerExpr(expr);
 	}
 
+	IrValue IrBuilder::lowerRValue(Expr* expr)
+	{
+		// Array-to-pointer decay (see the header comment on this method): the array's storage IS the
+		// value, so this returns its address directly instead of loading through it - never possible
+		// to represent a whole array's bytes as a single scalar Load result anyway.
+		if (expr->type() && expr->type()->isArray())
+			return lowerAddress(expr);
+		requireScalarValue(expr->type(), expr->location());
+		IrValue addr = lowerAddress(expr);
+		return emitLoad(expr->location(), addr, memSizeOf(expr->type()), expr->type() && expr->type()->isFloat());
+	}
+
 	// ---- condition lowering (jumping code, short-circuit && / ||) --------------------------------
 
 	void IrBuilder::lowerCondition(Expr* cond, BasicBlock* trueBlock, BasicBlock* falseBlock)
@@ -515,8 +545,9 @@ namespace ceresc::ir
 
 		support::SourceLocation loc = cond->location();
 		IrValue value = lowerExpr(cond);
-		IrValue zero = emitConstInt(loc, 0);
-		emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, value, zero, trueBlock, falseBlock });
+		bool isFloat = cond->type() && cond->type()->isFloat();
+		IrValue zero = isFloat ? emitConstFloat(loc, 0.0f) : emitConstInt(loc, 0);
+		emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, isFloat, isFloat, value, zero, trueBlock, falseBlock });
 	}
 
 	IrValue IrBuilder::materializeBoolean(Expr* cond)
@@ -544,11 +575,35 @@ namespace ceresc::ir
 
 	// ---- arithmetic (shared by BinaryExpr and AssignExpr's compound operators) -------------------
 
+	IrValue IrBuilder::toFloatIfNeeded(support::SourceLocation loc, IrValue value, const Type* type)
+	{
+		if (type && type->isFloat())
+			return value;
+		return emitUnOp(loc, IrUnOp::IntToFloat, value, false, !type || !type->isSigned());
+	}
+
+	IrValue IrBuilder::convertForStore(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
+	{
+		bool fromFloat = fromType && fromType->isFloat();
+		bool toFloat = toType && toType->isFloat();
+		if (fromFloat == toFloat)
+			return value;
+		if (toFloat)
+			return emitUnOp(loc, IrUnOp::IntToFloat, value, false, !fromType || !fromType->isSigned());
+		return emitUnOp(loc, IrUnOp::FloatToInt, value, false, !toType || !toType->isSigned());
+	}
+
 	IrValue IrBuilder::lowerArithmetic(support::SourceLocation loc, BinaryOp op, const Type* resultType,
 		const Type* lhsType, const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
 	{
-		bool lhsIsPointer = lhsType && lhsType->isPointer();
-		bool rhsIsPointer = rhsType && rhsType->isPointer();
+		// isArray() alongside isPointer(): node.lhs()->type()/node.rhs()->type() (this function's
+		// only caller, visit(BinaryExpr&)) are the AST's own, undecayed annotations - an array
+		// operand's real Type stays Array there even though sema type-checked `arr + 1` as pointer
+		// arithmetic against a locally decayed copy (see Sema::decayArray(), sema.cpp). Both kinds
+		// already share arrayElementType() below, so treating them alike here is enough to get the
+		// right per-element scaling without a separate decay step.
+		bool lhsIsPointer = lhsType && (lhsType->isPointer() || lhsType->isArray());
+		bool rhsIsPointer = rhsType && (rhsType->isPointer() || rhsType->isArray());
 
 		if (lhsIsPointer && !rhsIsPointer && (op == BinaryOp::Add || op == BinaryOp::Sub))
 		{
@@ -587,6 +642,12 @@ namespace ceresc::ir
 		// own signedness is the right one to read, not either raw operand's (e.g. `unsigned char +
 		// int` promotes the unsigned char to a signed int before the add - see integerPromote()).
 		bool isUnsigned = resultType && !resultType->isSigned();
+		bool isFloat = resultType && resultType->isFloat(); // Add/Sub/Mul/Div only - see IrBinOpPayload::isFloat's header comment
+		if (isFloat)
+		{
+			lhsVal = toFloatIfNeeded(loc, lhsVal, lhsType);
+			rhsVal = toFloatIfNeeded(loc, rhsVal, rhsType);
+		}
 		IrBinOp irOp;
 		switch (op)
 		{
@@ -602,7 +663,7 @@ namespace ceresc::ir
 			case BinaryOp::Shr: irOp = isUnsigned ? IrBinOp::Shr : IrBinOp::Sar; break;
 			default: irOp = IrBinOp::Add; break; // Eq/Ne/Lt/Le/Gt/Ge/LogicalAnd/LogicalOr never reach here
 		}
-		return emitBinOp(loc, irOp, lhsVal, rhsVal, isUnsigned);
+		return emitBinOp(loc, irOp, lhsVal, rhsVal, isUnsigned, isFloat);
 	}
 
 	// ---- expressions --------------------------------------------------------------------------------
@@ -645,20 +706,25 @@ namespace ceresc::ir
 		}
 		// A variable (local, parameter or global) - a function name or an undeclared identifier
 		// would already have been rejected by sema, see the header comment on IrBuilder's contract.
-		requireScalarValue(node.type(), node.location());
-		IrValue addr = lowerAddress(&node);
-		_lastValue = emitLoad(node.location(), addr, memSizeOf(node.type()));
+		// lowerRValue() decays an array-typed variable to its own address instead of loading through
+		// it - see its header comment.
+		_lastValue = lowerRValue(&node);
 	}
 
 	void IrBuilder::visit(ast::CallExpr& node)
 	{
 		std::vector<IrValue> argValues;
+		std::vector<bool> argIsFloat;
 		argValues.reserve(node.args().size());
+		argIsFloat.reserve(node.args().size());
 		for (Expr* arg : node.args())
+		{
 			argValues.push_back(lowerExpr(arg));
+			argIsFloat.push_back(arg->type() && arg->type()->isFloat());
+		}
 
-		for (IrValue value : argValues)
-			emitVoid(node.location(), IrParamPayload{ value });
+		for (usize i = 0; i < argValues.size(); ++i)
+			emitVoid(node.location(), IrParamPayload{ argValues[i], argIsFloat[i] });
 
 		auto* callee = dynamic_cast<ast::NameExpr*>(node.callee());
 		std::string_view calleeName = callee ? callee->name() : std::string_view{}; // sema guarantees this - see the header comment
@@ -669,6 +735,7 @@ namespace ceresc::ir
 
 		IrCallPayload payload;
 		payload.hasResult = hasResult;
+		payload.isFloat = hasResult && node.type()->isFloat();
 		payload.callee = calleeName;
 		payload.argCount = static_cast<u32>(argValues.size());
 		if (hasResult)
@@ -688,25 +755,20 @@ namespace ceresc::ir
 				return;
 
 			case UnaryOp::Deref:
-			{
-				requireScalarValue(node.type(), loc);
-				// sema explicitly allows an array operand here too (sema.cpp's own UnaryOp::Deref
-				// case checks `operandType->isPointer() || operandType->isArray()`), matching real
-				// C's `*arr == arr[0]`: an array's *address* is what `*` dereferences, never a
-				// value loaded through it (an array never sits behind a pointer stored in memory -
-				// its own frame/global slot already holds the elements directly). Getting this
-				// wrong is exactly the same mistake a raw `lowerExpr()` on a pointer-typed operand
-				// correctly avoids: that one loads the pointer's own stored value first, this one
-				// must not.
-				const Type* operandType = node.operand()->type();
-				IrValue ptr = (operandType && operandType->isArray()) ? lowerAddress(node.operand()) : lowerExpr(node.operand());
-				_lastValue = emitLoad(loc, ptr, memSizeOf(node.type()));
+				// lowerAddress()'s own Deref case computes *p's address as p's own value (or, when p
+				// is itself an array, that array's address directly - matching real C's
+				// `*arr == arr[0]`, see its header comment); lowerRValue() then either loads through
+				// that address (an ordinary scalar result) or, if `*p` itself denotes an array
+				// (`*matrix` where matrix: T[N][M]), decays to that same address with no load at all.
+				_lastValue = lowerRValue(&node);
 				return;
-			}
 
 			case UnaryOp::Negate:
-				_lastValue = emitUnOp(loc, IrUnOp::Neg, lowerExpr(node.operand()));
+			{
+				const Type* operandType = node.operand()->type();
+				_lastValue = emitUnOp(loc, IrUnOp::Neg, lowerExpr(node.operand()), operandType && operandType->isFloat());
 				return;
+			}
 
 			case UnaryOp::BitwiseNot:
 				_lastValue = emitUnOp(loc, IrUnOp::Not, lowerExpr(node.operand()));
@@ -722,14 +784,21 @@ namespace ceresc::ir
 			case UnaryOp::PostDecrement:
 			{
 				const Type* type = node.operand()->type();
+				bool isFloat = type && type->isFloat();
 				IrValue addr = lowerAddress(node.operand());
 				IrMemSize size = memSizeOf(type);
-				IrValue oldValue = emitLoad(loc, addr, size);
-				i64 step = (type && type->isPointer() && type->arrayElementType()) ? type->arrayElementType()->sizeInBytes() : 1;
-				IrValue stepValue = emitConstInt(loc, step);
+				IrValue oldValue = emitLoad(loc, addr, size, isFloat);
+				IrValue stepValue;
+				if (isFloat)
+					stepValue = emitConstFloat(loc, 1.0f);
+				else
+				{
+					i64 step = (type && type->isPointer() && type->arrayElementType()) ? type->arrayElementType()->sizeInBytes() : 1;
+					stepValue = emitConstInt(loc, step);
+				}
 				bool isIncrement = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PostIncrement);
-				IrValue newValue = emitBinOp(loc, isIncrement ? IrBinOp::Add : IrBinOp::Sub, oldValue, stepValue, type && !type->isSigned());
-				emitStore(loc, addr, size, newValue);
+				IrValue newValue = emitBinOp(loc, isIncrement ? IrBinOp::Add : IrBinOp::Sub, oldValue, stepValue, type && !type->isSigned(), isFloat);
+				emitStore(loc, addr, size, newValue, isFloat);
 				bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
 				_lastValue = isPre ? newValue : oldValue;
 				return;
@@ -754,10 +823,20 @@ namespace ceresc::ir
 			case BinaryOp::Eq: case BinaryOp::Ne:
 			case BinaryOp::Lt: case BinaryOp::Le: case BinaryOp::Gt: case BinaryOp::Ge:
 			{
+				const Type* lhsType = node.lhs()->type();
+				const Type* rhsType = node.rhs()->type();
+				bool cmpIsFloat = (lhsType && lhsType->isFloat()) || (rhsType && rhsType->isFloat());
+				if (cmpIsFloat)
+				{
+					lhs = toFloatIfNeeded(loc, lhs, lhsType);
+					rhs = toFloatIfNeeded(loc, rhs, rhsType);
+				}
+
 				IrCmpPayload payload;
 				payload.result = _currentFunction->newTemp();
 				payload.predicate = cmpPredicateFor(node.op());
-				payload.isUnsigned = isUnsignedComparison(node.lhs()->type(), node.rhs()->type());
+				payload.isUnsigned = isUnsignedComparison(lhsType, rhsType);
+				payload.isFloat = cmpIsFloat;
 				payload.lhs = lhs;
 				payload.rhs = rhs;
 				emitVoid(loc, payload);
@@ -778,13 +857,14 @@ namespace ceresc::ir
 		IrMemSize size = memSizeOf(targetType);
 
 		IrValue value;
+		bool targetIsFloat = targetType && targetType->isFloat();
 		if (node.op() == AssignOp::Assign)
 		{
-			value = lowerExpr(node.value());
+			value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), targetType);
 		}
 		else
 		{
-			IrValue oldValue = emitLoad(loc, addr, size);
+			IrValue oldValue = emitLoad(loc, addr, size, targetIsFloat);
 			IrValue rhs = lowerExpr(node.value());
 			BinaryOp binaryOp = binaryOpForCompoundAssign(node.op());
 			// `x op= y` means `x = x op y` by definition, so this must agree with what the
@@ -796,33 +876,40 @@ namespace ceresc::ir
 			// branches never read this parameter, only the plain-arithmetic fallback does.
 			const Type* promotedType = commonArithmeticType(targetType, node.value()->type());
 			value = lowerArithmetic(loc, binaryOp, promotedType, targetType, node.value()->type(), oldValue, rhs);
+			// `x op= y` narrows the promoted result back to x's own (possibly non-float) storage -
+			// e.g. `int x; x += 1.5f;` promotes to float for the add, then truncates back to store.
+			value = convertForStore(loc, value, promotedType, targetType);
 		}
 
-		emitStore(loc, addr, size, value);
+		emitStore(loc, addr, size, value, targetIsFloat);
 		_lastValue = value;
 	}
 
 	void IrBuilder::visit(ast::IndexExpr& node)
 	{
-		requireScalarValue(node.type(), node.location());
-		IrValue addr = lowerAddress(&node);
-		_lastValue = emitLoad(node.location(), addr, memSizeOf(node.type()));
+		// lowerRValue() decays a row of a multi-dimensional array (`matrix[i]` where matrix is
+		// T[N][M], itself typed T[M]) to that row's own address instead of loading through it -
+		// see its header comment.
+		_lastValue = lowerRValue(&node);
 	}
 
 	void IrBuilder::visit(ast::MemberExpr& node)
 	{
-		requireScalarValue(node.type(), node.location());
-		IrValue addr = lowerAddress(&node);
-		_lastValue = emitLoad(node.location(), addr, memSizeOf(node.type()));
+		// lowerRValue() decays an array-typed struct field (`s.arr`) to its own address instead of
+		// loading through it - see its header comment.
+		_lastValue = lowerRValue(&node);
 	}
 
 	void IrBuilder::visit(ast::CastExpr& node)
 	{
-		// No IR-level conversion opcode exists (§9's opcode table has none): the cast is realized
-		// only through the memSize a later Load/Store picks based on the AST's own annotated type.
-		// Real float<->int conversion instructions are libs/codegen's job (Fase 6+), not this
-		// phase's - see the header comment on IrBuilder's contract.
-		_lastValue = lowerExpr(node.operand());
+		// An int<->int (or pointer) cast needs no real instruction: it is realized only through the
+		// memSize a later Load/Store picks based on the AST's own annotated type (an `(char)someInt`
+		// truncates for free the next time it is stored/loaded as a byte). Crossing the float/int
+		// line is a genuine runtime operation with no such free lunch - see IrUnOp::IntToFloat/
+		// FloatToInt's header comment (ir_instr.h) - so that direction alone gets a real conversion
+		// here, via the same toFloatIfNeeded()/convertForStore() helpers a plain assignment's mixed
+		// arithmetic already uses.
+		_lastValue = convertForStore(node.location(), lowerExpr(node.operand()), node.operand()->type(), node.type());
 	}
 
 	void IrBuilder::visit(ast::SizeofExpr& node)
@@ -845,14 +932,15 @@ namespace ceresc::ir
 		lowerCondition(node.cond(), &thenBlock, &elseBlock);
 
 		IrValue result = _currentFunction->newTemp();
+		bool resultIsFloat = node.type() && node.type()->isFloat();
 
 		_currentBlock = &thenBlock;
-		emitCopyInto(loc, result, lowerExpr(node.thenExpr()));
+		emitCopyInto(loc, result, convertForStore(loc, lowerExpr(node.thenExpr()), node.thenExpr()->type(), node.type()), resultIsFloat);
 		if (!_currentBlock->isTerminated())
 			emitVoid(loc, IrJumpPayload{ &mergeBlock });
 
 		_currentBlock = &elseBlock;
-		emitCopyInto(loc, result, lowerExpr(node.elseExpr()));
+		emitCopyInto(loc, result, convertForStore(loc, lowerExpr(node.elseExpr()), node.elseExpr()->type(), node.type()), resultIsFloat);
 		if (!_currentBlock->isTerminated())
 			emitVoid(loc, IrJumpPayload{ &mergeBlock });
 
@@ -991,9 +1079,15 @@ namespace ceresc::ir
 	void IrBuilder::visit(ast::ReturnStmt& node)
 	{
 		if (node.value())
-			emitVoid(node.location(), IrReturnPayload{ true, lowerExpr(node.value()) });
+		{
+			const Type* returnType = _currentFunction->returnType();
+			IrValue value = convertForStore(node.location(), lowerExpr(node.value()), node.value()->type(), returnType);
+			emitVoid(node.location(), IrReturnPayload{ true, returnType && returnType->isFloat(), value });
+		}
 		else
-			emitVoid(node.location(), IrReturnPayload{ false, IrValue{} });
+		{
+			emitVoid(node.location(), IrReturnPayload{ false, false, IrValue{} });
+		}
 	}
 
 	void IrBuilder::visit(ast::BreakStmt& node)
@@ -1026,7 +1120,7 @@ namespace ceresc::ir
 		{
 			IrValue constValue = emitConstInt(loc, value);
 			BasicBlock& nextTest = _currentFunction->createBlock();
-			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Eq, false, condValue, constValue, block, &nextTest });
+			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Eq, false, false, condValue, constValue, block, &nextTest });
 			_currentBlock = &nextTest;
 		}
 		emitVoid(loc, IrJumpPayload{ defaultBlock ? defaultBlock : &exitBlock });
@@ -1158,14 +1252,14 @@ namespace ceresc::ir
 
 		LocalSymbol symbol;
 		symbol.kind = LocalSymbolKind::Local;
-		symbol.localSlot = _currentFunction->newLocalSlot();
+		symbol.localSlot = _currentFunction->newLocalSlot(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat());
 		declareSymbol(node.name(), symbol);
 
 		if (node.initializer())
 		{
-			IrValue value = lowerExpr(node.initializer());
+			IrValue value = convertForStore(node.location(), lowerExpr(node.initializer()), node.initializer()->type(), node.type());
 			IrValue addr = emitFrameAddr(node.location(), symbol.localSlot);
-			emitStore(node.location(), addr, memSizeOf(node.type()), value);
+			emitStore(node.location(), addr, memSizeOf(node.type()), value, node.type() && node.type()->isFloat());
 		}
 	}
 
@@ -1176,7 +1270,12 @@ namespace ceresc::ir
 
 		IrFunction& function = _module.addFunction(node.name(), node.returnType());
 		_currentFunction = &function;
-		function.reserveParamSlots(static_cast<u32>(node.params().size()));
+
+		std::vector<IrLocalSlot> paramSlots;
+		paramSlots.reserve(node.params().size());
+		for (const Param& param : node.params())
+			paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u, param.type && param.type->isFloat() });
+		function.reserveParamSlots(paramSlots);
 
 		pushScope();
 		u32 slot = 0;
@@ -1203,7 +1302,7 @@ namespace ceresc::ir
 		// bare `ret` so every block really is terminated (see BasicBlock::isTerminated()'s own
 		// header comment).
 		if (!_currentBlock->isTerminated())
-			emitVoid(node.location(), IrReturnPayload{ false, IrValue{} });
+			emitVoid(node.location(), IrReturnPayload{ false, false, IrValue{} });
 
 		popScope();
 		_currentFunction = nullptr;

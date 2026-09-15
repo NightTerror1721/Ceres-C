@@ -605,11 +605,11 @@ TEST(sema, struct_field_of_an_incomplete_enum_is_an_error)
 
 TEST(sema, array_of_self_by_value_is_caught_through_the_array_element_type)
 {
-	// Arrays have no declarator syntax in the parser yet (see type.h/parser.cpp's own notes), so
-	// this builds the StructDecl/Type directly rather than through source text, to exercise
-	// validateStructLayout()'s array-unwrapping on a shape the parser cannot produce today:
-	// `struct Node { struct Node children[2]; };` is exactly as illegal as the by-value (non-array)
-	// case, since an array stores its elements inline, same as a plain by-value field.
+	// Builds the StructDecl/Type directly rather than through source text, to exercise
+	// validateStructLayout() in isolation from the parser/array-declarator plumbing this same shape
+	// could now also reach through `struct Node { struct Node children[2]; };` (see parser.cpp's
+	// parseArrayDeclaratorSuffix()): it is exactly as illegal as the by-value (non-array) case,
+	// since an array stores its elements inline, same as a plain by-value field.
 	support::Arena arena;
 	support::DiagnosticEngine diagnostics;
 	support::SourceLocation loc{};
@@ -628,6 +628,88 @@ TEST(sema, array_of_self_by_value_is_caught_through_the_array_element_type)
 			foundCycleMessage = true;
 	}
 	CHECK(foundCycleMessage);
+}
+
+// ---- arrays/pointers, now that the parser can actually produce array declarators -------------------
+//
+// Array-to-pointer decay (Sema::decayArray(), sema.cpp): an array's VALUE - passed as an argument,
+// assigned from, added to an integer, returned - is really the address of its first element, matching
+// real C. The array's own annotated Type stays the real Array type throughout (see
+// array_type_is_preserved_on_the_expressions_own_annotation_despite_decay below); only the local copy
+// used by the specific check that needs an rvalue is decayed.
+
+TEST(sema, array_variable_can_be_declared_indexed_and_assigned_through)
+{
+	CheckOutcome outcome = checkSource("int main() { int arr[3]; arr[0] = 1; return arr[0]; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, array_decays_to_pointer_when_passed_as_a_function_argument)
+{
+	CheckOutcome outcome = checkSource("void f(int* p) { } int main() { int arr[4]; f(arr); }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, array_type_is_preserved_on_the_expressions_own_annotation_despite_decay)
+{
+	// Decay only affects the local copy isAssignable()/etc. check against - the expression itself
+	// keeps annotating `arr` with its real Array type (needed by sizeof and IrBuilder alike).
+	CHECK_EQ(typeOfMainLastExpr("int main() { int arr[3]; arr; }"), "int[3]");
+	CHECK_EQ(typeOfMainLastExpr("int main() { int arr[3]; &arr; }"), "int[3]*");
+}
+
+TEST(sema, arrays_decay_in_conditions_and_ternary_operands)
+{
+	CHECK(checkSource("int main() { int arr[3]; int* p; if (arr) p = true ? arr : p; }").ok);
+}
+
+TEST(sema, assigning_a_whole_array_from_another_array_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int a[3]; int b[3]; a = b; }");
+	CHECK(!outcome.ok);
+}
+
+TEST(sema, array_plus_integer_is_pointer_arithmetic)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { int arr[4]; arr + 1; }"), "int*");
+}
+
+TEST(sema, two_dimensional_array_indexes_down_to_a_row_then_an_element)
+{
+	CheckOutcome outcome = checkSource("int main() { int m[3][4]; m[1][2] = 5; return m[1][2]; }");
+	CHECK(outcome.ok);
+	CHECK_EQ(typeOfMainLastExpr("int main() { int m[3][4]; m[1]; }"), "int[4]");
+}
+
+TEST(sema, a_pointer_can_be_initialized_from_an_array)
+{
+	CheckOutcome outcome = checkSource("int main() { int arr[4]; int* p = arr; return *p; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, initializing_an_array_with_a_scalar_expression_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int arr[3] = 5; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+}
+
+TEST(sema, a_function_returning_pointer_can_return_a_decayed_local_array)
+{
+	// No escape/lifetime analysis in this subset (§0/§14 of the architecture plan) - only that the
+	// TYPES agree, same as every other pointer-returning function.
+	CheckOutcome outcome = checkSource("int* f() { int arr[4]; return arr; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, struct_field_that_is_an_array_is_indexable_through_the_real_parser)
+{
+	// Same shape as array_of_self_by_value_is_caught_through_the_array_element_type above, but built
+	// through ordinary source text now that the parser has array-declarator support (parser.cpp's
+	// parseArrayDeclaratorSuffix()) instead of constructing the StructDecl/Type by hand.
+	CheckOutcome outcome = checkSource(
+		"struct S { int coords[3]; }; int main() { struct S s; s.coords[0] = 1; return s.coords[0]; }");
+	CHECK(outcome.ok);
 }
 
 // ---- error-recovery type annotations (regression: a failed type check must fall back to int, ---

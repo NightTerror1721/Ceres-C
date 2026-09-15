@@ -165,6 +165,13 @@ namespace ceresc::sema
 		return false;
 	}
 
+	const Type* Sema::decayArray(const Type* type) noexcept
+	{
+		if (!type || !type->isArray())
+			return type;
+		return Type::makePointer(_arena, type->arrayElementType());
+	}
+
 	const Type* Sema::integerPromote(const Type* type) noexcept
 	{
 		if (!type)
@@ -436,11 +443,16 @@ namespace ceresc::sema
 			usize checkCount = std::min(args.size(), params.size());
 			for (usize i = 0; i < checkCount; ++i)
 			{
-				const Type* argType = checkExpr(args[i]);
+				const Type* argType = decayArray(checkExpr(args[i]));
 				if (!isAssignable(params[i].type, argType))
 				{
 					_diagnostics.error(args[i]->location(), "passing '{}' to parameter of incompatible type '{}'",
 						typeName(argType), typeName(params[i].type));
+				}
+				else if (isArithmeticType(argType) && isArithmeticType(params[i].type) &&
+					(argType->isFloat() != params[i].type->isFloat()))
+				{
+					_diagnostics.error(args[i]->location(), "implicit conversion between integer and float call arguments is not supported");
 				}
 			}
 			for (usize i = checkCount; i < args.size(); ++i)
@@ -461,6 +473,7 @@ namespace ceresc::sema
 	void Sema::visit(ast::UnaryExpr& node)
 	{
 		const Type* operandType = checkExpr(node.operand());
+		const Type* decayedOperandType = decayArray(operandType);
 		const Type* resultType = errorRecoveryType();
 
 		switch (node.op())
@@ -486,7 +499,7 @@ namespace ceresc::sema
 				break;
 
 			case UnaryOp::LogicalNot:
-				if (!isScalarType(operandType))
+				if (!isScalarType(decayedOperandType))
 					_diagnostics.error(node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
 				resultType = &Type::Bool;
 				break;
@@ -516,8 +529,12 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::BinaryExpr& node)
 	{
-		const Type* lhsType = checkExpr(node.lhs());
-		const Type* rhsType = checkExpr(node.rhs());
+		// Decayed once, here, for every operator below: `arr + 1`, `arr == other`, and so on all see
+		// arr as a Pointer, matching real C - see decayArray()'s header comment. The node itself
+		// keeps annotating node.lhs()/node.rhs() with their own real (undecayed) types; only this
+		// local copy used for operator validity/result-type computation is decayed.
+		const Type* lhsType = decayArray(checkExpr(node.lhs()));
+		const Type* rhsType = decayArray(checkExpr(node.rhs()));
 		const Type* resultType = errorRecoveryType();
 
 		// Every branch below only reassigns `resultType` to something derived from lhsType/rhsType
@@ -604,7 +621,7 @@ namespace ceresc::sema
 	void Sema::visit(ast::AssignExpr& node)
 	{
 		const Type* targetType = checkExpr(node.target());
-		const Type* valueType = checkExpr(node.value());
+		const Type* valueType = decayArray(checkExpr(node.value()));
 
 		if (!isLValue(node.target()))
 			_diagnostics.error(node.location(), "expression is not assignable");
@@ -705,9 +722,9 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::TernaryExpr& node)
 	{
-		const Type* condType = checkExpr(node.cond());
-		const Type* thenType = checkExpr(node.thenExpr());
-		const Type* elseType = checkExpr(node.elseExpr());
+		const Type* condType = decayArray(checkExpr(node.cond()));
+		const Type* thenType = decayArray(checkExpr(node.thenExpr()));
+		const Type* elseType = decayArray(checkExpr(node.elseExpr()));
 
 		if (!isScalarType(condType))
 			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
@@ -749,7 +766,7 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::IfStmt& node)
 	{
-		const Type* condType = checkExpr(node.cond());
+		const Type* condType = decayArray(checkExpr(node.cond()));
 		if (!isScalarType(condType))
 			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 
@@ -759,7 +776,7 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::WhileStmt& node)
 	{
-		const Type* condType = checkExpr(node.cond());
+		const Type* condType = decayArray(checkExpr(node.cond()));
 		if (!isScalarType(condType))
 			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 
@@ -774,7 +791,7 @@ namespace ceresc::sema
 		checkStmt(node.body());
 		--_loopDepth;
 
-		const Type* condType = checkExpr(node.cond());
+		const Type* condType = decayArray(checkExpr(node.cond()));
 		if (!isScalarType(condType))
 			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 	}
@@ -786,7 +803,7 @@ namespace ceresc::sema
 
 		if (node.cond())
 		{
-			const Type* condType = checkExpr(node.cond());
+			const Type* condType = decayArray(checkExpr(node.cond()));
 			if (!isScalarType(condType))
 				_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 		}
@@ -804,7 +821,7 @@ namespace ceresc::sema
 
 		if (node.value())
 		{
-			const Type* valueType = checkExpr(node.value());
+			const Type* valueType = decayArray(checkExpr(node.value()));
 			if (returnType->isVoid())
 				_diagnostics.error(node.location(), "void function should not return a value");
 			else if (!isAssignable(returnType, valueType))
@@ -914,7 +931,7 @@ namespace ceresc::sema
 
 		if (node.initializer())
 		{
-			const Type* initType = checkExpr(node.initializer());
+			const Type* initType = decayArray(checkExpr(node.initializer()));
 			if (!isAssignable(node.type(), initType))
 			{
 				_diagnostics.error(node.location(), "initializing '{}' with an expression of incompatible type '{}'",

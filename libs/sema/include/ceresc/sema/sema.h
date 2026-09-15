@@ -163,6 +163,15 @@ namespace ceresc::sema
 		// scope - see sema.cpp.
 		bool isLValue(const ast::Expr* expr);
 		static bool isAssignable(const ast::Type* target, const ast::Type* source) noexcept;
+		// Array-to-pointer decay (real C's rule, see §8/§14 of the architecture plan): wherever an
+		// array's VALUE is used - a function argument, an initializer, the right side of an
+		// assignment, an operand of pointer arithmetic, a return value - it is really the address of
+		// its first element, not its own Array type. `sizeof` and unary `&` are the two contexts a
+		// real array does NOT decay in; both already read the operand's Type directly instead of
+		// going through isAssignable()/a BinaryExpr's operand types, so neither calls this. Not
+		// static (unlike isAssignable() itself): building the decayed Pointer type needs the same
+		// Arena every other compound Type in this file is allocated from.
+		const ast::Type* decayArray(const ast::Type* type) noexcept;
 		static const ast::Type* integerPromote(const ast::Type* type) noexcept;
 		static const ast::Type* commonArithmeticType(const ast::Type* lhs, const ast::Type* rhs) noexcept;
 	};

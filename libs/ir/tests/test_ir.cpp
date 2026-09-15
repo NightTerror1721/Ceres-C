@@ -742,6 +742,188 @@ TEST(ir, storing_through_a_dereferenced_array_writes_to_the_arrays_own_address)
 		"}\n");
 }
 
+// ---- array declarators end-to-end (now that libs/parser can actually produce them) --------------
+
+TEST(ir, array_decays_to_its_frame_address_when_passed_as_a_call_argument)
+{
+	std::string text = functionIr("void f(int* p); int main() { int arr[4]; f(arr); return 0; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  param %0\n"
+		"  call f, 1\n"
+		"  %1 = const 0\n"
+		"  ret %1\n"
+		"}\n");
+}
+
+TEST(ir, indexing_a_local_array_scales_the_index_by_the_element_size_and_loads)
+{
+	std::string text = functionIr("int main() { int arr[4]; return arr[2]; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = const 2\n"
+		"  %2 = const 4\n"
+		"  %3 = mul.u %1, %2\n"
+		"  %4 = add.u %0, %3\n"
+		"  %5 = load.word [%4]\n"
+		"  ret %5\n"
+		"}\n");
+}
+
+TEST(ir, two_dimensional_array_indexing_computes_the_row_address_before_the_column_offset)
+{
+	// `m[1][2]` on int m[3][4]: the outer index scales by the ROW size (4 ints = 16 bytes), the
+	// inner one by the element size (4 bytes) - not the same constant twice.
+	std::string text = functionIr("int main() { int m[3][4]; return m[1][2]; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = const 1\n"
+		"  %2 = const 16\n"
+		"  %3 = mul.u %1, %2\n"
+		"  %4 = add.u %0, %3\n"
+		"  %5 = const 2\n"
+		"  %6 = const 4\n"
+		"  %7 = mul.u %5, %6\n"
+		"  %8 = add.u %4, %7\n"
+		"  %9 = load.word [%8]\n"
+		"  ret %9\n"
+		"}\n");
+}
+
+TEST(ir, pointer_arithmetic_on_a_decayed_array_scales_by_the_element_size)
+{
+	// Regression: lowerArithmetic() used to check ONLY isPointer(), so `arr + 1` on an
+	// undecayed-at-the-node-level array operand (sema annotates node.lhs() with its real Array
+	// type, only decaying a local copy for its own checks - see Sema::decayArray()) silently fell
+	// through to plain integer addition, skipping the *4 element-size scaling entirely.
+	std::string text = functionIr("int main() { int arr[4]; int* p = arr + 1; return *p; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=2) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = const 1\n"
+		"  %2 = const 4\n"
+		"  %3 = mul.u %1, %2\n"
+		"  %4 = add.u %0, %3\n"
+		"  %5 = &local 1\n"
+		"  store.word [%5], %4\n"
+		"  %6 = &local 1\n"
+		"  %7 = load.word [%6]\n"
+		"  %8 = load.word [%7]\n"
+		"  ret %8\n"
+		"}\n");
+}
+
+// ---- float support (IrBinOp/IrUnOp/IrCmp/IrLoad/IrStore/IrCall/IrReturn's isFloat, plus the real
+// ---- IntToFloat/FloatToInt conversion ops CastExpr/mixed arithmetic now emit) -------------------
+
+TEST(ir, float_arithmetic_uses_the_float_binop_form)
+{
+	std::string text = functionIr("float main() { float a; float b; return a + b; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=2) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word.f [%0]\n"
+		"  %2 = &local 1\n"
+		"  %3 = load.word.f [%2]\n"
+		"  %4 = add.f.u %1, %3\n"
+		"  ret.f %4\n"
+		"}\n");
+}
+
+TEST(ir, mixed_int_and_float_arithmetic_converts_the_int_operand_first)
+{
+	// Sema unifies `int + float` onto float without inserting a cast node (commonArithmeticType(),
+	// sema.cpp) - this is the regression that used to compute `fadd` directly on the int's raw bit
+	// pattern instead of its numeric value. See IrBuilder::toFloatIfNeeded()'s header comment.
+	std::string text = functionIr("float main() { int a; float b; return a + b; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=2) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word [%0]\n"
+		"  %2 = &local 1\n"
+		"  %3 = load.word.f [%2]\n"
+		"  %4 = itof %1\n"
+		"  %5 = add.f.u %4, %3\n"
+		"  ret.f %5\n"
+		"}\n");
+}
+
+TEST(ir, float_comparison_used_as_a_condition_is_marked_float_and_unsigned)
+{
+	// `ifXX` on a float pair must read through the UNSIGNED branch family no matter the mathematical
+	// sign of the comparison - FCMP puts `fs < ft` directly in Carry (05-Instruction-Set.md) - see
+	// isUnsignedComparison()'s isFloat case.
+	std::string text = functionIr("int main() { float a; float b; if (a < b) return 1; return 0; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=2) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word.f [%0]\n"
+		"  %2 = &local 1\n"
+		"  %3 = load.word.f [%2]\n"
+		"  %4 = cmp.lt.f.u %1, %3\n"
+		"  %5 = const 0\n"
+		"  br.ne %4, %5, L1, L2\n"
+		"L1:\n"
+		"  %6 = const 1\n"
+		"  ret %6\n"
+		"L2:\n"
+		"  %7 = const 0\n"
+		"  ret %7\n"
+		"}\n");
+}
+
+TEST(ir, explicit_cast_from_int_to_float_emits_a_real_conversion)
+{
+	// Regression: visit(CastExpr&) used to just pass the operand through unconverted, silently
+	// reinterpreting an int's bit pattern as a float instead of actually converting its value.
+	std::string text = functionIr("float main() { int a; return (float)a; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word [%0]\n"
+		"  %2 = itof %1\n"
+		"  ret.f %2\n"
+		"}\n");
+}
+
+TEST(ir, explicit_cast_from_float_to_int_emits_a_real_conversion)
+{
+	std::string text = functionIr("int main() { float a; return (int)a; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word.f [%0]\n"
+		"  %2 = ftoi %1\n"
+		"  ret %2\n"
+		"}\n");
+}
+
+TEST(ir, float_function_parameter_and_call_argument_are_both_marked_float)
+{
+	std::string text = functionIr("float g(float x); float main() { float a; return g(a); }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word.f [%0]\n"
+		"  param.f %1\n"
+		"  %2 = call.f g, 1\n"
+		"  ret.f %2\n"
+		"}\n");
+}
+
 // ---- struct-by-value is diagnosed, never silently truncated ------------------------------------
 
 TEST(ir, assigning_one_struct_variable_to_another_is_diagnosed_not_silently_truncated)

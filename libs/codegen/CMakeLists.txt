@@ -4,4 +4,7 @@
 # of it is target-agnostic.
 
 ceresc_add_library(codegen DEPENDS ir sema support)
-ceresc_add_tests(codegen)
+# lexer+parser are test-only (see ceresc_add_tests()'s own note): codegen's tests build their
+# fixture programs by parsing and type-checking source text, but the codegen library itself never
+# depends on either.
+ceresc_add_tests(codegen DEPENDS lexer parser)

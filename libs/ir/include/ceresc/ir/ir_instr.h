@@ -64,7 +64,13 @@ namespace ceresc::ir
 	// rediscover.
 	enum class IrBinOp : u8 { Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Sar };
 
-	enum class IrUnOp : u8 { Neg, Not, LogicalNot };
+	// IntToFloat/FloatToInt exist because casting across the int/float line is a real runtime
+	// operation (itof/iitof/ftoi/ftoii, §10) - unlike an int-to-int width change, which this project
+	// realizes for free through the memSize a later Load/Store picks (see IrBuilder::visit(CastExpr&),
+	// ir_builder.cpp), there is no bit-pattern trick that reinterprets an i32 as an f32. IrBuilder
+	// emits one of these two whenever a CastExpr's operand type and result type disagree on
+	// isFloat(); codegen (Fase 6+) is what picks the exact mnemonic from IrUnOpPayload::isUnsigned.
+	enum class IrUnOp : u8 { Neg, Not, LogicalNot, IntToFloat, FloatToInt };
 
 	// Shared by Cmp and CondJump - "exactamente uno de los seis predicados con/sin signo" (§9).
 	enum class IrCmpPredicate : u8 { Eq, Ne, Lt, Le, Gt, Ge };
@@ -103,6 +109,11 @@ namespace ceresc::ir
 		IrValue result;
 		IrBinOp op = IrBinOp::Add;
 		bool isUnsigned = false; // only meaningful for Mul/Div/Mod - see §10's IR->CASM mapping table
+		bool isFloat = false;    // selects the F-prefixed opcode (FADD/FSUB/FMUL/FDIV, §10) - only
+		                         // ever true for Add/Sub/Mul/Div: sema requires integer operands for
+		                         // Mod/And/Or/Xor/Shl/Shr (sema.cpp's isIntegerType() checks), so a
+		                         // float operand can never reach this opcode with isFloat and one of
+		                         // those combined
 		IrValue lhs, rhs;
 	};
 
@@ -110,6 +121,11 @@ namespace ceresc::ir
 	{
 		IrValue result;
 		IrUnOp op = IrUnOp::Neg;
+		bool isFloat = false;    // Neg only: selects FNEG over `neg` (imul rd, rs, -1, §10) - Not/
+		                         // LogicalNot never see a float operand (sema requires an integer/
+		                         // scalar one)
+		bool isUnsigned = false; // IntToFloat/FloatToInt only: the INTEGER side's signedness - which
+		                         // real opcode to pick (itof/iitof, ftoi/ftoii, §10)
 		IrValue operand;
 	};
 
@@ -118,12 +134,18 @@ namespace ceresc::ir
 		IrValue result;
 		IrCmpPredicate predicate = IrCmpPredicate::Eq;
 		bool isUnsigned = false; // only meaningful for Lt/Le/Gt/Ge - Eq/Ne are identical either way
+		bool isFloat = false;    // selects FCMP - see §10's note that FCMP already leaves the result
+		                         // readable through the UNSIGNED branch family (Carry from `fs < ft`),
+		                         // so isFloat and isUnsigned are independent bits, not one implying
+		                         // the other
 		IrValue lhs, rhs;
 	};
 
 	struct IrCopyPayload
 	{
 		IrValue result;
+		bool isFloat = false; // selects `mov fd, fs` over `mov rd, rs` - see visit(TernaryExpr&),
+		                      // the only place this opcode is emitted (ir_builder.cpp)
 		IrValue source;
 	};
 
@@ -143,25 +165,37 @@ namespace ceresc::ir
 	{
 		IrValue result;
 		IrMemSize size = IrMemSize::Word;
+		bool isFloat = false; // selects `ldr fd, [...]` (always Word-sized, §10's FLDR) over the
+		                      // integer load family chosen by `size`
 		IrValue address;
 	};
 
 	struct IrStorePayload
 	{
 		IrMemSize size = IrMemSize::Word;
+		bool isFloat = false; // selects `str [...], fs` (FSTR) over the integer store family
 		IrValue address;
 		IrValue value;
 	};
 
 	struct IrParamPayload
 	{
-		IrValue value; // queues one outgoing argument before the next Call - see §9
+		IrValue value;   // queues one outgoing argument before the next Call - see §9
+		bool isFloat = false; // the argument expression's OWN type - codegen routes it through
+		                       // f0-f3/the outgoing float slots instead of r0-r3 when set. Reflects
+		                       // the caller's argument, not the callee's declared parameter type:
+		                       // IrBuilder does not resolve a callee's signature (it looks up a Call's
+		                       // target by name only, see the header comment on IrBuilder's contract),
+		                       // so - unlike a plain assignment or initializer - a call passing a
+		                       // literal of the "wrong" arithmetic family to a scalar parameter is not
+		                       // converted here; write the matching literal/variable type at the call site.
 	};
 
 	struct IrCallPayload
 	{
 		IrValue result;   // only meaningful when hasResult is true (the callee's return type is not void)
 		bool hasResult = false;
+		bool isFloat = false; // meaningful only when hasResult: the result comes back in f0/ret0 (§10)
 		std::string_view callee;
 		u32 argCount = 0; // number of Params queued since the previous Call - see §9
 	};
@@ -175,6 +209,7 @@ namespace ceresc::ir
 	{
 		IrCmpPredicate predicate = IrCmpPredicate::Eq;
 		bool isUnsigned = false;
+		bool isFloat = false;
 		IrValue lhs, rhs;
 		BasicBlock* trueTarget = nullptr;
 		BasicBlock* falseTarget = nullptr;
@@ -183,6 +218,9 @@ namespace ceresc::ir
 	struct IrReturnPayload
 	{
 		bool hasValue = false;
+		bool isFloat = false; // meaningful only when hasValue: `ret0`/f0 (§10) - the function's own
+		                      // declared return type, not necessarily the return expression's raw
+		                      // type (IrBuilder converts a mismatched one first, see visit(ReturnStmt&))
 		IrValue value;
 	};
 

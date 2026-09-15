@@ -53,13 +53,25 @@ namespace ceresc::ir
 		void append(IrInstr* instr) { _instrs.push_back(instr); }
 	};
 
+	// A local frame slot's byte size and register bank - everything libs/codegen's frame_layout
+	// needs to reserve and align the slot (Type::sizeInBytes(), libs/ast) without re-deriving it by
+	// re-walking the FunctionDecl/VarDecl chain in a second, separate traversal that would have to
+	// stay in lockstep with IrBuilder's own slot assignment order by construction alone. Recorded
+	// once, at the same point IrBuilder already has the AST's resolved Type in hand (reserveParamSlots()/
+	// newLocalSlot() below) - see the architecture plan, §10.
+	struct IrLocalSlot
+	{
+		u32 sizeInBytes = 4;
+		bool isFloat = false;
+	};
+
 	class IrFunction
 	{
 	private:
 		std::string_view _name;
 		const ast::Type* _returnType = nullptr;
 		u32 _paramCount = 0;
-		u32 _localCount = 0; // includes params - see newLocalSlot()/reserveParamSlots()
+		std::vector<IrLocalSlot> _localSlots; // includes params, at indices [0, paramCount) - see newLocalSlot()/reserveParamSlots()
 		std::vector<std::unique_ptr<BasicBlock>> _blocks;
 		u32 _nextTempId = 0;
 
@@ -78,7 +90,8 @@ namespace ceresc::ir
 		std::string_view name() const noexcept { return _name; }
 		const ast::Type* returnType() const noexcept { return _returnType; }
 		u32 paramCount() const noexcept { return _paramCount; }
-		u32 localCount() const noexcept { return _localCount; }
+		u32 localCount() const noexcept { return static_cast<u32>(_localSlots.size()); }
+		std::span<const IrLocalSlot> localSlots() const noexcept { return _localSlots; }
 		std::span<const std::unique_ptr<BasicBlock>> blocks() const noexcept { return _blocks; }
 
 		BasicBlock& createBlock()
@@ -88,15 +101,16 @@ namespace ceresc::ir
 		}
 
 		IrValue newTemp() noexcept { return IrValue{ _nextTempId++ }; }
+		u32 tempCount() const noexcept { return _nextTempId; }
 
 		// Called exactly once, right after construction, before any real local's slot is reserved -
-		// reserves frame slots [0, paramCount) for the function's own parameters, in declaration
+		// reserves frame slots [0, params.size()) for the function's own parameters, in declaration
 		// order, so IrBuilder can map a Param to a slot by its plain position instead of tracking one
 		// separately.
-		void reserveParamSlots(u32 paramCount) noexcept
+		void reserveParamSlots(std::span<const IrLocalSlot> params)
 		{
-			_paramCount = paramCount;
-			_localCount = paramCount;
+			_paramCount = static_cast<u32>(params.size());
+			_localSlots.assign(params.begin(), params.end());
 		}
 
 		// Reserves the next local frame slot (see ir_instr.h's IrFrameAddrPayload::localIndex) and
@@ -105,7 +119,11 @@ namespace ceresc::ir
 		// (e.g. two `{ int x; }` blocks that are never live at the same time): this phase does no
 		// stack-slot coalescing, exactly the same "simplest thing that works" call §10 makes for
 		// register allocation.
-		u32 newLocalSlot() noexcept { return _localCount++; }
+		u32 newLocalSlot(u32 sizeInBytes, bool isFloat)
+		{
+			_localSlots.push_back(IrLocalSlot{ sizeInBytes, isFloat });
+			return static_cast<u32>(_localSlots.size() - 1);
+		}
 	};
 
 	// A string literal's synthesized global label and the interned value it names - see

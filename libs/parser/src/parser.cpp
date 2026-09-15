@@ -1,6 +1,7 @@
 #include <ceresc/parser/parser.h>
 
 #include <memory>
+#include <optional>
 
 namespace ceresc::parser
 {
@@ -562,6 +563,8 @@ namespace ceresc::parser
 				}
 				std::string_view fieldName = _current.lexeme();
 				advance();
+				if (check(TokenKind::LBracket))
+					fieldType = parseArrayDeclaratorSuffix(fieldType, /*isParameter=*/false);
 				if (!expect(TokenKind::Semicolon, "';'"))
 				{
 					synchronizeStatement();
@@ -982,6 +985,9 @@ namespace ceresc::parser
 		std::string_view name = _current.lexeme();
 		advance();
 
+		if (check(TokenKind::LBracket))
+			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
+
 		Decl* decl = finishVarDecl(location, name, type);
 		if (!decl)
 			return nullptr;
@@ -1054,6 +1060,9 @@ namespace ceresc::parser
 
 		if (check(TokenKind::LParen))
 			return finishFunctionDecl(location, name, type);
+
+		if (check(TokenKind::LBracket))
+			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
 		return finishVarDecl(location, name, type);
 	}
 
@@ -1074,6 +1083,9 @@ namespace ceresc::parser
 		std::string_view name = _current.lexeme();
 		advance();
 
+		if (check(TokenKind::LBracket))
+			underlyingType = parseArrayDeclaratorSuffix(underlyingType, /*isParameter=*/false);
+
 		if (!expect(TokenKind::Semicolon, "';'"))
 			return nullptr;
 
@@ -1084,7 +1096,25 @@ namespace ceresc::parser
 	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type)
 	{
 		Expr* initializer = nullptr;
-		if (match(TokenKind::Equal))
+		if (check(TokenKind::Equal) && type && type->isArray() && _next.is(TokenKind::LBrace))
+		{
+			// `int arr[3] = { 1, 2, 3 };` - brace initializer lists aren't implemented in this
+			// version (the architecture plan's §3 only promises fixed-size arrays, not their
+			// initializer-list syntax). Reported explicitly and skipped by brace depth instead of
+			// falling into parseAssignment()/parsePrimary(), which would report a cascade of
+			// "expected expression" diagnostics for '{' and every comma inside it.
+			_diagnostics.error(_current.location(), "array initializer lists ('{{...}}') are not implemented in this version");
+			advance(); // '='
+			advance(); // '{'
+			int depth = 1;
+			while (depth > 0 && !isAtEnd())
+			{
+				if (check(TokenKind::LBrace)) ++depth;
+				else if (check(TokenKind::RBrace)) --depth;
+				advance();
+			}
+		}
+		else if (match(TokenKind::Equal))
 		{
 			initializer = parseAssignment();
 			if (!initializer)
@@ -1148,10 +1178,86 @@ namespace ceresc::parser
 			std::string_view name = _current.lexeme();
 			advance();
 
+			if (check(TokenKind::LBracket))
+				type = parseArrayDeclaratorSuffix(type, /*isParameter=*/true);
+			else if (type->isArray())
+				type = Type::makePointer(_arena, type->arrayElementType());
+
 			outParams.push_back(Param{ type, name, location });
 		} while (match(TokenKind::Comma));
 
 		return true;
+	}
+
+	// ---- array declarator suffix (see parser.h's header comment on this method for the parameter-
+	// decay rule and why every dimension outside a parameter declarator must be an INT_LITERAL) ------
+
+	const Type* Parser::parseArrayDeclaratorSuffix(const Type* elementType, bool isParameter)
+	{
+		SourceLocation location = _current.location(); // the first '[' - already checked by the caller
+
+		std::vector<std::optional<u32>> dims;
+		bool first = true;
+		while (match(TokenKind::LBracket))
+		{
+			bool outerParamDim = isParameter && first;
+			if (check(TokenKind::RBracket))
+			{
+				if (!outerParamDim)
+					_diagnostics.error(_current.location(),
+						"array size is required here (this version cannot infer it from an initializer)");
+				dims.push_back(std::nullopt);
+			}
+			else if (!check(TokenKind::LiteralInt))
+			{
+				_diagnostics.error(_current.location(), "expected an integer constant for the array size but found '{}'",
+					_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
+				dims.push_back(std::nullopt);
+				// Resync to the closing ']' so the declarator doesn't lose every dimension after this
+				// one just because a single size expression wasn't a plain integer literal.
+				while (!check(TokenKind::RBracket) && !check(TokenKind::Semicolon) && !check(TokenKind::Comma) && !isAtEnd())
+					advance();
+				if (!check(TokenKind::RBracket))
+				{
+					first = false;
+					continue;
+				}
+			}
+			else
+			{
+				SourceLocation sizeLocation = _current.location();
+				u64 rawSize = _current.integralValue();
+				advance();
+				if (!outerParamDim && (rawSize == 0 || rawSize > 0xFFFFFFFFull))
+				{
+					_diagnostics.error(sizeLocation, "array size must be a positive integer that fits in 32 bits");
+					dims.push_back(std::nullopt);
+				}
+				else
+				{
+					dims.push_back(static_cast<u32>(rawSize));
+				}
+			}
+			expect(TokenKind::RBracket, "']'");
+			first = false;
+		}
+
+		if (elementType->isVoid())
+			_diagnostics.error(location, "array has invalid element type 'void'");
+
+		// Parameter decay (real C): the OUTERMOST dimension of a parameter's array declarator is not
+		// part of the type at all - it becomes a pointer, and its size (even if given) is ignored -
+		// see parser.h's header comment. Build inner-to-outer as usual, but stop one short of the
+		// outermost dimension when decaying, then wrap the result in a pointer instead of an array.
+		usize decayedOuterDims = (isParameter && !dims.empty()) ? 1 : 0;
+		const Type* type = elementType;
+		for (usize i = dims.size(); i > decayedOuterDims; --i)
+			type = Type::makeArray(_arena, type, dims[i - 1].value_or(1)); // value_or: already diagnosed above
+
+		if (isParameter && !dims.empty())
+			type = Type::makePointer(_arena, type);
+
+		return type;
 	}
 
 	// ---- static tables --------------------------------------------------------------------------
