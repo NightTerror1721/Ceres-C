@@ -9,7 +9,15 @@
 
 // Expr hierarchy: IntLiteralExpr, FloatLiteralExpr, CharLiteralExpr, BoolLiteralExpr,
 // StringLiteralExpr, NameExpr, CallExpr, UnaryExpr, BinaryExpr, AssignExpr, IndexExpr, MemberExpr,
-// CastExpr, SizeofExpr.
+// CastExpr, SizeofExpr, TernaryExpr.
+//
+// TernaryExpr (`cond ? then : else`) sits between assignment and the binary table in the
+// precedence chain, right-associative like assignment: libs/parser's parseAssignment() calls
+// parseTernary() for its left-hand side instead of jumping straight to the binary levels, and
+// parseTernary() itself parses `then` as a full assignment-expression and recurses into itself for
+// `else` (so `a ? b : c ? d : e` groups as `a ? b : (c ? d : e)`). It is its own node kind, not
+// desugared into anything else, for the same reason AssignExpr is its own node and not a BinaryExpr
+// with a fake operator: sema and codegen need to see the three-way branch directly.
 //
 // MemberExpr covers both `.` and `->` as two genuinely distinct forms with real C semantics (the
 // parser must not desugar `a->b` into `(*a).b`) - see token.h's Dot/Arrow. It is one class with an
@@ -326,4 +334,24 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<SizeofExpr>, "SizeofExpr must be trivially destructible (Arena-allocated)");
+
+	class TernaryExpr final : public Expr
+	{
+	private:
+		Expr* _cond;
+		Expr* _then;
+		Expr* _else;
+
+	public:
+		TernaryExpr(support::SourceLocation location, Expr* cond, Expr* thenExpr, Expr* elseExpr) noexcept :
+			Expr(location), _cond(cond), _then(thenExpr), _else(elseExpr)
+		{}
+
+	public:
+		Expr* cond() const noexcept { return _cond; }
+		Expr* thenExpr() const noexcept { return _then; }
+		Expr* elseExpr() const noexcept { return _else; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<TernaryExpr>, "TernaryExpr must be trivially destructible (Arena-allocated)");
 }

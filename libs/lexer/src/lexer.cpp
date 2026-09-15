@@ -334,6 +334,7 @@ namespace ceresc::lexer
 			case ',': return Token::makeComma(loc);
 			case ';': return Token::makeSemicolon(loc);
 			case ':': return Token::makeColon(loc);
+			case '?': return Token::makeQuestion(loc);
 			case '~': return Token::makeTilde(loc);
 			case '.': return Token::makeDot(loc);
 

@@ -28,6 +28,46 @@ namespace
 		ast::AstPrinter printer;
 		return printer.print(expr);
 	}
+
+	// Same idea, for a single statement / a single external declaration / a whole translation unit.
+	std::string printStmt(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		Parser parser(lexer, arena, diagnostics);
+
+		ast::Stmt* stmt = parser.parseStatement();
+		ast::AstPrinter printer;
+		return printer.print(stmt);
+	}
+
+	std::string printDecl(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		Parser parser(lexer, arena, diagnostics);
+
+		ast::Decl* decl = parser.parseExternalDecl();
+		ast::AstPrinter printer;
+		return printer.print(decl);
+	}
+
+	std::string printUnit(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		Parser parser(lexer, arena, diagnostics);
+
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+		ast::AstPrinter printer;
+		return unit ? printer.print(*unit) : std::string("<null>");
+	}
 }
 
 // ---- primary expressions -----------------------------------------------------------------------
@@ -91,6 +131,34 @@ TEST(parser, compound_assignment_operators)
 {
 	CHECK_EQ(printExpr("a += 1"), "(+= a 1)");
 	CHECK_EQ(printExpr("a <<= 1"), "(<<= a 1)");
+}
+
+// ---- ternary (right-associative, sits between assignment and the binary table) ------------------
+
+TEST(parser, ternary_expression)
+{
+	CHECK_EQ(printExpr("a ? b : c"), "(?: a b c)");
+}
+
+TEST(parser, ternary_condition_is_a_full_binary_expression)
+{
+	CHECK_EQ(printExpr("a || b ? c : d"), "(?: (|| a b) c d)");
+}
+
+TEST(parser, ternary_chains_right_associatively)
+{
+	CHECK_EQ(printExpr("a ? b : c ? d : e"), "(?: a b (?: c d e))");
+}
+
+TEST(parser, ternary_branches_allow_assignment)
+{
+	CHECK_EQ(printExpr("a ? b = 1 : c"), "(?: a (= b 1) c)");
+}
+
+TEST(parser, ternary_sits_below_assignment)
+{
+	// The whole ternary is the right-hand side of the assignment, not the other way around.
+	CHECK_EQ(printExpr("a = b ? c : d"), "(= a (?: b c d))");
 }
 
 // ---- unary prefix (level 13, right-associative) --------------------------------------------
@@ -241,4 +309,380 @@ TEST(parser, garbage_input_terminates_and_reports_a_diagnostic)
 	ast::Expr* expr = parser.parseExpression();
 	CHECK(expr == nullptr);
 	CHECK(diagnostics.hasErrors());
+}
+
+// ---- statements (Fase 3) -------------------------------------------------------------------------
+
+TEST(parser, empty_and_expr_statements)
+{
+	CHECK_EQ(printStmt(";"), "(empty)");
+	CHECK_EQ(printStmt("x;"), "(expr-stmt x)");
+	CHECK_EQ(printStmt("f(1);"), "(expr-stmt (call f 1))");
+}
+
+TEST(parser, compound_statement)
+{
+	CHECK_EQ(printStmt("{ }"), "(block)");
+	CHECK_EQ(printStmt("{ x; y; }"), "(block (expr-stmt x) (expr-stmt y))");
+	CHECK_EQ(printStmt("{ { x; } }"), "(block (block (expr-stmt x)))");
+}
+
+TEST(parser, local_variable_declaration_statement)
+{
+	CHECK_EQ(printStmt("int x;"), "(decl-stmt (var x int <null>))");
+	CHECK_EQ(printStmt("int x = 5;"), "(decl-stmt (var x int 5))");
+}
+
+TEST(parser, if_statement_with_and_without_else)
+{
+	CHECK_EQ(printStmt("if (x) y;"), "(if x (expr-stmt y))");
+	CHECK_EQ(printStmt("if (x) y; else z;"), "(if x (expr-stmt y) (expr-stmt z))");
+}
+
+TEST(parser, while_statement)
+{
+	CHECK_EQ(printStmt("while (x) y;"), "(while x (expr-stmt y))");
+}
+
+TEST(parser, do_while_statement)
+{
+	CHECK_EQ(printStmt("do y; while (x);"), "(do-while (expr-stmt y) x)");
+}
+
+TEST(parser, for_statement_with_expression_init)
+{
+	CHECK_EQ(printStmt("for (i = 0; i < 10; i = i + 1) x;"),
+		"(for (expr-stmt (= i 0)) (< i 10) (= i (+ i 1)) (expr-stmt x))");
+}
+
+TEST(parser, for_statement_with_declaration_init)
+{
+	CHECK_EQ(printStmt("for (int i = 0; i < 10; i = i + 1) x;"),
+		"(for (decl-stmt (var i int 0)) (< i 10) (= i (+ i 1)) (expr-stmt x))");
+}
+
+TEST(parser, for_statement_with_all_clauses_empty)
+{
+	CHECK_EQ(printStmt("for (;;) x;"), "(for <null> <null> <null> (expr-stmt x))");
+}
+
+TEST(parser, return_statement_with_and_without_value)
+{
+	CHECK_EQ(printStmt("return;"), "(return <null>)");
+	CHECK_EQ(printStmt("return x + 1;"), "(return (+ x 1))");
+}
+
+TEST(parser, break_and_continue_statements)
+{
+	CHECK_EQ(printStmt("break;"), "(break)");
+	CHECK_EQ(printStmt("continue;"), "(continue)");
+}
+
+TEST(parser, dangling_else_binds_to_the_nearest_if)
+{
+	CHECK_EQ(printStmt("if (a) if (b) x; else y;"), "(if a (if b (expr-stmt x) (expr-stmt y)))");
+}
+
+// ---- declarations (Fase 3) -----------------------------------------------------------------------
+
+TEST(parser, global_variable_declaration)
+{
+	CHECK_EQ(printDecl("int x;"), "(var x int <null>)");
+	CHECK_EQ(printDecl("int x = 5;"), "(var x int 5)");
+}
+
+TEST(parser, function_prototype_has_no_body)
+{
+	CHECK_EQ(printDecl("int foo();"), "(func foo int (params) <null>)");
+}
+
+TEST(parser, function_definition_with_parameters)
+{
+	CHECK_EQ(printDecl("int foo(int x, float y) { return x; }"),
+		"(func foo int (params (int x) (float y)) (block (return x)))");
+}
+
+TEST(parser, function_with_void_parameter_list_means_no_parameters)
+{
+	CHECK_EQ(printDecl("void main(void) { }"), "(func main void (params) (block))");
+}
+
+TEST(parser, function_with_empty_parameter_list)
+{
+	CHECK_EQ(printDecl("void main() { }"), "(func main void (params) (block))");
+}
+
+// ---- translation unit (Fase 3) -------------------------------------------------------------------
+
+TEST(parser, translation_unit_with_multiple_declarations)
+{
+	CHECK_EQ(printUnit("int x; int foo() { return x; }"),
+		"(unit (var x int <null>) (func foo int (params) (block (return x))))");
+}
+
+TEST(parser, empty_translation_unit)
+{
+	CHECK_EQ(printUnit(""), "(unit)");
+}
+
+// ---- error recovery (Fase 3 scope: real panic-mode recovery, see parser.h's header comment) ------
+
+TEST(parser, a_broken_statement_inside_a_block_is_skipped_and_the_rest_still_parses)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("{ @ ; y; }", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::Stmt* stmt = parser.parseStatement();
+	ast::AstPrinter printer;
+	CHECK(stmt != nullptr);
+	CHECK_EQ(printer.print(*stmt), "(block (expr-stmt y))");
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, a_broken_declaration_at_top_level_is_skipped_and_the_rest_still_parses)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int x; @ int y;", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	ast::AstPrinter printer;
+	CHECK(unit != nullptr);
+	CHECK_EQ(printer.print(*unit), "(unit (var x int <null>) (var y int <null>))");
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, a_stray_closing_brace_at_top_level_does_not_hang)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("} int x;", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	ast::AstPrinter printer;
+	CHECK(unit != nullptr);
+	CHECK_EQ(printer.print(*unit), "(unit (var x int <null>))");
+	CHECK(diagnostics.hasErrors());
+}
+
+// ---- struct (Fase 3 continued) -------------------------------------------------------------------
+
+TEST(parser, struct_tag_declaration_with_no_variable)
+{
+	CHECK_EQ(printDecl("struct Point { int x; int y; };"), "(struct Point (fields (int x) (int y)))");
+}
+
+TEST(parser, struct_defined_and_instantiated_in_one_declaration)
+{
+	CHECK_EQ(printDecl("struct Point { int x; int y; } p;"), "(var p struct Point <null>)");
+}
+
+TEST(parser, struct_used_as_a_variable_type_after_its_own_declaration)
+{
+	CHECK_EQ(printUnit("struct Point { int x; int y; }; struct Point p;"),
+		"(unit (struct Point (fields (int x) (int y))) (var p struct Point <null>))");
+}
+
+TEST(parser, struct_forward_declaration_then_pointer_use)
+{
+	CHECK_EQ(printUnit("struct Foo; struct Foo* make();"),
+		"(unit (struct Foo <incomplete>) (func make struct Foo* (params) <null>))");
+}
+
+TEST(parser, self_referential_struct_via_pointer)
+{
+	CHECK_EQ(printDecl("struct Node { int value; struct Node* next; };"),
+		"(struct Node (fields (int value) (struct Node* next)))");
+}
+
+TEST(parser, struct_redefinition_reports_a_diagnostic_but_keeps_the_latest_fields)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("struct Foo { int a; }; struct Foo { int b; };", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	ast::AstPrinter printer;
+	CHECK(unit != nullptr);
+	// Both entries alias the SAME StructDecl (the tag table caches by pointer identity), so both
+	// print whatever its final state ended up being - this is a documented consequence of that
+	// design (see decl.h/parser.h), not a bug.
+	CHECK_EQ(printer.print(*unit), "(unit (struct Foo (fields (int b))) (struct Foo (fields (int b))))");
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, local_struct_declaration_and_instantiation_as_statements)
+{
+	CHECK_EQ(printStmt("struct Point { int x; };"), "(decl-stmt (struct Point (fields (int x))))");
+	CHECK_EQ(printStmt("struct Point { int x; int y; } p;"), "(decl-stmt (var p struct Point <null>))");
+}
+
+TEST(parser, a_broken_field_inside_a_struct_body_is_skipped)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("struct Foo { @ int y; int z; };", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::Decl* decl = parser.parseExternalDecl();
+	ast::AstPrinter printer;
+	CHECK(decl != nullptr);
+	CHECK_EQ(printer.print(*decl), "(struct Foo (fields (int z)))");
+	CHECK(diagnostics.hasErrors());
+}
+
+// ---- enum (Fase 3 continued) --------------------------------------------------------------------
+
+TEST(parser, enum_tag_declaration_with_no_variable)
+{
+	CHECK_EQ(printDecl("enum Color { RED, GREEN, BLUE };"), "(enum Color (enumerators (RED) (GREEN) (BLUE)))");
+}
+
+TEST(parser, enum_enumerators_can_have_explicit_values)
+{
+	CHECK_EQ(printDecl("enum E { A, B = 5, C };"), "(enum E (enumerators (A) (B 5) (C)))");
+}
+
+TEST(parser, enum_allows_a_trailing_comma)
+{
+	CHECK_EQ(printDecl("enum Color { RED, GREEN, };"), "(enum Color (enumerators (RED) (GREEN)))");
+}
+
+TEST(parser, enum_defined_and_instantiated_in_one_declaration)
+{
+	CHECK_EQ(printDecl("enum Color { RED, GREEN } c;"), "(var c enum Color <null>)");
+}
+
+TEST(parser, enum_forward_declaration)
+{
+	CHECK_EQ(printDecl("enum Status;"), "(enum Status <incomplete>)");
+}
+
+TEST(parser, enum_redefinition_reports_a_diagnostic)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("enum Color { RED }; enum Color { BLUE };", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	CHECK(diagnostics.hasErrors());
+}
+
+// ---- typedef (Fase 3 continued) -----------------------------------------------------------------
+
+TEST(parser, typedef_declaration)
+{
+	CHECK_EQ(printDecl("typedef int MyInt;"), "(typedef MyInt int)");
+}
+
+TEST(parser, typedef_name_usable_as_a_type_afterward)
+{
+	CHECK_EQ(printUnit("typedef int MyInt; MyInt x;"), "(unit (typedef MyInt int) (var x int <null>))");
+}
+
+TEST(parser, typedef_of_a_pointer_type)
+{
+	CHECK_EQ(printUnit("typedef int* IntPtr; IntPtr p;"), "(unit (typedef IntPtr int*) (var p int* <null>))");
+}
+
+TEST(parser, typedef_of_a_struct_type)
+{
+	CHECK_EQ(printUnit("struct Point { int x; }; typedef struct Point PointT; PointT p;"),
+		"(unit (struct Point (fields (int x))) (typedef PointT struct Point) (var p struct Point <null>))");
+}
+
+TEST(parser, typedef_name_can_be_used_as_a_cast_target)
+{
+	CHECK_EQ(printUnit("typedef int MyInt; void f() { (MyInt)0; }"),
+		"(unit (typedef MyInt int) (func f void (params) (block (expr-stmt (cast int 0)))))");
+}
+
+TEST(parser, typedef_name_can_be_used_with_sizeof)
+{
+	CHECK_EQ(printUnit("typedef int MyInt; void f() { sizeof(MyInt); }"),
+		"(unit (typedef MyInt int) (func f void (params) (block (expr-stmt (sizeof int)))))");
+}
+
+TEST(parser, local_typedef_declaration_as_a_statement)
+{
+	CHECK_EQ(printStmt("typedef int MyInt;"), "(decl-stmt (typedef MyInt int))");
+}
+
+// ---- switch / case / default (Fase 3 continued) --------------------------------------------------
+
+TEST(parser, switch_with_case_and_default)
+{
+	CHECK_EQ(printStmt("switch (x) { case 1: y; break; default: z; }"),
+		"(switch x (block (case 1 (expr-stmt y)) (break) (default (expr-stmt z))))");
+}
+
+TEST(parser, chained_case_labels_nest_as_body_of_body)
+{
+	// case 1: case 2: y; break; - case 1 labels (case 2 labels y;), and break is a sibling
+	// statement in the enclosing block. This is what makes real C's fallthrough work: nothing
+	// special is built for it here, it just falls out of the tree shape.
+	CHECK_EQ(printStmt("switch (x) { case 1: case 2: y; break; }"),
+		"(switch x (block (case 1 (case 2 (expr-stmt y))) (break)))");
+}
+
+TEST(parser, switch_condition_and_body_can_be_arbitrary_expressions_and_statements)
+{
+	CHECK_EQ(printStmt("switch (a + b) x;"), "(switch (+ a b) (expr-stmt x))");
+}
+
+// ---- goto / labels (Fase 3 continued) ------------------------------------------------------------
+
+TEST(parser, goto_statement)
+{
+	CHECK_EQ(printStmt("goto end;"), "(goto end)");
+}
+
+TEST(parser, labeled_statement)
+{
+	CHECK_EQ(printStmt("end: x;"), "(label end (expr-stmt x))");
+}
+
+TEST(parser, goto_and_label_together_in_a_block)
+{
+	CHECK_EQ(printStmt("{ start: x; goto start; }"),
+		"(block (label start (expr-stmt x)) (goto start))");
+}
+
+TEST(parser, a_plain_identifier_statement_is_not_mistaken_for_a_label)
+{
+	CHECK_EQ(printStmt("x;"), "(expr-stmt x)");
+	CHECK_EQ(printStmt("f(1);"), "(expr-stmt (call f 1))");
+}
+
+// ---- integration: struct + typedef + switch in one program ---------------------------------------
+
+TEST(parser, struct_typedef_and_switch_work_together_in_one_program)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer(
+		"struct Point { int x; int y; };"
+		"typedef struct Point PointT;"
+		"int classify(PointT p) { switch (p.x) { case 0: return 0; default: return 1; } }",
+		testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	CHECK(!diagnostics.hasErrors());
+	CHECK_EQ(unit->decls().size(), (usize)3);
 }

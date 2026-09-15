@@ -1,5 +1,7 @@
 #include <ceresc/parser/parser.h>
 
+#include <memory>
+
 namespace ceresc::parser
 {
 	using support::SourceLocation;
@@ -59,6 +61,119 @@ namespace ceresc::parser
 		return std::span<Expr* const>(stored, args.size());
 	}
 
+	std::span<Stmt* const> Parser::copyStmtsToArena(const std::vector<Stmt*>& stmts) noexcept
+	{
+		if (stmts.empty())
+			return {};
+
+		void* memory = _arena.allocate(sizeof(Stmt*) * stmts.size(), alignof(Stmt*));
+		if (!memory)
+		{
+			_diagnostics.error(_current.location(), "out of memory allocating block statements");
+			return {};
+		}
+
+		Stmt** stored = static_cast<Stmt**>(memory);
+		for (usize i = 0; i < stmts.size(); ++i)
+			stored[i] = stmts[i];
+		return std::span<Stmt* const>(stored, stmts.size());
+	}
+
+	std::span<Decl* const> Parser::copyDeclsToArena(const std::vector<Decl*>& decls) noexcept
+	{
+		if (decls.empty())
+			return {};
+
+		void* memory = _arena.allocate(sizeof(Decl*) * decls.size(), alignof(Decl*));
+		if (!memory)
+		{
+			_diagnostics.error(_current.location(), "out of memory allocating top-level declarations");
+			return {};
+		}
+
+		Decl** stored = static_cast<Decl**>(memory);
+		for (usize i = 0; i < decls.size(); ++i)
+			stored[i] = decls[i];
+		return std::span<Decl* const>(stored, decls.size());
+	}
+
+	std::span<const Param> Parser::copyParamsToArena(const std::vector<Param>& params) noexcept
+	{
+		if (params.empty())
+			return {};
+
+		void* memory = _arena.allocate(sizeof(Param) * params.size(), alignof(Param));
+		if (!memory)
+		{
+			_diagnostics.error(_current.location(), "out of memory allocating function parameters");
+			return {};
+		}
+
+		Param* stored = static_cast<Param*>(memory);
+		for (usize i = 0; i < params.size(); ++i)
+			std::construct_at(stored + i, params[i]);
+		return std::span<const Param>(stored, params.size());
+	}
+
+	std::span<const FieldDecl> Parser::copyFieldsToArena(const std::vector<FieldDecl>& fields) noexcept
+	{
+		if (fields.empty())
+			return {};
+
+		void* memory = _arena.allocate(sizeof(FieldDecl) * fields.size(), alignof(FieldDecl));
+		if (!memory)
+		{
+			_diagnostics.error(_current.location(), "out of memory allocating struct fields");
+			return {};
+		}
+
+		FieldDecl* stored = static_cast<FieldDecl*>(memory);
+		for (usize i = 0; i < fields.size(); ++i)
+			std::construct_at(stored + i, fields[i]);
+		return std::span<const FieldDecl>(stored, fields.size());
+	}
+
+	std::span<const EnumeratorDecl> Parser::copyEnumeratorsToArena(const std::vector<EnumeratorDecl>& enumerators) noexcept
+	{
+		if (enumerators.empty())
+			return {};
+
+		void* memory = _arena.allocate(sizeof(EnumeratorDecl) * enumerators.size(), alignof(EnumeratorDecl));
+		if (!memory)
+		{
+			_diagnostics.error(_current.location(), "out of memory allocating enumerators");
+			return {};
+		}
+
+		EnumeratorDecl* stored = static_cast<EnumeratorDecl*>(memory);
+		for (usize i = 0; i < enumerators.size(); ++i)
+			std::construct_at(stored + i, enumerators[i]);
+		return std::span<const EnumeratorDecl>(stored, enumerators.size());
+	}
+
+	void Parser::synchronizeStatement() noexcept
+	{
+		// Skip until we consume a ';' (the end of the broken statement) or reach a '}' we don't
+		// consume (the enclosing parseCompoundStatement() loop owns that one) or EOF.
+		while (!isAtEnd() && !check(TokenKind::RBrace))
+		{
+			if (match(TokenKind::Semicolon))
+				return;
+			advance();
+		}
+	}
+
+	void Parser::synchronizeDeclaration() noexcept
+	{
+		// Unlike synchronizeStatement(), there is no enclosing '}' at top level to hand a stray one
+		// back to - so a '}' here is just skipped like any other token, and the only stopping
+		// condition is the start of the next declaration (or EOF). Stopping on '}' instead would
+		// loop forever on a stray '}' at top level, since nothing above parseTranslationUnit() would
+		// ever consume it.
+		while (!isAtEnd() && !isTypeSpecStart(_current) && !check(TokenKind::KwTypedef))
+			advance();
+	}
+
 	// ---- Expressions (§7's precedence table) --------------------------------------------------
 
 	Expr* Parser::parseExpression()
@@ -68,7 +183,7 @@ namespace ceresc::parser
 
 	Expr* Parser::parseAssignment()
 	{
-		Expr* lhs = parseBinary(2); // 2 = lowest binary level (||); climbs up through 11
+		Expr* lhs = parseTernary();
 
 		const auto& table = assignOpTable();
 		auto it = table.find(_current.kind());
@@ -86,6 +201,30 @@ namespace ceresc::parser
 			return nullptr;
 
 		return _arena.create<ast::AssignExpr>(location, op, lhs, value);
+	}
+
+	Expr* Parser::parseTernary()
+	{
+		SourceLocation location = _current.location();
+		Expr* cond = parseBinary(2); // 2 = lowest binary level (||); climbs up through 11
+		if (!cond)
+			return nullptr;
+
+		if (!match(TokenKind::Question))
+			return cond;
+
+		Expr* thenExpr = parseAssignment(); // the middle branch allows a full assignment-expression, same as real C
+		if (!thenExpr)
+			return nullptr;
+
+		if (!expect(TokenKind::Colon, "':'"))
+			return nullptr;
+
+		Expr* elseExpr = parseTernary(); // right-associative: a ? b : c ? d : e groups as a ? b : (c ? d : e)
+		if (!elseExpr)
+			return nullptr;
+
+		return _arena.create<ast::TernaryExpr>(location, cond, thenExpr, elseExpr);
 	}
 
 	Expr* Parser::parseBinary(int minPrecedence)
@@ -118,7 +257,7 @@ namespace ceresc::parser
 	Expr* Parser::parseCast()
 	{
 		SourceLocation location = _current.location();
-		if (check(TokenKind::LParen) && isTypeSpecStart(_next.kind()))
+		if (check(TokenKind::LParen) && isTypeSpecStart(_next))
 		{
 			advance(); // '('
 			const Type* targetType = parseTypeName();
@@ -153,7 +292,7 @@ namespace ceresc::parser
 	{
 		advance(); // 'sizeof'
 
-		if (check(TokenKind::LParen) && isTypeSpecStart(_next.kind()))
+		if (check(TokenKind::LParen) && isTypeSpecStart(_next))
 		{
 			advance(); // '('
 			const Type* argumentType = parseTypeName();
@@ -300,7 +439,7 @@ namespace ceresc::parser
 		}
 	}
 
-	// ---- type-name (Fase 2 subset: primitives + signed/unsigned/short/long, no struct/enum/typedef
+	// ---- type-name (current subset: primitives + signed/unsigned/short/long, no struct/enum/typedef
 	// yet - see type.h) ---------------------------------------------------------------------------
 
 	const Type* Parser::parseTypeName()
@@ -317,6 +456,19 @@ namespace ceresc::parser
 	const Type* Parser::parseTypeSpec()
 	{
 		SourceLocation location = _current.location();
+
+		if (check(TokenKind::Identifier))
+		{
+			auto it = _typedefTable.find(_current.lexeme());
+			if (it != _typedefTable.end())
+			{
+				advance();
+				return it->second;
+			}
+			// Not a registered typedef name - falls through to the same "expected type name"
+			// diagnostic as any other non-type-spec token, via the switch's default case below.
+		}
+
 		switch (_current.kind())
 		{
 			case TokenKind::KwVoid: advance(); return &Type::Void;
@@ -346,12 +498,660 @@ namespace ceresc::parser
 				match(TokenKind::KwInt); // optional and redundant: "unsigned" alone already means "unsigned int"
 				return isUnsigned ? &Type::UInt : &Type::Int;
 			}
+			case TokenKind::KwStruct: return parseStructTypeSpec();
+			case TokenKind::KwEnum: return parseEnumTypeSpec();
 			default:
 				_diagnostics.error(location, "expected type name but found '{}'",
 					_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 				advance(); // guarantee forward progress, same reasoning as parsePrimary()'s default case
 				return nullptr;
 		}
+	}
+
+	// ---- struct/enum type-specs (also how struct/enum DECLARATIONS get parsed - see parser.h's
+	// header comment: parseExternalDecl()/parseDeclStatement() call parseTypeName() -> parseTypeSpec()
+	// -> here exactly like any other type-spec, then just check whether a ';' immediately follows to
+	// tell "just declaring the tag" apart from "declaring a tag and a variable") -------------------
+
+	const Type* Parser::parseStructTypeSpec()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'struct'
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected a struct tag name after 'struct'");
+			advance();
+			return nullptr;
+		}
+		std::string_view tagName = _current.lexeme();
+		advance();
+
+		auto it = _structTable.find(tagName);
+		StructDecl* decl = (it != _structTable.end()) ? it->second : nullptr;
+		if (!decl)
+		{
+			// Registered here, BEFORE the body (if any) is parsed - not after - so a field that
+			// refers back to this same tag (always through a pointer, e.g. `struct Node* next;`)
+			// resolves to this exact StructDecl instance. See decl.h's note on StructDecl's two-step
+			// construction.
+			decl = _arena.create<StructDecl>(location, tagName);
+			_structTable[tagName] = decl;
+		}
+
+		if (match(TokenKind::LBrace))
+		{
+			if (decl->isComplete())
+				_diagnostics.error(location, "redefinition of 'struct {}'", tagName);
+
+			std::vector<FieldDecl> fields;
+			while (!check(TokenKind::RBrace) && !isAtEnd())
+			{
+				SourceLocation fieldLoc = _current.location();
+				const Type* fieldType = parseTypeName();
+				if (!fieldType)
+				{
+					synchronizeStatement(); // reuses the statement-level recovery: skip to ';' or '}'
+					continue;
+				}
+				if (!check(TokenKind::Identifier))
+				{
+					_diagnostics.error(_current.location(), "expected a field name");
+					synchronizeStatement();
+					continue;
+				}
+				std::string_view fieldName = _current.lexeme();
+				advance();
+				if (!expect(TokenKind::Semicolon, "';'"))
+				{
+					synchronizeStatement();
+					continue;
+				}
+				fields.push_back(FieldDecl{ fieldType, fieldName, fieldLoc });
+			}
+			expect(TokenKind::RBrace, "'}'");
+			decl->setFields(copyFieldsToArena(fields));
+		}
+
+		return Type::makeStruct(_arena, decl);
+	}
+
+	const Type* Parser::parseEnumTypeSpec()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'enum'
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected an enum tag name after 'enum'");
+			advance();
+			return nullptr;
+		}
+		std::string_view tagName = _current.lexeme();
+		advance();
+
+		auto it = _enumTable.find(tagName);
+		EnumDecl* decl = (it != _enumTable.end()) ? it->second : nullptr;
+		if (!decl)
+		{
+			decl = _arena.create<EnumDecl>(location, tagName);
+			_enumTable[tagName] = decl;
+		}
+
+		if (match(TokenKind::LBrace))
+		{
+			if (decl->isComplete())
+				_diagnostics.error(location, "redefinition of 'enum {}'", tagName);
+
+			std::vector<EnumeratorDecl> enumerators;
+			while (!check(TokenKind::RBrace) && !isAtEnd())
+			{
+				if (!check(TokenKind::Identifier))
+				{
+					_diagnostics.error(_current.location(), "expected an enumerator name");
+					synchronizeStatement(); // no per-enumerator ';' to stop on, but this still bounds progress via '}'/EOF
+					break;
+				}
+				SourceLocation enumLoc = _current.location();
+				std::string_view enumName = _current.lexeme();
+				advance();
+
+				Expr* value = nullptr;
+				if (match(TokenKind::Equal))
+				{
+					value = parseAssignment(); // a constant-expression in real C - sema checks constancy, not the parser
+					if (!value)
+						break;
+				}
+				enumerators.push_back(EnumeratorDecl{ enumName, value, enumLoc });
+
+				if (!match(TokenKind::Comma))
+					break; // no comma - must be the closing '}', checked by expect() below
+			}
+			expect(TokenKind::RBrace, "'}'");
+			decl->setEnumerators(copyEnumeratorsToArena(enumerators));
+		}
+
+		return Type::makeEnum(_arena, decl);
+	}
+
+	// ---- statements (§7's grammar) -----------------------------------------------------------------
+	//
+	// parseCompoundStatement() and parseTranslationUnit() (below) are the two loops that turn a
+	// failed inner parse into panic-mode recovery instead of giving up: on nullptr they call
+	// synchronizeStatement()/synchronizeDeclaration() and keep collecting, so one bad statement or
+	// declaration does not take the rest of the block/file down with it. Every other function in
+	// this section still returns nullptr on failure and lets it propagate to its own caller,
+	// exactly like Fase 2's expression parsing - only those two loops actually swallow a nullptr.
+
+	Stmt* Parser::parseStatement()
+	{
+		switch (_current.kind())
+		{
+			case TokenKind::LBrace: return parseCompoundStatement();
+			case TokenKind::KwIf: return parseIfStatement();
+			case TokenKind::KwWhile: return parseWhileStatement();
+			case TokenKind::KwDo: return parseDoWhileStatement();
+			case TokenKind::KwFor: return parseForStatement();
+			case TokenKind::KwReturn: return parseReturnStatement();
+			case TokenKind::KwBreak: return parseBreakStatement();
+			case TokenKind::KwContinue: return parseContinueStatement();
+			case TokenKind::KwSwitch: return parseSwitchStatement();
+			case TokenKind::KwCase: return parseCaseStatement();
+			case TokenKind::KwDefault: return parseDefaultStatement();
+			case TokenKind::KwGoto: return parseGotoStatement();
+			case TokenKind::KwTypedef:
+			{
+				SourceLocation location = _current.location();
+				Decl* decl = parseTypedefDecl();
+				if (!decl)
+					return nullptr;
+				return _arena.create<ast::DeclStmt>(location, decl);
+			}
+			case TokenKind::Semicolon:
+			{
+				SourceLocation location = _current.location();
+				advance();
+				return _arena.create<ast::EmptyStmt>(location);
+			}
+			default:
+				if (check(TokenKind::Identifier) && _next.is(TokenKind::Colon))
+					return parseLabeledStatement();
+				if (isTypeSpecStart(_current))
+					return parseDeclStatement();
+				return parseExprStatement();
+		}
+	}
+
+	Stmt* Parser::parseCompoundStatement()
+	{
+		SourceLocation location = _current.location();
+		if (!expect(TokenKind::LBrace, "'{'"))
+			return nullptr;
+
+		std::vector<Stmt*> stmts;
+		while (!check(TokenKind::RBrace) && !isAtEnd())
+		{
+			Stmt* stmt = parseStatement();
+			if (!stmt)
+			{
+				synchronizeStatement();
+				continue;
+			}
+			stmts.push_back(stmt);
+		}
+
+		if (!expect(TokenKind::RBrace, "'}'"))
+			return nullptr;
+
+		return _arena.create<ast::CompoundStmt>(location, copyStmtsToArena(stmts));
+	}
+
+	Stmt* Parser::parseIfStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'if'
+
+		if (!expect(TokenKind::LParen, "'('"))
+			return nullptr;
+		Expr* cond = parseExpression();
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		if (!cond)
+			return nullptr;
+
+		Stmt* thenStmt = parseStatement();
+		if (!thenStmt)
+			return nullptr;
+
+		Stmt* elseStmt = nullptr;
+		if (match(TokenKind::KwElse))
+		{
+			elseStmt = parseStatement();
+			if (!elseStmt)
+				return nullptr;
+		}
+
+		return _arena.create<ast::IfStmt>(location, cond, thenStmt, elseStmt);
+	}
+
+	Stmt* Parser::parseWhileStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'while'
+
+		if (!expect(TokenKind::LParen, "'('"))
+			return nullptr;
+		Expr* cond = parseExpression();
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		if (!cond)
+			return nullptr;
+
+		Stmt* body = parseStatement();
+		if (!body)
+			return nullptr;
+
+		return _arena.create<ast::WhileStmt>(location, cond, body);
+	}
+
+	Stmt* Parser::parseDoWhileStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'do'
+
+		Stmt* body = parseStatement();
+		if (!body)
+			return nullptr;
+
+		if (!expect(TokenKind::KwWhile, "'while'"))
+			return nullptr;
+		if (!expect(TokenKind::LParen, "'('"))
+			return nullptr;
+		Expr* cond = parseExpression();
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		if (!cond)
+			return nullptr;
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		return _arena.create<ast::DoWhileStmt>(location, body, cond);
+	}
+
+	Stmt* Parser::parseForStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'for'
+
+		if (!expect(TokenKind::LParen, "'('"))
+			return nullptr;
+
+		Stmt* init = nullptr;
+		if (match(TokenKind::Semicolon))
+		{
+			// no init-clause - `for (;` already consumed its ';'
+		}
+		else if (isTypeSpecStart(_current))
+		{
+			init = parseDeclStatement(); // consumes its own trailing ';'
+			if (!init)
+				return nullptr;
+		}
+		else
+		{
+			Expr* initExpr = parseExpression();
+			if (!initExpr)
+				return nullptr;
+			if (!expect(TokenKind::Semicolon, "';'"))
+				return nullptr;
+			init = _arena.create<ast::ExprStmt>(initExpr->location(), initExpr);
+		}
+
+		Expr* cond = nullptr;
+		if (!check(TokenKind::Semicolon))
+		{
+			cond = parseExpression();
+			if (!cond)
+				return nullptr;
+		}
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		Expr* increment = nullptr;
+		if (!check(TokenKind::RParen))
+		{
+			increment = parseExpression();
+			if (!increment)
+				return nullptr;
+		}
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+
+		Stmt* body = parseStatement();
+		if (!body)
+			return nullptr;
+
+		return _arena.create<ast::ForStmt>(location, init, cond, increment, body);
+	}
+
+	Stmt* Parser::parseReturnStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'return'
+
+		Expr* value = nullptr;
+		if (!check(TokenKind::Semicolon))
+		{
+			value = parseExpression();
+			if (!value)
+				return nullptr;
+		}
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		return _arena.create<ast::ReturnStmt>(location, value);
+	}
+
+	Stmt* Parser::parseBreakStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'break'
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+		return _arena.create<ast::BreakStmt>(location);
+	}
+
+	Stmt* Parser::parseContinueStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'continue'
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+		return _arena.create<ast::ContinueStmt>(location);
+	}
+
+	Stmt* Parser::parseSwitchStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'switch'
+
+		if (!expect(TokenKind::LParen, "'('"))
+			return nullptr;
+		Expr* cond = parseExpression();
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		if (!cond)
+			return nullptr;
+
+		Stmt* body = parseStatement(); // typically a CompoundStmt full of case/default labels - see stmt.h
+		if (!body)
+			return nullptr;
+
+		return _arena.create<ast::SwitchStmt>(location, cond, body);
+	}
+
+	Stmt* Parser::parseCaseStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'case'
+
+		Expr* value = parseExpression(); // a constant-expression in real C - sema checks constancy, not the parser
+		if (!expect(TokenKind::Colon, "':'"))
+			return nullptr;
+		if (!value)
+			return nullptr;
+
+		Stmt* body = parseStatement(); // exactly the one statement following ':' - see stmt.h
+		if (!body)
+			return nullptr;
+
+		return _arena.create<ast::CaseStmt>(location, value, body);
+	}
+
+	Stmt* Parser::parseDefaultStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'default'
+
+		if (!expect(TokenKind::Colon, "':'"))
+			return nullptr;
+
+		Stmt* body = parseStatement();
+		if (!body)
+			return nullptr;
+
+		return _arena.create<ast::DefaultStmt>(location, body);
+	}
+
+	Stmt* Parser::parseGotoStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'goto'
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected a label name after 'goto'");
+			return nullptr;
+		}
+		std::string_view label = _current.lexeme();
+		advance();
+
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		return _arena.create<ast::GotoStmt>(location, label);
+	}
+
+	Stmt* Parser::parseLabeledStatement()
+	{
+		SourceLocation location = _current.location();
+		std::string_view label = _current.lexeme();
+		advance(); // identifier
+		advance(); // ':'
+
+		Stmt* body = parseStatement();
+		if (!body)
+			return nullptr;
+
+		return _arena.create<ast::LabelStmt>(location, label, body);
+	}
+
+	Stmt* Parser::parseDeclStatement()
+	{
+		SourceLocation location = _current.location();
+		const Type* type = parseTypeName();
+		if (!type)
+			return nullptr;
+
+		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator: parseTypeName()
+		// already registered/completed the tag (see parseStructTypeSpec()/parseEnumTypeSpec()), so
+		// there is nothing left to declare - just wrap the tag itself in the DeclStmt.
+		if (check(TokenKind::Semicolon) && (type->isStruct() || type->isEnum()))
+		{
+			advance();
+			Decl* tagDecl = type->isStruct() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
+			return _arena.create<ast::DeclStmt>(location, tagDecl);
+		}
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected an identifier in declaration");
+			return nullptr;
+		}
+		std::string_view name = _current.lexeme();
+		advance();
+
+		Decl* decl = finishVarDecl(location, name, type);
+		if (!decl)
+			return nullptr;
+		return _arena.create<ast::DeclStmt>(location, decl);
+	}
+
+	Stmt* Parser::parseExprStatement()
+	{
+		SourceLocation location = _current.location();
+		Expr* expr = parseExpression();
+		if (!expr)
+			return nullptr;
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+		return _arena.create<ast::ExprStmt>(location, expr);
+	}
+
+	// ---- declarations (§7's grammar) ---------------------------------------------------------------
+
+	TranslationUnit* Parser::parseTranslationUnit()
+	{
+		SourceLocation location = _current.location();
+		std::vector<Decl*> decls;
+		while (!isAtEnd())
+		{
+			Decl* decl = parseExternalDecl();
+			if (!decl)
+			{
+				synchronizeDeclaration();
+				continue;
+			}
+			decls.push_back(decl);
+		}
+		return _arena.create<TranslationUnit>(location, copyDeclsToArena(decls));
+	}
+
+	Decl* Parser::parseExternalDecl()
+	{
+		SourceLocation location = _current.location();
+
+		if (check(TokenKind::KwTypedef))
+			return parseTypedefDecl();
+
+		if (!isTypeSpecStart(_current))
+		{
+			_diagnostics.error(location, "expected a declaration but found '{}'",
+				_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
+			return nullptr;
+		}
+
+		const Type* type = parseTypeName();
+		if (!type)
+			return nullptr;
+
+		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
+		// parseDeclStatement()'s identical check for the local-statement equivalent.
+		if (check(TokenKind::Semicolon) && (type->isStruct() || type->isEnum()))
+		{
+			advance();
+			return type->isStruct() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
+		}
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected an identifier in declaration");
+			return nullptr;
+		}
+		std::string_view name = _current.lexeme();
+		advance();
+
+		if (check(TokenKind::LParen))
+			return finishFunctionDecl(location, name, type);
+		return finishVarDecl(location, name, type);
+	}
+
+	Decl* Parser::parseTypedefDecl()
+	{
+		SourceLocation location = _current.location();
+		advance(); // 'typedef'
+
+		const Type* underlyingType = parseTypeName();
+		if (!underlyingType)
+			return nullptr;
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected a name after 'typedef'");
+			return nullptr;
+		}
+		std::string_view name = _current.lexeme();
+		advance();
+
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		_typedefTable[name] = underlyingType; // makes `name` usable as a type-spec from here on - see isTypeSpecStart(const Token&)/parseTypeSpec()
+		return _arena.create<ast::TypedefDecl>(location, name, underlyingType);
+	}
+
+	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type)
+	{
+		Expr* initializer = nullptr;
+		if (match(TokenKind::Equal))
+		{
+			initializer = parseAssignment();
+			if (!initializer)
+				return nullptr;
+		}
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		return _arena.create<ast::VarDecl>(location, name, type, initializer);
+	}
+
+	Decl* Parser::finishFunctionDecl(SourceLocation location, std::string_view name, const Type* returnType)
+	{
+		advance(); // '('
+
+		std::vector<Param> params;
+		if (!parseParamList(params))
+			return nullptr;
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+
+		CompoundStmt* body = nullptr;
+		if (check(TokenKind::LBrace))
+		{
+			Stmt* bodyStmt = parseCompoundStatement();
+			if (!bodyStmt)
+				return nullptr;
+			body = static_cast<CompoundStmt*>(bodyStmt); // parseCompoundStatement() only ever returns a CompoundStmt* (or nullptr)
+		}
+		else if (!expect(TokenKind::Semicolon, "';' or a function body"))
+		{
+			return nullptr;
+		}
+
+		return _arena.create<ast::FunctionDecl>(location, name, returnType, copyParamsToArena(params), body);
+	}
+
+	bool Parser::parseParamList(std::vector<Param>& outParams)
+	{
+		if (check(TokenKind::RParen))
+			return true; // foo()
+
+		if (check(TokenKind::KwVoid) && _next.is(TokenKind::RParen))
+		{
+			advance(); // 'void' - foo(void) means the same as foo(), same as real C
+			return true;
+		}
+
+		do
+		{
+			SourceLocation location = _current.location();
+			const Type* type = parseTypeName();
+			if (!type)
+				return false;
+
+			if (!check(TokenKind::Identifier))
+			{
+				_diagnostics.error(_current.location(), "expected a parameter name");
+				return false;
+			}
+			std::string_view name = _current.lexeme();
+			advance();
+
+			outParams.push_back(Param{ type, name, location });
+		} while (match(TokenKind::Comma));
+
+		return true;
 	}
 
 	// ---- static tables --------------------------------------------------------------------------

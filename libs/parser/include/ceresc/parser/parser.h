@@ -11,19 +11,54 @@
 // Parser - Token[] -> AST (§7 of the architecture plan).
 //
 // Recursive descent for declarations and statements; precedence climbing for expressions (levels
-// 2-11 of the precedence table share one parametrized function, only the assignment, cast, and
-// prefix/postfix levels get dedicated ones). A syntax error does not abort the file: panic-mode
-// recovery resynchronizes on the next `;`/`}` (inside a statement) or the next type keyword/`}`
-// (at top level), so one pass reports every syntax error in a broken file, not just the first.
+// 2-11 of the precedence table share one parametrized function, only the assignment, ternary, cast,
+// and prefix/postfix levels get dedicated ones). A syntax error does not abort the file: panic-mode
+// recovery resynchronizes on the next `;`/`}` (inside a statement, see synchronizeStatement()) or
+// the next type-spec-start token (at top level, see synchronizeDeclaration()), so one pass reports
+// every syntax error in a broken file, not just the first - see parseCompoundStatement() and
+// parseTranslationUnit(), which are the two loops that call these after a failed inner parse
+// instead of propagating nullptr straight up and giving up on the whole block/file.
 //
-// This file covers only that first half. Fase 2 has no statements or declarations yet - no `;`/`}`
-// exists to resynchronize on - so its error handling is necessarily narrower: a syntax error inside
-// an expression reports a diagnostic and the failing parse* function returns nullptr, which
-// propagates up through its caller instead of building on a missing piece. The one exception is a
-// token that matches no production at all (parsePrimary()/parseTypeSpec()'s default case): that
-// always consumes the bad token before returning nullptr, so at least one token of progress is
-// guaranteed even without a real synchronization point. Real panic-mode recovery is Fase 3's job,
-// once `;`/`}` exist to resynchronize on.
+// Expressions alone keep Fase 2's narrower, fail-fast behavior: a syntax error inside an expression
+// reports a diagnostic and the failing parse* function returns nullptr, which propagates up through
+// its caller instead of building on a missing piece - there is no mid-expression synchronization
+// point to jump to (`;`/`}` belong to the statement enclosing the expression, not the expression
+// itself). The one exception is a token that matches no production at all (parsePrimary()/
+// parseTypeSpec()'s default case): that always consumes the bad token before returning nullptr, so
+// at least one token of progress is guaranteed even inside an expression.
+//
+// Ternary (`cond ? then : else`) is its own dedicated function, parseTernary(), called from
+// parseAssignment() in place of jumping straight to parseBinary(2) - see expr.h's TernaryExpr for
+// why it sits there in the precedence chain.
+//
+// struct/enum/typedef declarations and switch/case/goto statements are covered here too. Three
+// points worth knowing before touching this part of the file:
+//
+//  - struct/enum are parsed inline as part of the ordinary type-spec grammar (parseStructTypeSpec()/
+//    parseEnumTypeSpec(), called from parseTypeSpec()), not as separate top-level productions - a
+//    bare `struct Foo { ... };` declaration and a `struct Foo instance;` variable declaration both
+//    go through parseTypeName() first, exactly like every other type-spec; parseExternalDecl()/
+//    parseDeclStatement() only need one extra check afterward (is the type-spec a struct/enum AND
+//    is the very next token ';'?) to tell the two forms apart. This also means the classic combined
+//    idiom `struct Foo { int x; } instance;` and a bare forward declaration `struct Foo;` both work
+//    for free, with no special-casing beyond that one check.
+//  - Self-referential structs (`struct Node { struct Node* next; };`) work because the tag is
+//    registered in _structTable the moment its name is read, before the field list is parsed - see
+//    decl.h's own note on why StructDecl/EnumDecl are built in two steps (construct, then a later
+//    setFields()/setEnumerators()) instead of one, unlike every other node in this project.
+//  - typedef does not add a new kind of Type (see decl.h): parseTypedefDecl() just records the name
+//    in _typedefTable, and isTypeSpecStart(const Token&)/parseTypeSpec() consult that table to treat
+//    a typedef'd identifier as a type-spec from then on, exactly like a keyword. _structTable/
+//    _enumTable/_typedefTable are flat, whole-Parser-lifetime maps with no scope stack - a local
+//    struct/enum/typedef declared inside one function stays visible for the rest of the file. Real
+//    C scopes these to their enclosing block; this parser does not enforce that (nor does it check
+//    that goto's target label exists, or that case/default only appear inside a switch) - all of
+//    that needs a proper symbol table, which is libs/sema's job, not this file's.
+//
+// case/default are ordinary labeled-statements exactly like real C (see stmt.h's own note): they
+// wrap exactly the one statement that follows their ':', not "everything until the next case" -
+// switch's fallthrough behavior falls out of its body being an ordinary CompoundStmt, nothing
+// special is built for it here.
 //
 // Deliberately takes a Lexer&, not a pre-lexed Token[]: the grammar in §3 never needs more than one
 // token of lookahead beyond the current one (used only to disambiguate `(type-name)` from a
@@ -46,8 +81,8 @@
 // depend on lexer (see the architecture plan's §1 dependency diagram), so this is the one place
 // that is allowed to know both.
 //
-// Implemented in Fase 2 (expressions) and Fase 3 (declarations/statements) of the phased plan
-// (§13).
+// Implemented in Fase 2 (expressions) and Fase 3 (declarations/statements, the ternary operator,
+// struct/enum/typedef, switch/case/goto) of the phased plan (§13).
 
 namespace ceresc::parser
 {
@@ -56,6 +91,15 @@ namespace ceresc::parser
 	using ast::UnaryOp;
 	using ast::BinaryOp;
 	using ast::AssignOp;
+	using ast::Stmt;
+	using ast::CompoundStmt;
+	using ast::Decl;
+	using ast::Param;
+	using ast::FieldDecl;
+	using ast::EnumeratorDecl;
+	using ast::StructDecl;
+	using ast::EnumDecl;
+	using ast::TranslationUnit;
 	using lexer::Token;
 	using lexer::TokenKind;
 
@@ -67,6 +111,12 @@ namespace ceresc::parser
 		support::DiagnosticEngine& _diagnostics;
 		Token _current;
 		Token _next; // one token of lookahead beyond _current - see the header comment above
+
+		// Flat, whole-Parser-lifetime symbol tables for struct/enum tags and typedef names - see the
+		// header comment above for why these have no scope stack.
+		std::unordered_map<std::string_view, StructDecl*> _structTable;
+		std::unordered_map<std::string_view, EnumDecl*> _enumTable;
+		std::unordered_map<std::string_view, const Type*> _typedefTable;
 
 	public:
 		Parser() = delete;
@@ -81,19 +131,26 @@ namespace ceresc::parser
 		explicit Parser(lexer::Lexer& lexer, support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept;
 
 	public:
-		// Fase 2 entry points. parseTranslationUnit()/parseExternalDecl()/parseStatement() and the
-		// rest of parseTypeSpec()'s grammar (struct/enum/typedef-name) are Fase 3.
+		// Entry points. parseExpression()/parseTypeName() are Fase 2; parseTranslationUnit()/
+		// parseExternalDecl()/parseStatement() are Fase 3 - see the header comment above for what
+		// that now covers (struct/enum/typedef, switch/case/goto).
 		Expr* parseExpression();
 		const Type* parseTypeName();
+
+		TranslationUnit* parseTranslationUnit();
+		Decl* parseExternalDecl();
+		Stmt* parseStatement();
 
 		bool isAtEnd() const noexcept { return _current.isEndOfFile(); }
 
 	private:
 		// Precedence table (§7), lowest to highest:
-		//   1: parseAssignment (right-assoc)     2-11: parseBinary (left-assoc, one table)
+		//   1: parseAssignment (right-assoc)     1.5: parseTernary (right-assoc)
+		//   2-11: parseBinary (left-assoc, one table)
 		//  12: parseCast (right-assoc)            13: parseUnary (right-assoc, prefix + sizeof)
 		//  14: parsePostfix (left-assoc, chained) -> parsePrimary
 		Expr* parseAssignment();
+		Expr* parseTernary();
 		Expr* parseBinary(int minPrecedence);
 		Expr* parseCast();
 		Expr* parseUnary();
@@ -104,20 +161,65 @@ namespace ceresc::parser
 		const Type* parseTypeSpec();
 
 	private:
+		// Statements (§7's grammar). parseStatement() dispatches on the current token; its default
+		// case falls to a labeled-statement (Identifier followed by ':'), then a local declaration
+		// (current token starts a type-spec), then finally parseExprStatement().
+		Stmt* parseCompoundStatement();
+		Stmt* parseIfStatement();
+		Stmt* parseWhileStatement();
+		Stmt* parseDoWhileStatement();
+		Stmt* parseForStatement();
+		Stmt* parseReturnStatement();
+		Stmt* parseBreakStatement();
+		Stmt* parseContinueStatement();
+		Stmt* parseSwitchStatement();
+		Stmt* parseCaseStatement();
+		Stmt* parseDefaultStatement();
+		Stmt* parseGotoStatement();
+		Stmt* parseLabeledStatement(); // `identifier ':' statement` - a goto target
+		Stmt* parseDeclStatement(); // a local VarDecl wrapped in a DeclStmt - also used directly by parseForStatement() for its init-clause
+		Stmt* parseExprStatement();
+
+	private:
+		// Declarations. A variable and a function declaration share the same `type-name identifier`
+		// prefix - parseExternalDecl() parses that prefix once, then branches on whether a '(' follows.
+		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type);
+		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType);
+		bool parseParamList(std::vector<Param>& outParams);
+		Decl* parseTypedefDecl();
+
+		// struct/enum are parsed as part of the type-spec grammar, not as their own top-level
+		// productions - see the header comment above.
+		const Type* parseStructTypeSpec();
+		const Type* parseEnumTypeSpec();
+
+	private:
 		Token advance() noexcept;
 		bool check(TokenKind kind) const noexcept { return _current.is(kind); }
 		bool match(TokenKind kind) noexcept;
 		bool expect(TokenKind kind, std::string_view what) noexcept;
 
+		// Panic-mode recovery (see the header comment above): called after a sub-parse inside a
+		// block/file fails, so the enclosing loop can skip the broken construct and keep going
+		// instead of aborting the whole block/file on one bad statement/declaration.
+		void synchronizeStatement() noexcept;
+		void synchronizeDeclaration() noexcept;
+
 		Expr* wrapUnary(UnaryOp op, support::SourceLocation location, Expr* operand) noexcept;
 		std::span<Expr* const> copyArgsToArena(const std::vector<Expr*>& args) noexcept;
+		std::span<Stmt* const> copyStmtsToArena(const std::vector<Stmt*>& stmts) noexcept;
+		std::span<Decl* const> copyDeclsToArena(const std::vector<Decl*>& decls) noexcept;
+		std::span<const Param> copyParamsToArena(const std::vector<Param>& params) noexcept;
+		std::span<const FieldDecl> copyFieldsToArena(const std::vector<FieldDecl>& fields) noexcept;
+		std::span<const EnumeratorDecl> copyEnumeratorsToArena(const std::vector<EnumeratorDecl>& enumerators) noexcept;
 
 	private:
-		// True for the tokens that can start a type-name in Fase 2's subset of the grammar
-		// (primitives + signed/unsigned/short/long combinations, no struct/enum/typedef-name yet -
-		// see type.h's own note on why that's not a restriction, just work that hasn't had its
-		// phase). Used to disambiguate `(type-name)` from a parenthesized expression with exactly
-		// one token of lookahead past `(`, for both cast-expr and sizeof.
+		// True for the tokens that can, by their kind ALONE, start a type-name (primitives +
+		// signed/unsigned/short/long combinations, plus struct/enum - see parseStructTypeSpec()/
+		// parseEnumTypeSpec()). This overload cannot recognize a typedef'd identifier - that needs
+		// the actual lexeme, not just the TokenKind - so it exists mainly for parseTypeSpec()'s own
+		// switch (which needs a TokenKind to switch over) and as the building block for the
+		// token-aware overload below. Prefer isTypeSpecStart(const Token&) everywhere else.
 		static constexpr bool isTypeSpecStart(TokenKind kind) noexcept
 		{
 			switch (kind)
@@ -131,10 +233,26 @@ namespace ceresc::parser
 				case TokenKind::KwLong:
 				case TokenKind::KwSigned:
 				case TokenKind::KwUnsigned:
+				case TokenKind::KwStruct:
+				case TokenKind::KwEnum:
 					return true;
 				default:
 					return false;
 			}
+		}
+
+		// Typedef-aware: also true for an Identifier token whose lexeme is a registered typedef name
+		// (see _typedefTable and parseTypedefDecl()). Used to disambiguate `(type-name)` from a
+		// parenthesized expression with exactly one token of lookahead past `(` (cast-expr and
+		// sizeof); to tell parseStatement() a local declaration apart from an expression/labeled
+		// statement; and to tell synchronizeDeclaration() where the next top-level declaration
+		// starts. Not static, unlike the TokenKind overload above, since it must consult
+		// _typedefTable.
+		bool isTypeSpecStart(const Token& token) const noexcept
+		{
+			if (isTypeSpecStart(token.kind()))
+				return true;
+			return token.kind() == TokenKind::Identifier && _typedefTable.contains(token.lexeme());
 		}
 
 		static const std::unordered_map<TokenKind, std::pair<int, BinaryOp>>& binaryOpTable();

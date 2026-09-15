@@ -75,6 +75,27 @@ namespace ceresc::ast
 		return _output;
 	}
 
+	std::string AstPrinter::print(Stmt& root)
+	{
+		_output.clear();
+		root.accept(*this);
+		return _output;
+	}
+
+	std::string AstPrinter::print(Decl& root)
+	{
+		_output.clear();
+		root.accept(*this);
+		return _output;
+	}
+
+	std::string AstPrinter::print(TranslationUnit& root)
+	{
+		_output.clear();
+		root.accept(*this);
+		return _output;
+	}
+
 	std::string AstPrinter::print(Expr* root)
 	{
 		_output.clear();
@@ -82,7 +103,41 @@ namespace ceresc::ast
 		return _output;
 	}
 
+	std::string AstPrinter::print(Stmt* root)
+	{
+		_output.clear();
+		printChild(root);
+		return _output;
+	}
+
+	std::string AstPrinter::print(Decl* root)
+	{
+		_output.clear();
+		printChild(root);
+		return _output;
+	}
+
 	void AstPrinter::printChild(Expr* child)
+	{
+		if (!child)
+		{
+			_output += "<null>";
+			return;
+		}
+		child->accept(*this);
+	}
+
+	void AstPrinter::printChild(Stmt* child)
+	{
+		if (!child)
+		{
+			_output += "<null>";
+			return;
+		}
+		child->accept(*this);
+	}
+
+	void AstPrinter::printChild(Decl* child)
 	{
 		if (!child)
 		{
@@ -120,8 +175,8 @@ namespace ceresc::ast
 			case TypeKind::Double: return prefix + "double";
 			case TypeKind::Pointer: return prefix + typeName(type->arrayElementType()) + "*";
 			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + "[" + std::to_string(type->arraySize()) + "]";
-			case TypeKind::Struct: return prefix + "struct";
-			case TypeKind::Enum: return prefix + "enum";
+			case TypeKind::Struct: return prefix + "struct " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
+			case TypeKind::Enum: return prefix + "enum " + std::string(type->enumDecl() ? type->enumDecl()->name() : std::string_view("<anonymous>"));
 		}
 		return prefix + "<unknown-type>";
 	}
@@ -248,6 +303,250 @@ namespace ceresc::ast
 			appendTypeName(node.argumentType());
 		else
 			printChild(node.argumentExpr());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(TernaryExpr& node)
+	{
+		_output += "(?: ";
+		printChild(node.cond());
+		_output += ' ';
+		printChild(node.thenExpr());
+		_output += ' ';
+		printChild(node.elseExpr());
+		_output += ')';
+	}
+
+	// ---- statements ------------------------------------------------------------------------------
+
+	void AstPrinter::visit(EmptyStmt&)
+	{
+		_output += "(empty)";
+	}
+
+	void AstPrinter::visit(ExprStmt& node)
+	{
+		_output += "(expr-stmt ";
+		printChild(node.expr());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(DeclStmt& node)
+	{
+		_output += "(decl-stmt ";
+		printChild(node.decl());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(CompoundStmt& node)
+	{
+		_output += "(block";
+		for (Stmt* stmt : node.stmts())
+		{
+			_output += ' ';
+			printChild(stmt);
+		}
+		_output += ')';
+	}
+
+	void AstPrinter::visit(IfStmt& node)
+	{
+		_output += "(if ";
+		printChild(node.cond());
+		_output += ' ';
+		printChild(node.thenStmt());
+		if (node.elseStmt())
+		{
+			_output += ' ';
+			printChild(node.elseStmt());
+		}
+		_output += ')';
+	}
+
+	void AstPrinter::visit(WhileStmt& node)
+	{
+		_output += "(while ";
+		printChild(node.cond());
+		_output += ' ';
+		printChild(node.body());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(DoWhileStmt& node)
+	{
+		_output += "(do-while ";
+		printChild(node.body());
+		_output += ' ';
+		printChild(node.cond());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(ForStmt& node)
+	{
+		_output += "(for ";
+		printChild(node.init());
+		_output += ' ';
+		printChild(node.cond());
+		_output += ' ';
+		printChild(node.increment());
+		_output += ' ';
+		printChild(node.body());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(ReturnStmt& node)
+	{
+		_output += "(return ";
+		printChild(node.value());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(BreakStmt&)
+	{
+		_output += "(break)";
+	}
+
+	void AstPrinter::visit(ContinueStmt&)
+	{
+		_output += "(continue)";
+	}
+
+	void AstPrinter::visit(SwitchStmt& node)
+	{
+		_output += "(switch ";
+		printChild(node.cond());
+		_output += ' ';
+		printChild(node.body());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(CaseStmt& node)
+	{
+		_output += "(case ";
+		printChild(node.value());
+		_output += ' ';
+		printChild(node.body());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(DefaultStmt& node)
+	{
+		_output += "(default ";
+		printChild(node.body());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(GotoStmt& node)
+	{
+		_output += "(goto ";
+		_output += node.label();
+		_output += ')';
+	}
+
+	void AstPrinter::visit(LabelStmt& node)
+	{
+		_output += "(label ";
+		_output += node.label();
+		_output += ' ';
+		printChild(node.body());
+		_output += ')';
+	}
+
+	// ---- declarations -----------------------------------------------------------------------------
+
+	void AstPrinter::visit(VarDecl& node)
+	{
+		_output += "(var ";
+		_output += node.name();
+		_output += ' ';
+		appendTypeName(node.type());
+		_output += ' ';
+		printChild(node.initializer());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(FunctionDecl& node)
+	{
+		_output += "(func ";
+		_output += node.name();
+		_output += ' ';
+		appendTypeName(node.returnType());
+		_output += " (params";
+		for (const Param& param : node.params())
+		{
+			_output += " (";
+			appendTypeName(param.type);
+			_output += ' ';
+			_output += param.name;
+			_output += ')';
+		}
+		_output += ") ";
+		printChild(node.body());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(StructDecl& node)
+	{
+		_output += "(struct ";
+		_output += node.name();
+		if (!node.isComplete())
+		{
+			_output += " <incomplete>)";
+			return;
+		}
+		_output += " (fields";
+		for (const FieldDecl& field : node.fields())
+		{
+			_output += " (";
+			appendTypeName(field.type);
+			_output += ' ';
+			_output += field.name;
+			_output += ')';
+		}
+		_output += "))";
+	}
+
+	void AstPrinter::visit(EnumDecl& node)
+	{
+		_output += "(enum ";
+		_output += node.name();
+		if (!node.isComplete())
+		{
+			_output += " <incomplete>)";
+			return;
+		}
+		_output += " (enumerators";
+		for (const EnumeratorDecl& enumerator : node.enumerators())
+		{
+			_output += " (";
+			_output += enumerator.name;
+			if (enumerator.value)
+			{
+				_output += ' ';
+				printChild(enumerator.value);
+			}
+			_output += ')';
+		}
+		_output += "))";
+	}
+
+	void AstPrinter::visit(TypedefDecl& node)
+	{
+		_output += "(typedef ";
+		_output += node.name();
+		_output += ' ';
+		appendTypeName(node.underlyingType());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(TranslationUnit& node)
+	{
+		_output += "(unit";
+		for (Decl* decl : node.decls())
+		{
+			_output += ' ';
+			printChild(decl);
+		}
 		_output += ')';
 	}
 }

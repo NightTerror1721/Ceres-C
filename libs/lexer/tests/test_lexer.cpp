@@ -318,12 +318,12 @@ TEST(lexer, all_operators_and_punctuation_are_recognized)
 {
 	support::DiagnosticEngine diagnostics;
 	support::StringPool pool;
-	Lexer lexer("( ) { } [ ] , ; : ~ . -> -- -= - ++ += + *= * /= / %= % && &= & || |= | ^= ^ != ! == = <<= << <= < >>= >> >= >", testSourceId(), diagnostics, pool);
+	Lexer lexer("( ) { } [ ] , ; : ? ~ . -> -- -= - ++ += + *= * /= / %= % && &= & || |= | ^= ^ != ! == = <<= << <= < >>= >> >= >", testSourceId(), diagnostics, pool);
 
 	const TokenKind expectedKinds[] = {
 		TokenKind::LParen, TokenKind::RParen, TokenKind::LBrace, TokenKind::RBrace,
 		TokenKind::LBracket, TokenKind::RBracket, TokenKind::Comma, TokenKind::Semicolon,
-		TokenKind::Colon, TokenKind::Tilde, TokenKind::Dot, TokenKind::Arrow,
+		TokenKind::Colon, TokenKind::Question, TokenKind::Tilde, TokenKind::Dot, TokenKind::Arrow,
 		TokenKind::MinusMinus, TokenKind::MinusEqual, TokenKind::Minus,
 		TokenKind::PlusPlus, TokenKind::PlusEqual, TokenKind::Plus,
 		TokenKind::StarEqual, TokenKind::Star, TokenKind::SlashEqual, TokenKind::Slash,

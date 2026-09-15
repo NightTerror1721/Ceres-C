@@ -98,6 +98,7 @@ namespace ceresc::lexer
 		Comma,				// ,
 		Semicolon,			// ;
 		Colon,				// :
+		Question,			// ?
 		Dot,				// .
 		Arrow,				// ->
 		Plus,				// +
@@ -343,6 +344,7 @@ namespace ceresc::lexer
 		constexpr bool isComma() const noexcept { return _kind == TokenKind::Comma; }
 		constexpr bool isSemicolon() const noexcept { return _kind == TokenKind::Semicolon; }
 		constexpr bool isColon() const noexcept { return _kind == TokenKind::Colon; }
+		constexpr bool isQuestion() const noexcept { return _kind == TokenKind::Question; }
 		constexpr bool isDot() const noexcept { return _kind == TokenKind::Dot; }
 		constexpr bool isArrow() const noexcept { return _kind == TokenKind::Arrow; }
 		constexpr bool isPlus() const noexcept { return _kind == TokenKind::Plus; }
@@ -440,6 +442,7 @@ namespace ceresc::lexer
 		static forceinline constexpr Token makeComma(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Comma, ",", location); }
 		static forceinline constexpr Token makeSemicolon(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Semicolon, ";", location); }
 		static forceinline constexpr Token makeColon(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Colon, ":", location); }
+		static forceinline constexpr Token makeQuestion(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Question, "?", location); }
 		static forceinline constexpr Token makeDot(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Dot, ".", location); }
 		static forceinline constexpr Token makeArrow(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Arrow, "->", location); }
 		static forceinline constexpr Token makePlus(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Plus, "+", location); }
