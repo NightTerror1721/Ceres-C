@@ -4,4 +4,6 @@
 # Type*, every VarDecl with its frame offset or global address.
 
 ceresc_add_library(sema DEPENDS ast support)
-ceresc_add_tests(sema)
+# lexer+parser are test-only (see ceresc_add_tests()'s own note): sema's tests build their fixture
+# ASTs by parsing source text, but the sema library itself never depends on either.
+ceresc_add_tests(sema DEPENDS lexer parser)

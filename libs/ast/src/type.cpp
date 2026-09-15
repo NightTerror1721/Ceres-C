@@ -1,0 +1,141 @@
+#include <ceresc/ast/type.h>
+#include <ceresc/ast/decl.h>
+#include <limits>
+
+// sizeInBytes()/alignment()/isSigned() - declared in type.h, implemented here because the Struct
+// case needs StructDecl's complete definition (type.h only forward-declares it, see decl.h's own
+// header comment on why an actual #include would be a real cycle).
+//
+// Struct layout follows the exact rule CeresASM's own `struct` does (docs/23-Structs.md): fields
+// in declaration order, each padded up to its own natural alignment, the total rounded up to the
+// widest field's alignment. Primitive sizes/alignments mirror CASM's data_type.h
+// (docs/11-Data-Types-and-Literals.md): u8/i8=1, u16/i16=2, u32/i32/f32=4, and a Ceres address
+// (Pointer) is a u32, so 4 bytes as well. `long`/`unsigned long` are int-sized in this ABI - Ceres
+// has no native 64-bit register (see type.h's own note), so there is no wider integer to give them.
+// `double` is unreachable from a valid program (the parser rejects it - see type.h) and its size
+// here is a placeholder, never actually relied on. Enum is always int-sized, same as most C ABIs -
+// it does not need a StructDecl-style computed layout.
+//
+// Both walks take an explicit recursion depth and bail out past a small limit instead of
+// recursing forever: a struct that (illegally) contains itself by value, directly or through
+// another struct, would otherwise stack-overflow here. sema (libs/sema/type_layout.h) is what
+// actually diagnoses that cycle as a semantic error; this is just a defensive backstop so calling
+// sizeInBytes()/alignment() directly (e.g. from a test, or before sema has run) can never crash.
+
+namespace ceresc::ast
+{
+	namespace
+	{
+		constexpr u32 MaxLayoutDepth = 64;
+
+		u32 alignmentOf(const Type* type, u32 depth) noexcept;
+
+		u32 sizeOf(const Type* type, u32 depth) noexcept
+		{
+			if (!type || depth > MaxLayoutDepth)
+				return 0;
+
+			switch (type->kind())
+			{
+				case TypeKind::Void: return 0;
+				case TypeKind::Bool: return 1;
+				case TypeKind::Char: return 1;
+				case TypeKind::UChar: return 1;
+				case TypeKind::SChar: return 1;
+				case TypeKind::Short: return 2;
+				case TypeKind::UShort: return 2;
+				case TypeKind::Int: return 4;
+				case TypeKind::UInt: return 4;
+				case TypeKind::Long: return 4;
+				case TypeKind::ULong: return 4;
+				case TypeKind::Float: return 4;
+				case TypeKind::Double: return 8;
+				case TypeKind::Pointer: return 4;
+				case TypeKind::Array:
+				{
+					// u32*u32 can overflow for a large element size times a large count (e.g. a
+					// multi-dimensional array) - compute in u64 and report 0 (same "can't tell you
+					// a real size" sentinel an incomplete struct already uses) rather than silently
+					// wrapping to a small, wrong value that would flow straight into offsets/alloc math.
+					const u64 bytes = static_cast<u64>(sizeOf(type->arrayElementType(), depth + 1)) * type->arraySize();
+					return bytes > (std::numeric_limits<u32>::max)() ? 0 : static_cast<u32>(bytes);
+				}
+				case TypeKind::Enum: return 4;
+				case TypeKind::Struct:
+				{
+					StructDecl* decl = type->structDecl();
+					if (!decl || !decl->isComplete())
+						return 0;
+
+					u32 size = 0;
+					u32 maxAlign = 1;
+					for (const FieldDecl& field : decl->fields())
+					{
+						if (!field.type)
+							continue;
+						u32 fieldAlign = alignmentOf(field.type, depth + 1);
+						size = alignUp(size, fieldAlign) + sizeOf(field.type, depth + 1);
+						maxAlign = fieldAlign > maxAlign ? fieldAlign : maxAlign;
+					}
+					return alignUp(size, maxAlign);
+				}
+			}
+			return 0;
+		}
+
+		u32 alignmentOf(const Type* type, u32 depth) noexcept
+		{
+			if (!type || depth > MaxLayoutDepth)
+				return 1;
+
+			switch (type->kind())
+			{
+				case TypeKind::Void: return 1;
+				case TypeKind::Bool: case TypeKind::Char: case TypeKind::UChar: case TypeKind::SChar: return 1;
+				case TypeKind::Short: case TypeKind::UShort: return 2;
+				case TypeKind::Int: case TypeKind::UInt: case TypeKind::Long: case TypeKind::ULong: return 4;
+				case TypeKind::Float: return 4;
+				case TypeKind::Double: return 8;
+				case TypeKind::Pointer: return 4;
+				case TypeKind::Array: return alignmentOf(type->arrayElementType(), depth + 1);
+				case TypeKind::Enum: return 4;
+				case TypeKind::Struct:
+				{
+					StructDecl* decl = type->structDecl();
+					if (!decl || !decl->isComplete())
+						return 1;
+
+					u32 maxAlign = 1;
+					for (const FieldDecl& field : decl->fields())
+					{
+						if (!field.type)
+							continue;
+						u32 fieldAlign = alignmentOf(field.type, depth + 1);
+						maxAlign = fieldAlign > maxAlign ? fieldAlign : maxAlign;
+					}
+					return maxAlign;
+				}
+			}
+			return 1;
+		}
+	}
+
+	u32 Type::sizeInBytes() const noexcept { return sizeOf(this, 0); }
+	u32 Type::alignment() const noexcept { return alignmentOf(this, 0); }
+
+	bool Type::isSigned() const noexcept
+	{
+		switch (_kind)
+		{
+			case TypeKind::Char:
+			case TypeKind::SChar:
+			case TypeKind::Short:
+			case TypeKind::Int:
+			case TypeKind::Long:
+			case TypeKind::Enum: // int-sized and int-valued, same as integerPromote() in sema.cpp
+				return true;
+			default:
+				return false;
+		}
+	}
+}

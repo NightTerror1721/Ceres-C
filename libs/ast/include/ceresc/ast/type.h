@@ -115,6 +115,18 @@ namespace ceresc::ast
 		constexpr bool isStruct() const noexcept { return _kind == TypeKind::Struct; }
 		constexpr bool isEnum() const noexcept { return _kind == TypeKind::Enum; }
 
+		// Not constexpr: the Struct case walks StructDecl::fields(), which needs the complete
+		// class (only forward-declared here - see the header comment above), so these three are
+		// implemented in type.cpp instead of inline. sizeInBytes()/alignment() follow the same
+		// rule CASM's own struct layout does (each field aligned to its own size, the total
+		// rounded up to the widest field - see §8 and libs/sema/type_layout.h's own note), which
+		// is why this only becomes meaningful once sema's struct-layout work exists to define that
+		// rule for the codebase; a Struct type on an incomplete StructDecl reports sizeInBytes() 0
+		// and alignment() 1 (alignmentOf()'s `1` doubles as its "alignment unknown" answer).
+		u32 sizeInBytes() const noexcept;
+		u32 alignment() const noexcept;
+		bool isSigned() const noexcept;
+
 	private:
 		static forceinline const Type* makeCompound(support::Arena& arena, TypeKind kind, bool isConst, bool isVolatile, PayloadType payload, u32 arraySize = 0) noexcept
 		{

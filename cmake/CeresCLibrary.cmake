@@ -93,11 +93,20 @@ function(ceresc_add_library name)
 	set_property(GLOBAL APPEND PROPERTY CERESC_LIBRARY_STATUS "${name}=${source_count}")
 endfunction()
 
-# ceresc_add_tests(<name>)
+# ceresc_add_tests(<name> [DEPENDS <name> ...])
 #
 # A library's unit suite, if it already has files under tests/. Called from the library's own
 # CMakeLists, next to its ceresc_add_library().
+#
+# DEPENDS here is test-only, separate from ceresc_add_library()'s own DEPENDS: a library's real
+# sources link only what the library itself needs (e.g. sema does not - and must not - depend on
+# parser, see §1's dependency diagram), but its tests are free to reach further downstream to
+# build fixtures - sema's own suite parses source text into an AST via libs/lexer+libs/parser
+# rather than hand-building one with Arena::create<T>. Linking that into the test executable alone
+# keeps ceresc_sema's own dependency graph honest while still letting its tests do this.
 function(ceresc_add_tests name)
+	cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "DEPENDS")
+
 	if(NOT CERESC_BUILD_TESTS)
 		return()
 	endif()
@@ -115,6 +124,10 @@ function(ceresc_add_tests name)
 	set(target "ceresc_${name}_tests")
 	add_executable(${target} ${sources})
 	target_link_libraries(${target} PRIVATE ceresc::${name} ceresc::test_main ceresc::warnings)
+
+	foreach(dependency IN LISTS ARG_DEPENDS)
+		target_link_libraries(${target} PRIVATE ceresc::${dependency})
+	endforeach()
 
 	# A library's suite does see its private headers. It's the only exception to the include/ vs
 	# src/ boundary, and it's deliberate: a unit test that can only touch the public API isn't

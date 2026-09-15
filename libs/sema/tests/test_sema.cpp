@@ -1,0 +1,702 @@
+#include <ceresc/sema/sema.h>
+#include <ceresc/sema/type_layout.h>
+#include <ceresc/parser/parser.h>
+#include <ceresc/ast/ast_printer.h>
+#include <ceresc/lexer/lexer.h>
+#include <ceresc/support/arena.h>
+#include <ceresc/support/diagnostics.h>
+#include <ceresc/support/string_pool.h>
+
+#include "framework.h"
+
+using namespace ceresc;
+
+namespace
+{
+	support::SourceId testSourceId() { return support::SourceId::make(1); }
+
+	struct CheckOutcome
+	{
+		bool ok = false;
+		std::vector<std::string> messages;
+	};
+
+	// Parses `source` as a whole translation unit and runs Sema on it. `ok` is true only when the
+	// file both parses cleanly and type-checks with zero errors - `messages` collects every
+	// diagnostic (parse or sema) reported along the way, for tests that need to assert a specific
+	// error was the one reported.
+	CheckOutcome checkSource(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		parser::Parser parser(lexer, arena, diagnostics);
+
+		CheckOutcome outcome;
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+		if (unit && !diagnostics.hasErrors())
+		{
+			sema::Sema sema(arena, diagnostics);
+			outcome.ok = sema.check(*unit);
+		}
+		else
+		{
+			outcome.ok = false;
+		}
+
+		for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+			outcome.messages.push_back(diagnostic.message);
+		return outcome;
+	}
+
+	bool containsMessage(const CheckOutcome& outcome, std::string_view needle)
+	{
+		for (const std::string& message : outcome.messages)
+		{
+			if (message.find(needle) != std::string::npos)
+				return true;
+		}
+		return false;
+	}
+
+	// Parses a full program (expected to define `int main() { ...; TARGET; }` as its last
+	// declaration), runs Sema on it, and returns the printed type (ast_printer.h's typeName) of
+	// main's last statement - which must be an ExprStmt. Used to assert what type Sema resolved a
+	// specific expression to, since Sema has no public API to query an arbitrary node after check().
+	//
+	// `expectOk` (default true) also asserts sema.check() succeeded: without it, a source that
+	// fails to type-check for an unrelated reason would still read back the offending expression's
+	// error-recovery fallback type (usually "int") and a broken test could stay green. Pass false
+	// for the handful of tests that deliberately exercise that same fallback behaviour on purpose.
+	std::string typeOfMainLastExpr(std::string_view source, bool expectOk = true)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		parser::Parser parser(lexer, arena, diagnostics);
+
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+		if (!unit)
+			return "<parse-failed>";
+
+		sema::Sema sema(arena, diagnostics);
+		bool ok = sema.check(*unit);
+		if (expectOk)
+			CHECK(ok);
+
+		for (ast::Decl* decl : unit->decls())
+		{
+			auto* func = dynamic_cast<ast::FunctionDecl*>(decl);
+			if (!func || func->name() != "main" || !func->body())
+				continue;
+
+			std::span<ast::Stmt* const> stmts = func->body()->stmts();
+			if (stmts.empty())
+				return "<empty-main>";
+
+			auto* exprStmt = dynamic_cast<ast::ExprStmt*>(stmts.back());
+			if (!exprStmt)
+				return "<last-stmt-not-expr>";
+
+			return ast::AstPrinter::typeName(exprStmt->expr()->type());
+		}
+		return "<no-main>";
+	}
+}
+
+// ---- literal / arithmetic expression types -------------------------------------------------------
+
+TEST(sema, literal_types)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42; }"), "int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1.5; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 'a'; }"), "char");
+	CHECK_EQ(typeOfMainLastExpr("int main() { true; }"), "bool");
+	CHECK_EQ(typeOfMainLastExpr("int main() { \"hi\"; }"), "char*");
+}
+
+TEST(sema, small_integer_types_promote_to_int_in_arithmetic)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { (char)1 + (char)2; }"), "int");
+}
+
+TEST(sema, mixed_int_and_float_promotes_to_float)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 + 1.5; }"), "float");
+}
+
+TEST(sema, unsigned_beats_signed_int_at_the_same_rank)
+{
+	CHECK_EQ(typeOfMainLastExpr("unsigned int u; int main() { u + 1; }"), "unsigned int");
+}
+
+TEST(sema, comparisons_produce_bool)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 < 2; }"), "bool");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 == 2; }"), "bool");
+}
+
+TEST(sema, logical_operators_produce_bool)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 && 0; }"), "bool");
+	CHECK_EQ(typeOfMainLastExpr("int main() { !1; }"), "bool");
+}
+
+TEST(sema, sizeof_produces_unsigned_int)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { sizeof(int); }"), "unsigned int");
+}
+
+TEST(sema, cast_result_type_is_the_target_type)
+{
+	// This alone only exercises the parser: a CastExpr already carries its target type before
+	// Sema ever sees it (CastExpr::CastExpr calls setType() at construction, see expr.h), and
+	// Sema::visit(CastExpr&) never re-sets it. Sema's own share of cast handling is the
+	// operand/target compatibility check below.
+	CHECK_EQ(typeOfMainLastExpr("int main() { (float)1; }"), "float");
+
+	CheckOutcome badCast = checkSource("struct P { int x; }; int main() { struct P p; (int)p; }");
+	CHECK(!badCast.ok);
+	CHECK(containsMessage(badCast, "cannot cast"));
+}
+
+TEST(sema, ternary_with_matching_branch_types)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 ? 2 : 3; }"), "int");
+}
+
+TEST(sema, ternary_with_mixed_arithmetic_branches_promotes)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 ? 2 : 2.5; }"), "float");
+}
+
+TEST(sema, address_of_and_deref_round_trip)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { int x; *&x; }"), "int");
+}
+
+TEST(sema, pointer_plus_int_stays_a_pointer)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { int x; int* p; p = &x; p + 1; }"), "int*");
+}
+
+// ---- name resolution / scoping --------------------------------------------------------------------
+
+TEST(sema, undeclared_identifier_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { x; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "use of undeclared identifier"));
+}
+
+TEST(sema, variable_declared_before_use_resolves_cleanly)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; x; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, shadowing_in_a_nested_block_is_allowed)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; { int x; x; } }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, redeclaration_in_the_same_scope_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; int x; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition of 'x'"));
+}
+
+TEST(sema, for_loop_variable_is_scoped_to_the_loop)
+{
+	// `i` must not leak past the for-statement's own scope into the enclosing block.
+	CheckOutcome outcome = checkSource("int main() { for (int i = 0; i < 10; i = i + 1) { } i; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "use of undeclared identifier"));
+}
+
+// ---- functions -------------------------------------------------------------------------------------
+
+TEST(sema, function_call_with_matching_arguments_is_valid)
+{
+	CheckOutcome outcome = checkSource("int add(int a, int b) { return a + b; } int main() { add(1, 2); }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, function_call_argument_count_mismatch_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int add(int a, int b) { return a + b; } int main() { add(1); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "expects 2 argument"));
+}
+
+TEST(sema, function_call_argument_type_mismatch_is_an_error)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; };"
+		"void take(int a) { }"
+		"int main() { struct P p; take(p); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+}
+
+TEST(sema, calling_an_undeclared_function_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { foo(1); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "use of undeclared identifier"));
+}
+
+TEST(sema, calling_a_non_function_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; x(1); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "is not a function"));
+}
+
+TEST(sema, prototype_then_matching_definition_is_allowed)
+{
+	CheckOutcome outcome = checkSource("int add(int a, int b); int add(int a, int b) { return a + b; } int main() { add(1, 2); }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, conflicting_redeclaration_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int add(int a, int b); float add(int a); int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "conflicting types"));
+}
+
+TEST(sema, redefinition_of_a_function_body_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int add(int a) { return a; } int add(int a) { return a; } int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition of function"));
+}
+
+TEST(sema, return_type_mismatch_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; struct P make() { return 1; } int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible result type"));
+}
+
+TEST(sema, void_function_returning_a_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("void f() { return 1; } int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "should not return a value"));
+}
+
+TEST(sema, non_void_function_missing_a_return_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int f() { return; } int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "should return a value"));
+}
+
+// ---- structs -----------------------------------------------------------------------------------------
+
+TEST(sema, struct_member_access_resolves_field_type)
+{
+	CHECK_EQ(typeOfMainLastExpr("struct P { int x; float y; }; int main() { struct P p; p.y; }"), "float");
+}
+
+TEST(sema, struct_arrow_access_resolves_field_type)
+{
+	CHECK_EQ(typeOfMainLastExpr("struct P { int x; }; int main() { struct P p; struct P* pp; pp = &p; pp->x; }"), "int");
+}
+
+TEST(sema, member_access_on_a_missing_field_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; int main() { struct P p; p.y; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "no member named"));
+}
+
+TEST(sema, dot_on_a_non_struct_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; x.y; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "is not a struct"));
+}
+
+TEST(sema, arrow_on_a_non_pointer_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; int main() { struct P p; p->x; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "is not a pointer to struct"));
+}
+
+TEST(sema, self_referential_struct_via_pointer_is_valid)
+{
+	CheckOutcome outcome = checkSource("struct Node { int value; struct Node* next; }; int main() { }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, self_referential_struct_by_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct Node { int value; struct Node inner; }; int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "illegal by-value cycle"));
+}
+
+TEST(sema, struct_field_of_void_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { void x; }; int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incomplete type 'void'"));
+}
+
+// ---- assignment / lvalues -----------------------------------------------------------------------------
+
+TEST(sema, assignment_to_a_literal_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { 1 = 2; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "not assignable"));
+}
+
+TEST(sema, assignment_between_compatible_types_is_valid)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; x = 5; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, assignment_between_incompatible_types_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; int main() { struct P p; int i; i = p; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+}
+
+// ---- control flow --------------------------------------------------------------------------------------
+
+TEST(sema, break_outside_a_loop_or_switch_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { break; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'break' statement not in a loop or switch"));
+}
+
+TEST(sema, break_inside_a_while_loop_is_valid)
+{
+	CheckOutcome outcome = checkSource("int main() { while (1) { break; } }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, continue_outside_a_loop_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { continue; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'continue' statement not in a loop"));
+}
+
+TEST(sema, case_outside_a_switch_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { case 1: ; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'case' statement not in a switch"));
+}
+
+TEST(sema, default_outside_a_switch_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { default: ; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'default' statement not in a switch"));
+}
+
+TEST(sema, case_with_a_non_constant_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; switch (x) { case x: ; } }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "does not reduce to an integer constant"));
+}
+
+TEST(sema, case_with_an_enum_constant_is_valid)
+{
+	CheckOutcome outcome = checkSource(
+		"enum Color { Red, Green, Blue };"
+		"int main() { enum Color c; switch (c) { case Red: ; case Green: ; default: ; } }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, switch_on_a_non_integer_condition_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; int main() { struct P p; switch (p) { } }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "is not an integer"));
+}
+
+TEST(sema, goto_to_an_existing_label_is_valid)
+{
+	CheckOutcome outcome = checkSource("int main() { goto end; end: ; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, goto_to_a_missing_label_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { goto nowhere; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "use of undeclared label"));
+}
+
+TEST(sema, duplicate_label_in_the_same_function_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { end: ; end: ; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition of label"));
+}
+
+TEST(sema, if_condition_must_be_scalar)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; int main() { struct P p; if (p) { } }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "arithmetic or pointer type is required"));
+}
+
+// ---- constant-expression evaluator (public, used internally for enum values / case labels) ------------
+
+TEST(sema, eval_constant_expr_handles_arithmetic)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("1 + 2 * 3", testSourceId(), diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::Expr* expr = parser.parseExpression();
+
+	sema::Sema sema(arena, diagnostics);
+	std::optional<i64> result = sema.evalConstantExpr(expr);
+	CHECK(result.has_value());
+	CHECK_EQ(*result, 7);
+}
+
+TEST(sema, eval_constant_expr_handles_bitwise_and_ternary)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("1 ? (1 << 2) | 1 : 0", testSourceId(), diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::Expr* expr = parser.parseExpression();
+
+	sema::Sema sema(arena, diagnostics);
+	std::optional<i64> result = sema.evalConstantExpr(expr);
+	CHECK(result.has_value());
+	CHECK_EQ(*result, 5);
+}
+
+TEST(sema, eval_constant_expr_rejects_an_out_of_range_shift_count)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("1 << 64", testSourceId(), diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::Expr* expr = parser.parseExpression();
+
+	sema::Sema sema(arena, diagnostics);
+	std::optional<i64> result = sema.evalConstantExpr(expr);
+	CHECK(!result.has_value());
+}
+
+TEST(sema, eval_constant_expr_rejects_a_non_constant)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("x + 1", testSourceId(), diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::Expr* expr = parser.parseExpression();
+
+	sema::Sema sema(arena, diagnostics);
+	std::optional<i64> result = sema.evalConstantExpr(expr);
+	CHECK(!result.has_value());
+}
+
+// ---- lvalue-ness -------------------------------------------------------------------------------------
+
+TEST(sema, dot_access_on_a_non_lvalue_struct_result_is_not_assignable)
+{
+	// `f().x` is not an lvalue when f() returns a struct by value (real C's rule) - only `->`
+	// dereferences and is unconditionally an lvalue regardless of its own operand.
+	CheckOutcome outcome = checkSource("struct P { int x; }; struct P make(); int main() { make().x = 1; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "not assignable"));
+}
+
+TEST(sema, assigning_to_an_enum_constant_is_an_error)
+{
+	CheckOutcome outcome = checkSource("enum Color { Red }; int main() { Red = 1; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "not assignable"));
+}
+
+TEST(sema, using_a_function_name_as_a_bare_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int f(); int main() { f; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "using function 'f' as a value"));
+}
+
+// ---- pointer/null comparisons -------------------------------------------------------------------------
+
+TEST(sema, pointer_compared_against_the_integer_constant_zero_is_valid)
+{
+	CheckOutcome outcome = checkSource("int main() { int* p; p == 0; p != 0; 0 == p; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, pointer_compared_against_a_nonzero_integer_constant_is_still_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int* p; p == 5; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "comparison of incompatible operand types"));
+}
+
+// ---- switch label uniqueness --------------------------------------------------------------------------
+
+TEST(sema, duplicate_case_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; switch (x) { case 1: ; case 1: ; } }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "duplicate case value"));
+}
+
+TEST(sema, duplicate_default_label_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int main() { int x; switch (x) { default: ; default: ; } }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "multiple default labels"));
+}
+
+// ---- declaration scoping -------------------------------------------------------------------------------
+
+TEST(sema, self_referencing_initializer_resolves_to_the_new_declaration)
+{
+	// In C the declarator's own scope starts before its initializer, so `int x = x;` names the
+	// new (uninitialized) `x`, not an outer one - it must not report "undeclared identifier".
+	CheckOutcome outcome = checkSource("int main() { int x = x; }");
+	CHECK(outcome.ok);
+	CHECK(!containsMessage(outcome, "undeclared"));
+}
+
+TEST(sema, redeclaring_a_parameter_in_the_function_bodys_outer_block_is_an_error)
+{
+	// The parameter list and the body's outermost block share one scope in C - `int x;` inside
+	// the body must conflict with parameter `x`, not merely shadow it.
+	CheckOutcome outcome = checkSource("void f(int x) { int x; } int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition of 'x'"));
+}
+
+// ---- incomplete-type struct fields ----------------------------------------------------------------------
+
+TEST(sema, struct_field_of_an_incomplete_enum_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct P { enum Color c; }; int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incomplete type 'enum"));
+}
+
+TEST(sema, array_of_self_by_value_is_caught_through_the_array_element_type)
+{
+	// Arrays have no declarator syntax in the parser yet (see type.h/parser.cpp's own notes), so
+	// this builds the StructDecl/Type directly rather than through source text, to exercise
+	// validateStructLayout()'s array-unwrapping on a shape the parser cannot produce today:
+	// `struct Node { struct Node children[2]; };` is exactly as illegal as the by-value (non-array)
+	// case, since an array stores its elements inline, same as a plain by-value field.
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::SourceLocation loc{};
+
+	ast::StructDecl* node = arena.create<ast::StructDecl>(loc, "Node");
+	const ast::Type* nodeArrayType = ast::Type::makeArray(arena, ast::Type::makeStruct(arena, node), 2);
+	ast::FieldDecl fields[] = { { nodeArrayType, "children", loc } };
+	node->setFields(fields);
+
+	CHECK(!sema::validateStructLayout(diagnostics, *node));
+
+	bool foundCycleMessage = false;
+	for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+	{
+		if (diagnostic.message.find("illegal by-value cycle") != std::string::npos)
+			foundCycleMessage = true;
+	}
+	CHECK(foundCycleMessage);
+}
+
+// ---- error-recovery type annotations (regression: a failed type check must fall back to int, ---
+// ---- not leak the offending operand's own type onto the node) ---------------------------------------
+
+TEST(sema, binary_expr_with_invalid_operand_types_recovers_to_int_not_the_operand_type)
+{
+	CheckOutcome outcome = checkSource("struct P { int x; }; int main() { struct P p; p & p; }");
+	CHECK(!outcome.ok);
+	CHECK_EQ(typeOfMainLastExpr("struct P { int x; }; int main() { struct P p; p & p; }", false), "int");
+}
+
+TEST(sema, unary_negate_and_bitwise_not_with_invalid_operand_recover_to_int)
+{
+	CHECK_EQ(typeOfMainLastExpr("struct P { int x; }; int main() { struct P p; -p; }", false), "int");
+	CHECK_EQ(typeOfMainLastExpr("struct P { int x; }; int main() { struct P p; ~p; }", false), "int");
+}
+
+TEST(sema, function_colliding_with_a_variable_name_stays_callable_after_the_conflict_error)
+{
+	// Regression: the mismatched-kind recovery path used to silently drop the function from the
+	// symbol table, so a later call produced a second, more confusing "is not a function" error
+	// on top of the correct "redefinition ... as a different kind of symbol" one.
+	CheckOutcome outcome = checkSource("int foo; int foo(int x) { return x; } int main() { foo(1); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition of 'foo' as a different kind of symbol"));
+	CHECK(!containsMessage(outcome, "is not a function"));
+}
+
+// ---- whole-program integration ---------------------------------------------------------------------------
+
+TEST(sema, a_well_formed_program_using_every_Fase4_feature_checks_cleanly)
+{
+	CheckOutcome outcome = checkSource(
+		"struct Point { int x; int y; };"
+		"enum Direction { North, East, South, West };"
+		"typedef struct Point Vec2;"
+		""
+		"int distanceSquared(struct Point a, struct Point b)"
+		"{"
+		"    int dx = a.x - b.x;"
+		"    int dy = a.y - b.y;"
+		"    return dx * dx + dy * dy;"
+		"}"
+		""
+		"int main()"
+		"{"
+		"    struct Point origin;"
+		"    origin.x = 0;"
+		"    origin.y = 0;"
+		""
+		"    enum Direction facing = North;"
+		"    switch (facing)"
+		"    {"
+		"        case North: facing = East; break;"
+		"        case East: facing = South; break;"
+		"        default: goto done;"
+		"    }"
+		""
+		"    for (int i = 0; i < 10; i = i + 1)"
+		"    {"
+		"        if (i == 5)"
+		"            continue;"
+		"        if (i == 9)"
+		"            break;"
+		"    }"
+		""
+		"done:"
+		"    return distanceSquared(origin, origin);"
+		"}");
+	CHECK(outcome.ok);
+}

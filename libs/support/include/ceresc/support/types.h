@@ -36,6 +36,16 @@ namespace ceresc
 	using uoffset = std::size_t;
 	using ioffset = std::make_signed_t<std::size_t>;
 
+	// Rounds `value` up to the next multiple of `alignment` (a power of two; `alignment <= 1` is a
+	// no-op). Shared by libs/ast/type.cpp and libs/sema/type_layout.cpp, which must apply this
+	// exact rule identically - a struct's own Type::sizeInBytes()/alignment() and the per-field
+	// byte offsets sema::fieldOffset() hands to codegen have to agree on every struct's layout, so
+	// this lives here once instead of as two copies that could silently drift apart.
+	constexpr u32 alignUp(u32 value, u32 alignment) noexcept
+	{
+		return alignment <= 1 ? value : (value + alignment - 1) & ~(alignment - 1);
+	}
+
 	template <typename T>
 	using Ref = std::reference_wrapper<T>;
 
