@@ -146,6 +146,9 @@ namespace ceresc
 
 	template <typename T, typename U>
 	concept ViewDerivedFrom = std::ranges::view<T> && std::derived_from<std::ranges::range_value_t<T>, U>;
+
+	template <typename T>
+	concept TriviallyDestructible = std::is_trivially_destructible_v<T>;
 }
 
 #ifndef forceinline

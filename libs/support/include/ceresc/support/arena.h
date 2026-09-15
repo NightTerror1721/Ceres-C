@@ -129,7 +129,7 @@ namespace ceresc::support
 			return _blocks.back().allocate(size, alignment);
 		}
 
-		template <typename T, typename... Args> requires std::is_trivially_destructible_v<T>
+		template <TriviallyDestructible T, typename... Args>
 		[[nodiscard]] T* create(Args&&... args)
 		{
 			static_assert(!std::is_array_v<T>, "Arena::create<T> not supported for array types.");
