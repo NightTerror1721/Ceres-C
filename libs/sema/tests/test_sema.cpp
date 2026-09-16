@@ -1304,3 +1304,15 @@ TEST(sema, a_pointer_conversion_may_not_discard_volatile)
 	CHECK(checkSource("int w; int f(void) { int* p = &w; volatile int* q = p; return *q; }").ok);
 	CHECK(checkSource("int f(void) { volatile int* q = 0; int* p = (int*)q; return *p; }").ok);
 }
+
+TEST(sema, register_is_rejected_on_an_array)
+{
+	// An array decays to a pointer the moment it is used for anything but `sizeof`, and that decay
+	// IS taking its address - so every use of a `register` array breaks the keyword's one promise.
+	// The `&` check cannot see it, because no `&` is written anywhere.
+	CheckOutcome outcome = checkSource("int f(void) { register int a[3]; a[0] = 1; return a[0]; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "using an array takes its address"));
+
+	CHECK(checkSource("int f(void) { register int x = 1; return x; }").ok);
+}

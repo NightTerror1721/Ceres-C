@@ -1084,3 +1084,46 @@ TEST(codegen, an_ordinary_parameter_is_still_promoted_to_a_register)
 	CHECK(!contains(casm, "struct __frame_f"));
 	CHECK_EQ(countOf(casm, "ldr r"), usize(0));
 }
+
+// ---- register reorders the allocator's preferences ---------------------------------------------
+
+TEST(codegen, register_wins_the_pool_over_a_local_that_did_not_ask)
+{
+	// IrLocalSlot::preferRegister was written by IrBuilder and read by nobody: the pool was handed
+	// out in declaration order, so a `register` local declared late lost to ordinary variables
+	// declared early and the keyword changed nothing at all in the generated code.
+	//
+	// Loop-carried locals, because that is what survives to ValuePlacement: in straight-line code
+	// store-to-load forwarding removes the locals entirely long before the allocator sees them, and
+	// the only thing left to place is temporaries.
+	std::string_view program =
+		"int f(int n)"
+		"{"
+		"    int a = n; int b = n; int c = n; int d = n; int e = n; int g = n;"
+		"    {}REGISTER{}int hot = 0;"
+		"    int k = 0;"
+		"    while (k < n) { hot = hot + a + b + c + d + e + g; k = k + 1; }"
+		"    return hot;"
+		"}";
+	std::string withRegister(program);
+	withRegister.replace(withRegister.find("{}REGISTER{}"), 12, "register ");
+	std::string without(program);
+	without.replace(without.find("{}REGISTER{}"), 12, "");
+
+	std::string asked = atO2(withRegister);
+	std::string did_not = atO2(without);
+	CHECK(asked != did_not);
+
+	// The variable that asked keeps its value in a register across the loop, so the body stops
+	// paying for it. Same frame either way - one local still spills, just not this one.
+	CHECK(countOf(asked, "ldr r") < countOf(did_not, "ldr r"));
+	CHECK(countOf(asked, "str [") < countOf(did_not, "str ["));
+}
+
+TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
+{
+	// The keyword reorders preferences and nothing else: a function that calls something cannot
+	// keep any local in a register across the call, whatever it asked for.
+	std::string casm = atO2("int g(int v); int f(int n) { register int x = n; return g(x) + x; }");
+	CHECK(contains(casm, "struct __frame_f"));
+}

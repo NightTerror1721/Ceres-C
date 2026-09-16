@@ -258,20 +258,40 @@ namespace ceresc::codegen
 		{
 			// Locals first: they are live for the whole function, so whatever they take is gone for
 			// its whole length. Only in a call-free function - see value_placement.h.
-			for (u32 i = 0; i < localCount; ++i)
+			//
+			// Two passes over the same list, not one: everything the program asked for with
+			// `register` is considered before anything that did not. The pool runs out when there
+			// are more eligible locals than registers, and until now that was settled purely by
+			// declaration order - so a `register` local declared late lost to ordinary variables
+			// declared early, and the keyword changed nothing at all in the generated code.
+			//
+			// Only the ORDER changes. Every condition below is a correctness rule (a call clobbers
+			// the pool, an escaped local needs an address, a volatile one needs a memory home, a
+			// wider-than-a-word one does not fit) and `register` does not relax one: C says the
+			// keyword is a request the implementation may decline, never a promise it must keep at
+			// the cost of a wrong answer.
+			auto assignLocals = [&](bool requested)
 			{
-				const IrLocalSlot& slot = localSlots[i];
-				bool paramOnStack = i < function.paramCount() && _paramArrival[i].kind == ArgSlotKind::Stack;
-				if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.isVolatile || slot.sizeInBytes != 4 || paramOnStack)
-					continue;
+				for (u32 i = 0; i < localCount; ++i)
+				{
+					const IrLocalSlot& slot = localSlots[i];
+					if (slot.preferRegister != requested)
+						continue;
 
-				// A parameter prefers the register it already arrived in: taking it means the
-				// prologue has nothing at all to emit for that parameter.
-				u32 preferred = (i < function.paramCount()) ? _paramArrival[i].index : ~0u;
-				std::vector<u32>& pool = slot.isFloat ? freeFloat : freeInt;
-				if (std::optional<u32> reg = takeRegister(pool, preferred))
-					_locals[i] = Placement{ PlacementKind::Register, *reg, slot.isFloat };
-			}
+					bool paramOnStack = i < function.paramCount() && _paramArrival[i].kind == ArgSlotKind::Stack;
+					if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.isVolatile || slot.sizeInBytes != 4 || paramOnStack)
+						continue;
+
+					// A parameter prefers the register it already arrived in: taking it means the
+					// prologue has nothing at all to emit for that parameter.
+					u32 preferred = (i < function.paramCount()) ? _paramArrival[i].index : ~0u;
+					std::vector<u32>& pool = slot.isFloat ? freeFloat : freeInt;
+					if (std::optional<u32> reg = takeRegister(pool, preferred))
+						_locals[i] = Placement{ PlacementKind::Register, *reg, slot.isFloat };
+				}
+			};
+			assignLocals(true);
+			assignLocals(false);
 		}
 
 		// Every FrameAddr naming a register-resident local becomes virtual: there is no address to

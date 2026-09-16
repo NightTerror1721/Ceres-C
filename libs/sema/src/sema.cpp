@@ -1277,6 +1277,17 @@ namespace ceresc::sema
 			_diagnostics.error(node.location(), "'register' is only allowed on a variable declared inside a block");
 		}
 
+		if (storageClass == ast::StorageClass::Register && node.type() && node.type()->isArray())
+		{
+			// An array decays to a pointer to its first element the moment it is used for anything
+			// but `sizeof`, and that decay IS taking its address - so every use of a `register`
+			// array breaks the one promise the keyword makes. The `&` check in visit(UnaryExpr&)
+			// cannot see it, because there is no `&` written anywhere; rejecting the declaration is
+			// the whole rule rather than chasing each use.
+			_diagnostics.error(node.location(),
+				"'register' is not allowed on array '{}': using an array takes its address", node.name());
+		}
+
 		if (storageClass == ast::StorageClass::Extern && node.initializer() && !atFileScope)
 		{
 			// At file scope `extern int x = 1;` is a definition with external linkage, which is

@@ -102,10 +102,15 @@ is still a duplicate.
 optimizer does not yet use no-alias assumptions across arbitrary pointers, so the qualifier is a
 checked contract rather than an unsafe speculative transformation.
 
-`register` requests ordinary register allocation when it is available and may only be used for
-automatic local variables — at file scope or on a function it is rejected, as in C. Also as in C,
-taking the address of one is rejected. It does not yet reorder the allocator's own preferences, so
-on a variable the allocator would have kept in a register anyway it says nothing new.
+`register` moves a local to the front of the queue for a machine register, ahead of everything that
+did not ask. It only reorders preferences: every condition that keeps a local out of a register is a
+correctness rule — a call clobbers the pool, an escaped local needs an address, a `volatile` one
+needs a memory home, one wider than a word does not fit — and the keyword relaxes none of them.
+Where no local would have been spilled anyway it therefore says nothing new, and at `-O0` it says
+nothing at all, because register allocation itself is off (see [the CLI](05-CLI.md)). It may only be
+used for automatic local variables — at file scope or on a function it is rejected, as in C. Also as
+in C, taking the address of one is rejected — and so is `register` on an *array*, because using an
+array at all takes its address.
 
 Unlike C, `register` is not accepted on a *parameter*: no storage-class specifier is, which is a
 general limitation of the parameter grammar rather than anything about this keyword.
