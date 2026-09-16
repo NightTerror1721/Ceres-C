@@ -1220,3 +1220,27 @@ TEST(ir, a_volatile_pointer_is_not_the_same_type_as_a_pointer_to_volatile)
 	CHECK(contains(text, "load.word.v"));   // reading it back
 	CHECK(contains(text, "load.word ["));   // ...and an ordinary load through it
 }
+
+TEST(ir, a_member_of_a_volatile_struct_is_volatile)
+{
+	// Only `const` used to travel from a qualified struct to its fields, so every access to a
+	// member of a `volatile struct` came out unmarked - which is the memory-mapped register block
+	// a program declares `volatile` for in the first place.
+	std::string direct = functionIr(
+		"struct R { int a; }; volatile struct R g; int f(void) { g.a = 1; return g.a; }", "f");
+	CHECK(contains(direct, "store.word.v"));
+	CHECK(contains(direct, "load.word.v"));
+
+	// Through a pointer to a volatile struct, where `->` has to reach the same conclusion.
+	std::string arrow = functionIr(
+		"struct R { int a; }; int f(volatile struct R* p) { p->a = 1; return p->a; }", "f");
+	CHECK(contains(arrow, "store.word.v"));
+	CHECK(contains(arrow, "load.word.v"));
+}
+
+TEST(ir, a_member_of_an_ordinary_struct_is_not_volatile)
+{
+	std::string text = functionIr(
+		"struct R { int a; }; int f(struct R* p) { p->a = 1; return p->a; }", "f");
+	CHECK(!contains(text, ".v"));
+}

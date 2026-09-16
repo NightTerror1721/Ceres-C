@@ -1283,3 +1283,13 @@ TEST(sema, register_is_only_allowed_on_a_variable_inside_a_block)
 	CHECK(!atFileScope.ok);
 	CHECK(containsMessage(atFileScope, "only allowed on a variable declared inside a block"));
 }
+
+TEST(sema, a_qualified_struct_hands_each_qualifier_to_its_members_independently)
+{
+	// `const` reaching a member is what makes `p->a = 1` an error through a `const struct R*`, and
+	// it kept working while `volatile` did not travel at all. Both now compose, so a
+	// `const volatile` object hands its fields both.
+	CHECK(!checkSource("struct R { int a; }; int f(const struct R* p) { p->a = 1; return 0; }").ok);
+	CHECK(checkSource("struct R { int a; }; int f(volatile struct R* p) { p->a = 1; return 0; }").ok);
+	CHECK(!checkSource("struct R { int a; }; int f(const volatile struct R* p) { p->a = 1; return 0; }").ok);
+}

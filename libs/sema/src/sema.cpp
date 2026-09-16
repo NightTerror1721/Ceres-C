@@ -906,7 +906,20 @@ namespace ceresc::sema
 				{
 					if (field.name == node.memberName())
 					{
-						resultType = structType->isConst() ? Type::withConst(_arena, field.type) : field.type;
+						// A member of a qualified struct is qualified too - both ways, and
+						// independently, so a `const volatile` object hands each of its fields
+						// both. Only `const` used to travel, which left every access to a field of
+						// a `volatile struct` unmarked: exactly the memory-mapped register block a
+						// program declares `volatile` in the first place.
+						//
+						// The array case needs nothing here, because there the qualifier already
+						// sits on the ELEMENT type and arrayElementType() hands it back as it is;
+						// a struct has a field list instead, and nobody was propagating to it.
+						resultType = field.type;
+						if (structType->isConst())
+							resultType = Type::withConst(_arena, resultType);
+						if (structType->isVolatile())
+							resultType = Type::withVolatile(_arena, resultType);
 						found = true;
 						break;
 					}
