@@ -52,7 +52,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(Expr*) * args.size(), alignof(Expr*));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating call arguments");
+			_diagnostics.error(_current.location(), "out of memory allocating an expression list");
 			return {};
 		}
 
@@ -1093,32 +1093,58 @@ namespace ceresc::parser
 		return _arena.create<ast::TypedefDecl>(location, name, underlyingType);
 	}
 
+	Expr* Parser::parseInitializer()
+	{
+		if (!check(TokenKind::LBrace))
+			return parseAssignment();
+
+		SourceLocation location = _current.location();
+		advance(); // '{'
+
+		if (check(TokenKind::RBrace))
+		{
+			// §3's initializer-list needs at least one element - see parser.h's own note.
+			_diagnostics.error(location, "an initializer list needs at least one value");
+			advance(); // '}'
+			return nullptr;
+		}
+
+		std::vector<Expr*> elements;
+		while (true)
+		{
+			Expr* element = parseInitializer(); // an element is itself an `initializer` - nesting
+			if (!element)
+				return nullptr;
+			elements.push_back(element);
+
+			if (!check(TokenKind::Comma))
+				break;
+			SourceLocation commaLocation = _current.location();
+			advance(); // ','
+			if (check(TokenKind::RBrace))
+			{
+				// `{ 1, 2, }` - real C allows it, §3's grammar does not. Reported where the comma
+				// actually is rather than at the brace, and the list is kept: the values are all
+				// there, so there is nothing to recover from beyond the stray comma itself.
+				_diagnostics.error(commaLocation, "a trailing ',' in an initializer list is not accepted in this version");
+				break;
+			}
+		}
+
+		if (!expect(TokenKind::RBrace, "'}'"))
+			return nullptr;
+
+		return _arena.create<ast::InitListExpr>(location, copyArgsToArena(elements));
+	}
+
 	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type)
 	{
 		Expr* initializer = nullptr;
-		if (check(TokenKind::Equal) && type && type->isArray() && _next.is(TokenKind::LBrace))
+		if (match(TokenKind::Equal))
 		{
-			// `int arr[3] = { 1, 2, 3 };` - brace initializer lists aren't implemented in this
-			// version (the architecture plan's §3 only promises fixed-size arrays, not their
-			// initializer-list syntax). Reported explicitly and skipped by brace depth instead of
-			// falling into parseAssignment()/parsePrimary(), which would report a cascade of
-			// "expected expression" diagnostics for '{' and every comma inside it.
-			_diagnostics.error(_current.location(), "array initializer lists ('{{...}}') are not implemented in this version");
-			advance(); // '='
-			advance(); // '{'
-			int depth = 1;
-			while (depth > 0 && !isAtEnd())
-			{
-				if (check(TokenKind::LBrace)) ++depth;
-				else if (check(TokenKind::RBrace)) --depth;
-				advance();
-			}
-		}
-		else if (match(TokenKind::Equal))
-		{
-			initializer = parseAssignment();
-			if (!initializer)
-				return nullptr;
+			// parseInitializer(), not parseAssignment(): a declarator is the one position §3's
+			// grammar allows a brace initializer-list in.
+			initializer = parseInitializer();
 		}
 		if (!expect(TokenKind::Semicolon, "';'"))
 			return nullptr;

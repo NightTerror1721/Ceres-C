@@ -2,6 +2,7 @@
 #include <ceresc/sema/type_layout.h>
 #include <ceresc/ast/decl.h>
 
+#include <algorithm>
 #include <cstring>
 #include <format>
 
@@ -368,10 +369,168 @@ namespace ceresc::ir
 		return irMemSizeForBytes(type ? type->sizeInBytes() : 4u);
 	}
 
-	void IrBuilder::requireScalarValue(const Type* type, support::SourceLocation loc)
+	// ---- composite memory: structs, aggregates, whole-object copies -----------------------------
+
+	bool IrBuilder::isStructType(const Type* type) noexcept
 	{
-		if (type && type->isStruct())
-			_diagnostics.error(loc, "using a struct by value here is not supported in this version - use a pointer instead");
+		return type && type->isStruct();
+	}
+
+	bool IrBuilder::isIndirectStruct(const Type* type) noexcept
+	{
+		if (!isStructType(type))
+			return false;
+		u32 size = type->sizeInBytes();
+		// 1/2/4 are exactly the sizes one ordinary byte/half/word Load or Store moves whole. A
+		// 3-byte struct is deliberately NOT in that set even though it would fit a register: a word
+		// store would write a fourth byte that does not belong to the object, and there is no
+		// three-byte store to use instead.
+		return !(size == 1 || size == 2 || size == 4) || type->alignment() < size;
+	}
+
+	IrValue IrBuilder::offsetAddress(support::SourceLocation loc, IrValue base, u32 offset)
+	{
+		if (offset == 0)
+			return base;
+		return emitBinOp(loc, IrBinOp::Add, base, emitConstInt(loc, static_cast<i64>(offset)), true);
+	}
+
+	void IrBuilder::emitMemoryCopy(support::SourceLocation loc, IrValue destAddr, IrValue sourceAddr,
+		u32 sizeInBytes, u32 alignment)
+	{
+		// The widest piece the alignment allows, then narrower ones for whatever tail is left -
+		// a 10-byte, 4-aligned object copies as word, word, half.
+		u32 piece = (alignment >= 4) ? 4u : (alignment >= 2 ? 2u : 1u);
+		u32 offset = 0;
+		while (offset < sizeInBytes)
+		{
+			while (piece > 1 && offset + piece > sizeInBytes)
+				piece /= 2;
+			IrMemSize size = irMemSizeForBytes(piece);
+			IrValue from = offsetAddress(loc, sourceAddr, offset);
+			IrValue word = emitLoad(loc, from, size);
+			IrValue to = offsetAddress(loc, destAddr, offset);
+			emitStore(loc, to, size, word);
+			offset += piece;
+		}
+	}
+
+	void IrBuilder::emitZeroFill(support::SourceLocation loc, IrValue destAddr, u32 startOffset,
+		u32 sizeInBytes, u32 alignment)
+	{
+		if (sizeInBytes == 0)
+			return;
+
+		// One Const feeds every store: a temp read many times is perfectly ordinary in this
+		// non-SSA IR (ir_instr.h), and materializing a separate zero per piece would just leave
+		// codegen's peepholes more to undo.
+		IrValue zero = emitConstInt(loc, 0);
+		// The start offset matters as much as the alignment: filling from offset 2 of a 4-aligned
+		// object can only use halves, whatever the object's own alignment says.
+		u32 piece = (alignment >= 4) ? 4u : (alignment >= 2 ? 2u : 1u);
+		while (piece > 1 && (startOffset % piece) != 0)
+			piece /= 2;
+
+		u32 offset = startOffset;
+		u32 end = startOffset + sizeInBytes;
+		while (offset < end)
+		{
+			while (piece > 1 && offset + piece > end)
+				piece /= 2;
+			emitStore(loc, offsetAddress(loc, destAddr, offset), irMemSizeForBytes(piece), zero);
+			offset += piece;
+		}
+	}
+
+	u32 IrBuilder::newStructTempSlot(u32 sizeInBytes)
+	{
+		return _currentFunction->newLocalSlot(sizeInBytes, false);
+	}
+
+	void IrBuilder::lowerInitializerInto(support::SourceLocation loc, IrValue baseAddr, u32 offset,
+		const Type* type, Expr* init)
+	{
+		if (!init || !type)
+			return;
+
+		u32 totalSize = type->sizeInBytes();
+		u32 align = type->alignment();
+
+		// `char s[8] = "hola"` - the literal's own bytes go straight into the array, terminating
+		// zero and all, and whatever is left over zero-fills. Nothing reaches .rodata for this one:
+		// unlike every other use of a string literal, no pointer to a shared copy is taken.
+		if (type->isArray())
+		{
+			if (auto* literal = dynamic_cast<ast::StringLiteralExpr*>(init))
+			{
+				std::string_view text = literal->value().view();
+				u32 written = 0;
+				for (char c : text)
+				{
+					if (written >= totalSize)
+						break; // sema already reported the overflow - just don't write past the object
+					emitStore(loc, offsetAddress(loc, baseAddr, offset + written), IrMemSize::Byte,
+						emitConstInt(loc, static_cast<i64>(static_cast<unsigned char>(c))));
+					++written;
+				}
+				emitZeroFill(loc, baseAddr, offset + written, totalSize - written, 1); // the terminating zero is part of this
+				return;
+			}
+		}
+
+		auto* list = dynamic_cast<ast::InitListExpr*>(init);
+		if (!list)
+		{
+			// An ordinary expression. A struct-typed one is an address (see ir_builder.h), so it is
+			// copied rather than stored; everything else is one scalar store.
+			if (isStructType(type))
+			{
+				emitMemoryCopy(loc, offsetAddress(loc, baseAddr, offset), lowerExpr(init), totalSize, align);
+				return;
+			}
+			IrValue value = convertForStore(loc, lowerExpr(init), init->type(), type);
+			emitStore(loc, offsetAddress(loc, baseAddr, offset), memSizeOf(type), value, type->isFloat());
+			return;
+		}
+
+		std::span<Expr* const> elements = list->elements();
+
+		if (type->isArray())
+		{
+			const Type* elementType = type->arrayElementType();
+			u32 elementSize = elementType ? elementType->sizeInBytes() : 1u;
+			u32 count = static_cast<u32>(elements.size());
+			if (count > type->arraySize())
+				count = type->arraySize(); // sema already reported it
+			for (u32 i = 0; i < count; ++i)
+				lowerInitializerInto(loc, baseAddr, offset + i * elementSize, elementType, elements[i]);
+			emitZeroFill(loc, baseAddr, offset + count * elementSize, totalSize - count * elementSize, align);
+			return;
+		}
+
+		if (type->isStruct())
+		{
+			ast::StructDecl* decl = type->structDecl();
+			if (!decl)
+				return; // sema already reported the incomplete type
+			std::span<const FieldDecl> fields = decl->fields();
+			u32 count = static_cast<u32>(std::min(elements.size(), fields.size()));
+			for (u32 i = 0; i < count; ++i)
+				lowerInitializerInto(loc, baseAddr, offset + sema::fieldOffset(*decl, i), fields[i].type, elements[i]);
+
+			// Everything from the first field the list did not reach onwards is zeroed, as C
+			// requires. Padding BETWEEN the fields the list did reach is left alone - C leaves a
+			// struct's padding unspecified, and writing it would cost stores for bytes no correct
+			// program can observe.
+			u32 initialized = sema::fieldOffset(*decl, count);
+			if (initialized < totalSize)
+				emitZeroFill(loc, baseAddr, offset + initialized, totalSize - initialized, align);
+			return;
+		}
+
+		// A scalar with braces - `int x = { 5 }`. Sema already required exactly one value.
+		if (!elements.empty())
+			lowerInitializerInto(loc, baseAddr, offset, type, elements[0]);
 	}
 
 	// ---- constant folding (mirrors Sema::evalConstantExpr - see the header comment) -------------
@@ -473,7 +632,16 @@ namespace ceresc::ir
 		{
 			LocalSymbol* symbol = lookupSymbol(name->name());
 			if (symbol && symbol->kind == LocalSymbolKind::Local)
+			{
+				if (symbol->isIndirect)
+				{
+					// A by-value struct parameter the caller passed as the address of its own copy
+					// (ir_builder.h): the slot holds that pointer, so the object's address is the
+					// pointer's VALUE, one load away - not the slot's own address.
+					return emitLoad(loc, emitFrameAddr(loc, symbol->localSlot), IrMemSize::Word);
+				}
 				return emitFrameAddr(loc, symbol->localSlot);
+			}
 			// Global (or an unresolved symbol - assumed not to happen on sema-checked input, see
 			// the header comment on IrBuilder's contract).
 			return emitGlobalAddr(loc, name->name());
@@ -535,11 +703,11 @@ namespace ceresc::ir
 		// sema::Sema::isLValue(), sema.cpp) - but unlike isLValue(), sema's own visit(MemberExpr&)
 		// only requires a `.` base to have struct *type*, not to actually be an lvalue (sema.cpp),
 		// so e.g. `make().y` for a struct-returning `make()` reaches here on perfectly valid,
-		// sema-checked input: the "object" only ever exists in a temp, never in memory, so there is
-		// no real address to compute. Report the same struct-by-value diagnostic requireScalarValue()
-		// uses elsewhere, then fall back to the value itself so a caller still gets *something* to
-		// build on - the same error-recovery style sema.h's own header comment describes.
-		requireScalarValue(expr->type(), expr->location());
+		// sema-checked input. That works out on its own: a struct-typed expression lowers to the
+		// ADDRESS of its storage (ir_builder.h), and a struct-returning call's storage is the temp
+		// slot the call wrote into - so the "value" this falls back to really is the address the
+		// caller asked for. For anything else this is unreachable on sema-checked input, and the
+		// value is still the most useful thing to hand back.
 		return lowerExpr(expr);
 	}
 
@@ -548,11 +716,17 @@ namespace ceresc::ir
 		// Array-to-pointer decay (see the header comment on this method): the array's storage IS the
 		// value, so this returns its address directly instead of loading through it - never possible
 		// to represent a whole array's bytes as a single scalar Load result anyway.
-		if (expr->type() && expr->type()->isArray())
+		//
+		// A struct behaves the same way, for the same reason and by the same convention (see
+		// ir_builder.h's note on struct-typed expressions) - the difference being that an array
+		// really does decay to a pointer in C's own type system, while a struct does not: its
+		// address is simply how this IR represents it, and whoever consumes it knows to copy from
+		// there rather than treat it as a pointer value.
+		const Type* type = expr->type();
+		if (type && (type->isArray() || type->isStruct()))
 			return lowerAddress(expr);
-		requireScalarValue(expr->type(), expr->location());
 		IrValue addr = lowerAddress(expr);
-		return emitLoad(expr->location(), addr, memSizeOf(expr->type()), expr->type() && expr->type()->isFloat());
+		return emitLoad(expr->location(), addr, memSizeOf(type), type && type->isFloat());
 	}
 
 	// ---- condition lowering (jumping code, short-circuit && / ||) --------------------------------
@@ -754,35 +928,96 @@ namespace ceresc::ir
 
 	void IrBuilder::visit(ast::CallExpr& node)
 	{
+		support::SourceLocation loc = node.location();
+		const Type* resultType = node.type();
+		bool hasResult = resultType && !resultType->isVoid();
+
+		// A struct coming back through memory needs somewhere to come back TO, decided here rather
+		// than by the callee: a fresh frame slot, whose address becomes the call's hidden first
+		// argument (ir_builder.h's struct convention). The result of the whole CallExpr is then that
+		// slot's address, which is exactly what a struct-typed expression is expected to be.
+		bool returnsStructIndirect = hasResult && isIndirectStruct(resultType);
+		IrValue hiddenDest{};
+		if (returnsStructIndirect)
+			hiddenDest = emitFrameAddr(loc, newStructTempSlot(resultType->sizeInBytes()));
+
+		// A small struct returned in ret0 also needs a home, since the CallExpr must still produce
+		// an address - but the caller gets to write it AFTER the call, from the returned word.
+		u32 smallStructSlot = 0;
+		bool returnsStructInRegister = hasResult && isStructType(resultType) && !returnsStructIndirect;
+		if (returnsStructInRegister)
+			smallStructSlot = newStructTempSlot(resultType->sizeInBytes());
+
 		std::vector<IrValue> argValues;
 		std::vector<bool> argIsFloat;
-		argValues.reserve(node.args().size());
-		argIsFloat.reserve(node.args().size());
+		argValues.reserve(node.args().size() + 1);
+		argIsFloat.reserve(node.args().size() + 1);
+		if (returnsStructIndirect)
+		{
+			argValues.push_back(hiddenDest);
+			argIsFloat.push_back(false);
+		}
+
 		for (Expr* arg : node.args())
 		{
+			const Type* argType = arg->type();
+			if (isIndirectStruct(argType))
+			{
+				// By value, without a by-value register class: copy the argument into a slot of the
+				// caller's own frame and pass that copy's address. The callee may write through it
+				// freely - it is nobody else's object.
+				IrValue source = lowerExpr(arg); // a struct expression IS its address
+				IrValue copy = emitFrameAddr(loc, newStructTempSlot(argType->sizeInBytes()));
+				emitMemoryCopy(loc, copy, source, argType->sizeInBytes(), argType->alignment());
+				argValues.push_back(copy);
+				argIsFloat.push_back(false);
+				continue;
+			}
+			if (isStructType(argType))
+			{
+				// 1/2/4 bytes: the whole object fits one register, so load it and pass it like any
+				// other integer argument.
+				IrValue source = lowerExpr(arg);
+				argValues.push_back(emitLoad(loc, source, irMemSizeForBytes(argType->sizeInBytes())));
+				argIsFloat.push_back(false);
+				continue;
+			}
 			argValues.push_back(lowerExpr(arg));
-			argIsFloat.push_back(arg->type() && arg->type()->isFloat());
+			argIsFloat.push_back(argType && argType->isFloat());
 		}
 
 		for (usize i = 0; i < argValues.size(); ++i)
-			emitVoid(node.location(), IrParamPayload{ argValues[i], argIsFloat[i] });
+			emitVoid(loc, IrParamPayload{ argValues[i], argIsFloat[i] });
 
 		auto* callee = dynamic_cast<ast::NameExpr*>(node.callee());
 		std::string_view calleeName = callee ? callee->name() : std::string_view{}; // sema guarantees this - see the header comment
 
-		bool hasResult = node.type() && !node.type()->isVoid();
-		if (hasResult)
-			requireScalarValue(node.type(), node.location()); // a struct-returning call (§10/§14's hidden-pointer ABI is Fase 7's job) is diagnosed here too, not just NameExpr/MemberExpr/`*p`
-
 		IrCallPayload payload;
-		payload.hasResult = hasResult;
-		payload.isFloat = hasResult && node.type()->isFloat();
+		payload.hasResult = hasResult && !returnsStructIndirect;
+		payload.isFloat = hasResult && resultType->isFloat();
 		payload.callee = calleeName;
 		payload.argCount = static_cast<u32>(argValues.size());
-		if (hasResult)
+		if (payload.hasResult)
 			payload.result = _currentFunction->newTemp();
 
-		emitVoid(node.location(), payload);
+		emitVoid(loc, payload);
+
+		if (returnsStructIndirect)
+		{
+			// The callee returns the same pointer it was handed, so the returned value is ignored
+			// here in favour of the address this function already has - one fewer temp to keep
+			// alive across the call, and it does not depend on the callee honouring that part of
+			// the convention at all.
+			_lastValue = hiddenDest;
+			return;
+		}
+		if (returnsStructInRegister)
+		{
+			IrValue slotAddr = emitFrameAddr(loc, smallStructSlot);
+			emitStore(loc, slotAddr, irMemSizeForBytes(resultType->sizeInBytes()), payload.result);
+			_lastValue = slotAddr;
+			return;
+		}
 		_lastValue = hasResult ? payload.result : IrValue{};
 	}
 
@@ -893,34 +1128,64 @@ namespace ceresc::ir
 	void IrBuilder::visit(ast::AssignExpr& node)
 	{
 		support::SourceLocation loc = node.location();
-		IrValue addr = lowerAddress(node.target());
 		const Type* targetType = node.target()->type();
-		IrMemSize size = memSizeOf(targetType);
 
-		IrValue value;
+		if (isStructType(targetType) && node.op() == AssignOp::Assign)
+		{
+			// `a = b` between two structs: a whole-object copy, not a scalar store (sema only allows
+			// plain `=` here - a compound operator would have failed its arithmetic-type check). The
+			// expression's own value is the destination's address, which keeps the struct convention
+			// intact and makes `a = b = c` work: the outer assignment copies from the inner one's
+			// destination, exactly as C's by-value chain does.
+			IrValue source = lowerExpr(node.value());
+			IrValue structDest = lowerAddress(node.target());
+			emitMemoryCopy(loc, structDest, source, targetType->sizeInBytes(), targetType->alignment());
+			_lastValue = structDest;
+			return;
+		}
+		if (isStructType(targetType))
+		{
+			_diagnostics.error(loc, "compound assignment is not valid for a struct type");
+			_lastValue = IrValue{};
+			return;
+		}
+
+		IrMemSize size = memSizeOf(targetType);
 		bool targetIsFloat = targetType && targetType->isFloat();
+
 		if (node.op() == AssignOp::Assign)
 		{
-			value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), targetType);
+			// The value BEFORE the target's address, deliberately. C leaves the two operands of an
+			// assignment unsequenced with respect to each other, so either order conforms - and this
+			// one puts the address computation immediately before the Store that consumes it, which
+			// is the shape libs/codegen's address folding can absorb into one `str [base + index]`
+			// (see codegen.h). The reverse order works just as well and costs an extra `add` per
+			// element written, which is the whole difference the ISA's indexed stores exist to make.
+			IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), targetType);
+			IrValue destAddr = lowerAddress(node.target());
+			emitStore(loc, destAddr, size, value, targetIsFloat);
+			_lastValue = value;
+			return;
 		}
-		else
-		{
-			IrValue oldValue = emitLoad(loc, addr, size, targetIsFloat);
-			IrValue rhs = lowerExpr(node.value());
-			BinaryOp binaryOp = binaryOpForCompoundAssign(node.op());
-			// `x op= y` means `x = x op y` by definition, so this must agree with what the
-			// equivalent BinaryExpr would compute (its own node.type() is already sema's promoted
-			// result type) - not the raw, unpromoted target type, which for a narrow unsigned target
-			// (e.g. `unsigned char x; x %= someInt;`) would pick the wrong signedness for the
-			// operation (and, for `>>=`, the wrong Shr/Sar) versus `x = x % someInt;`. Harmless to
-			// compute even when targetType is a pointer (`p += i`): lowerArithmetic()'s pointer
-			// branches never read this parameter, only the plain-arithmetic fallback does.
-			const Type* promotedType = commonArithmeticType(targetType, node.value()->type());
-			value = lowerArithmetic(loc, binaryOp, promotedType, targetType, node.value()->type(), oldValue, rhs);
-			// `x op= y` narrows the promoted result back to x's own (possibly non-float) storage -
-			// e.g. `int x; x += 1.5f;` promotes to float for the add, then truncates back to store.
-			value = convertForStore(loc, value, promotedType, targetType);
-		}
+
+		// A compound operator reads the target before it writes it, so its address really does have
+		// to come first - `x += y` is `x = x + y` with x evaluated once.
+		IrValue addr = lowerAddress(node.target());
+		IrValue oldValue = emitLoad(loc, addr, size, targetIsFloat);
+		IrValue rhs = lowerExpr(node.value());
+		BinaryOp binaryOp = binaryOpForCompoundAssign(node.op());
+		// `x op= y` means `x = x op y` by definition, so this must agree with what the equivalent
+		// BinaryExpr would compute (its own node.type() is already sema's promoted result type) -
+		// not the raw, unpromoted target type, which for a narrow unsigned target (e.g.
+		// `unsigned char x; x %= someInt;`) would pick the wrong signedness for the operation (and,
+		// for `>>=`, the wrong Shr/Sar) versus `x = x % someInt;`. Harmless to compute even when
+		// targetType is a pointer (`p += i`): lowerArithmetic()'s pointer branches never read this
+		// parameter, only the plain-arithmetic fallback does.
+		const Type* promotedType = commonArithmeticType(targetType, node.value()->type());
+		IrValue value = lowerArithmetic(loc, binaryOp, promotedType, targetType, node.value()->type(), oldValue, rhs);
+		// `x op= y` narrows the promoted result back to x's own (possibly non-float) storage -
+		// e.g. `int x; x += 1.5f;` promotes to float for the add, then truncates back to store.
+		value = convertForStore(loc, value, promotedType, targetType);
 
 		emitStore(loc, addr, size, value, targetIsFloat);
 		_lastValue = value;
@@ -987,6 +1252,16 @@ namespace ceresc::ir
 
 		_currentBlock = &mergeBlock;
 		_lastValue = result;
+	}
+
+	void IrBuilder::visit(ast::InitListExpr&)
+	{
+		// Unreachable on sema-checked input: a brace list only ever appears as a declarator's
+		// initializer, and that path goes through lowerInitializerInto(), which reads the node
+		// directly instead of dispatching to it (sema reports any other position - see
+		// Sema::visit(InitListExpr&)). Produces no value at all rather than a plausible-looking
+		// wrong one, so a future caller that lowers an initializer the wrong way fails visibly.
+		_lastValue = IrValue{};
 	}
 
 	// ---- statements -----------------------------------------------------------------------------
@@ -1119,16 +1394,38 @@ namespace ceresc::ir
 
 	void IrBuilder::visit(ast::ReturnStmt& node)
 	{
-		if (node.value())
+		support::SourceLocation loc = node.location();
+		if (!node.value())
 		{
-			const Type* returnType = _currentFunction->returnType();
-			IrValue value = convertForStore(node.location(), lowerExpr(node.value()), node.value()->type(), returnType);
-			emitVoid(node.location(), IrReturnPayload{ true, returnType && returnType->isFloat(), value });
+			emitVoid(loc, IrReturnPayload{ false, false, IrValue{} });
+			return;
 		}
-		else
+
+		const Type* returnType = _currentFunction->returnType();
+
+		if (_hiddenReturnSlot)
 		{
-			emitVoid(node.location(), IrReturnPayload{ false, false, IrValue{} });
+			// The caller handed us where to put the result (ir_builder.h's struct convention):
+			// copy it there, then return that same pointer in ret0 so a caller that prefers to read
+			// the result back out of the register still can.
+			IrValue source = lowerExpr(node.value()); // a struct expression IS its address
+			IrValue dest = emitLoad(loc, emitFrameAddr(loc, *_hiddenReturnSlot), IrMemSize::Word);
+			emitMemoryCopy(loc, dest, source, returnType->sizeInBytes(), returnType->alignment());
+			emitVoid(loc, IrReturnPayload{ true, false, dest });
+			return;
 		}
+
+		if (isStructType(returnType))
+		{
+			// 1/2/4 bytes - the whole struct goes back in ret0 as one byte/half/word.
+			IrValue source = lowerExpr(node.value());
+			IrValue value = emitLoad(loc, source, irMemSizeForBytes(returnType->sizeInBytes()));
+			emitVoid(loc, IrReturnPayload{ true, false, value });
+			return;
+		}
+
+		IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), returnType);
+		emitVoid(loc, IrReturnPayload{ true, returnType && returnType->isFloat(), value });
 	}
 
 	void IrBuilder::visit(ast::BreakStmt& node)
@@ -1296,12 +1593,25 @@ namespace ceresc::ir
 		symbol.localSlot = newLocalSlotFor(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat());
 		declareSymbol(node.name(), symbol);
 
-		if (node.initializer())
+		if (!node.initializer())
+			return;
+
+		const Type* type = node.type();
+		bool isAggregateInitializer = dynamic_cast<ast::InitListExpr*>(node.initializer()) != nullptr ||
+			isStructType(type) ||
+			(type && type->isArray()); // `char s[8] = "hola"` is the only non-list form an array takes
+		if (isAggregateInitializer)
 		{
-			IrValue value = convertForStore(node.location(), lowerExpr(node.initializer()), node.initializer()->type(), node.type());
-			IrValue addr = emitFrameAddr(node.location(), symbol.localSlot);
-			emitStore(node.location(), addr, memSizeOf(node.type()), value, node.type() && node.type()->isFloat());
+			// Everything a single scalar store cannot express: a brace list, a string literal
+			// filling a char array, or a whole-struct copy. lowerInitializerInto() also zero-fills
+			// whatever the initializer does not reach, so the object is fully defined afterwards.
+			lowerInitializerInto(node.location(), emitFrameAddr(node.location(), symbol.localSlot), 0, type, node.initializer());
+			return;
 		}
+
+		IrValue value = convertForStore(node.location(), lowerExpr(node.initializer()), node.initializer()->type(), type);
+		IrValue addr = emitFrameAddr(node.location(), symbol.localSlot);
+		emitStore(node.location(), addr, memSizeOf(type), value, type && type->isFloat());
 	}
 
 	void IrBuilder::visit(ast::FunctionDecl& node)
@@ -1312,22 +1622,38 @@ namespace ceresc::ir
 		IrFunction& function = _module.addFunction(node.name(), node.returnType());
 		_currentFunction = &function;
 
+		// A struct returned through memory takes a hidden first parameter holding its destination
+		// (ir_builder.h's struct convention), so every visible parameter shifts one slot along -
+		// the architecture plan's own "argumentos visibles corridos uno" in the ABI table.
+		bool returnsStructIndirect = isIndirectStruct(node.returnType());
+		_hiddenReturnSlot = returnsStructIndirect ? std::optional<u32>(0u) : std::nullopt;
+
 		std::vector<IrLocalSlot> paramSlots;
-		paramSlots.reserve(node.params().size());
+		paramSlots.reserve(node.params().size() + 1);
+		if (returnsStructIndirect)
+			paramSlots.push_back(IrLocalSlot{ 4u, false }); // the hidden destination pointer
 		for (const Param& param : node.params())
-			paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u, param.type && param.type->isFloat() });
+		{
+			// A by-value struct too big for a register arrives as a POINTER to the caller's own
+			// copy, so its slot holds four bytes whatever the struct's own size is.
+			if (isIndirectStruct(param.type))
+				paramSlots.push_back(IrLocalSlot{ 4u, false });
+			else
+				paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u, param.type && param.type->isFloat() });
+		}
 		function.reserveParamSlots(paramSlots);
 		// Slot reuse never crosses a function boundary: a slot freed by a scope in the previous
 		// function names an index in THAT function's frame - see newLocalSlotFor().
 		_freeLocalSlots.clear();
 
 		pushScope();
-		u32 slot = 0;
+		u32 slot = returnsStructIndirect ? 1u : 0u;
 		for (const Param& param : node.params())
 		{
 			LocalSymbol symbol;
 			symbol.kind = LocalSymbolKind::Local;
 			symbol.localSlot = slot++;
+			symbol.isIndirect = isIndirectStruct(param.type);
 			_scopes.back()[param.name] = symbol;
 		}
 
@@ -1349,6 +1675,7 @@ namespace ceresc::ir
 			emitVoid(node.location(), IrReturnPayload{ false, false, IrValue{} });
 
 		popScope();
+		_hiddenReturnSlot.reset();
 		_currentFunction = nullptr;
 		_currentBlock = nullptr;
 	}

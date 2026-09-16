@@ -1,5 +1,6 @@
 #include <ceresc/codegen/codegen.h>
 #include <ceresc/ast/ast_printer.h>
+#include <ceresc/sema/type_layout.h>
 #include <ceresc/ast/expr.h>
 #include <ceresc/ast/stmt.h>
 
@@ -8,7 +9,7 @@
 #include <optional>
 #include <vector>
 
-// See codegen.h for where values live (ValuePlacement decides, this file emits) and for the three
+// See codegen.h for where values live (ValuePlacement decides, this file emits) and for the four
 // ISA-level peepholes this file applies.
 //
 // Every mnemonic below is checked against CeresASM's own docs/05-Instruction-Set.md and
@@ -133,8 +134,11 @@ namespace ceresc::codegen
 
 		std::optional<f32> foldGlobalFloat(const Expr* expr)
 		{
+			// FloatLiteralExpr keeps its value as f64 until something truncates it (expr.h), and
+			// `float` is the only floating type this subset has (§3/§14) - so the narrowing is the
+			// intended one, spelled out rather than left implicit for the compiler to warn about.
 			if (const auto* lit = dynamic_cast<const FloatLiteralExpr*>(expr))
-				return lit->value();
+				return static_cast<f32>(lit->value());
 			if (const auto* lit = dynamic_cast<const IntLiteralExpr*>(expr))
 				return static_cast<f32>(lit->value());
 			if (const auto* unary = dynamic_cast<const UnaryExpr*>(expr); unary && unary->op() == UnaryOp::Negate)
@@ -448,6 +452,100 @@ namespace ceresc::codegen
 		return true;
 	}
 
+	// ---- address folding --------------------------------------------------------------------
+
+	bool CodeGen::livesInSlot(IrValue value) const
+	{
+		return value.isValid() && _placement->temp(value).kind == PlacementKind::Slot;
+	}
+
+	bool CodeGen::findFoldableAddress(std::span<IrInstr* const> instrs, usize index, FoldedAddress& out) const
+	{
+		if (!_options.addressFolding || index == 0)
+			return false;
+
+		const IrInstr& access = *instrs[index];
+		IrValue addressValue;
+		IrValue storedValue;
+		bool isStore = false;
+		bool storedIsFloat = false;
+		if (access.opcode() == IrOpcode::Load)
+		{
+			addressValue = access.as<IrLoadPayload>().address;
+		}
+		else if (access.opcode() == IrOpcode::Store)
+		{
+			const IrStorePayload& store = access.as<IrStorePayload>();
+			addressValue = store.address;
+			storedValue = store.value;
+			storedIsFloat = store.isFloat;
+			isStore = true;
+		}
+		else
+		{
+			return false;
+		}
+
+		if (!addressValue.isValid() || _placement->virtualAddressLocal(addressValue))
+			return false; // a register-resident local has no address to fold in the first place
+
+		const IrInstr& previous = *instrs[index - 1];
+		if (previous.opcode() != IrOpcode::BinOp)
+			return false;
+		const IrBinOpPayload& add = previous.as<IrBinOpPayload>();
+		// Only `add`: no indexed form SUBTRACTS a register ("Three things are deliberately not
+		// allowed", 05-Instruction-Set.md), and a float operand is never an address.
+		if (add.op != IrBinOp::Add || add.isFloat || !(add.result == addressValue))
+			return false;
+
+		// Defined once and read once - the same pair of conditions findFusableCmp() needs, and for
+		// the same reason: anything else means the address outlives this access, so the `add` has to
+		// stay.
+		auto defs = _defCount.find(addressValue.id);
+		auto uses = _useCount.find(addressValue.id);
+		if (defs == _defCount.end() || defs->second != 1)
+			return false;
+		if (uses == _useCount.end() || uses->second != 1)
+			return false;
+
+		// The displacement form is only tried for the SECOND operand, and only through
+		// immediateFor(): that is exactly the set of constants collectSuppressedConstants() already
+		// decided not to materialize (it vetoes a constant used as a BinOp's first operand, since
+		// the encoding has no field for one there), so a folded displacement never leaves a dead
+		// `li` behind - and no negative value slips through the range both readings of imm16 agree
+		// on (kMaxImmediate). A constant FIRST operand (`2 + p`, which IrBuilder lowers with the
+		// scaled constant on the left) still folds, just through the indexed form, which costs the
+		// same one instruction and needs no special case.
+		IrValue base = add.lhs;
+		IrValue offset = add.rhs;
+		std::optional<i64> displacement = immediateFor(offset);
+
+		// The register budget - see this function's declaration in codegen.h.
+		if (isStore && !displacement && !storedIsFloat &&
+			livesInSlot(storedValue) && livesInSlot(base) && livesInSlot(offset))
+		{
+			return false;
+		}
+
+		out.base = base;
+		out.index = displacement ? IrValue{} : offset;
+		out.displacement = displacement;
+		return true;
+	}
+
+	std::string CodeGen::addressOperand(const FoldedAddress& folded, u32 baseScratch, u32 indexScratch, SourceLocation loc)
+	{
+		std::string base = valueIn(folded.base, baseScratch, false, loc);
+		if (folded.displacement)
+		{
+			if (*folded.displacement == 0)
+				return std::format("[{}]", base);
+			return std::format("[{} + {}]", base, *folded.displacement);
+		}
+		std::string index = valueIn(folded.index, indexScratch, false, loc);
+		return std::format("[{} + {}]", base, index); // the assembler picks LDRX/STRX from the operand shapes
+	}
+
 	// ---- one IR instruction -------------------------------------------------------------------
 
 	void CodeGen::generateInstr(std::span<IrInstr* const> instrs, usize index, u32 nextBlockId)
@@ -634,9 +732,15 @@ namespace ceresc::codegen
 					break;
 				}
 
-				std::string addrReg = valueIn(p.address, kScratchA, false, loc);
+				FoldedAddress folded;
+				std::string address = findFoldableAddress(instrs, index, folded)
+					? addressOperand(folded, kScratchA, kScratchB, loc)
+					: std::format("[{}]", valueIn(p.address, kScratchA, false, loc));
+				// The destination may share a scratch register with the address it just read: every
+				// load form computes its address before writing rd (05-Instruction-Set.md's LDR/LDRX,
+				// and the VM's own handlers), so `ldr r5, [r4 + r5]` is well defined.
 				std::string dest = defineInto(p.result, kScratchB, p.isFloat);
-				_emitter.instr(std::format("{} {}, [{}]", loadMnemonicFor(p.size, p.isFloat), dest, addrReg), comment);
+				_emitter.instr(std::format("{} {}, {}", loadMnemonicFor(p.size, p.isFloat), dest, address), comment);
 				storeResult(p.result, dest, loc);
 				break;
 			}
@@ -653,9 +757,26 @@ namespace ceresc::codegen
 					break;
 				}
 
-				std::string addrReg = valueIn(p.address, kScratchA, false, loc);
-				std::string valueReg = valueIn(p.value, kScratchB, p.isFloat, loc);
-				_emitter.instr(std::format("{} [{}], {}", storeMnemonicFor(p.size, p.isFloat), addrReg, valueReg), comment);
+				FoldedAddress folded;
+				std::string address;
+				// Unlike a load, a store's value is a third register to READ, so it needs whichever
+				// scratch the address did not take - see findFoldableAddress(), which refused the one
+				// shape where that leaves nothing.
+				u32 valueScratch = kScratchB;
+				if (findFoldableAddress(instrs, index, folded))
+				{
+					address = addressOperand(folded, kScratchA, kScratchB, loc);
+					bool indexed = !folded.displacement && folded.index.isValid();
+					valueScratch = livesInSlot(folded.base) ? kScratchB : kScratchA;
+					if (indexed && livesInSlot(folded.index))
+						valueScratch = kScratchA;
+				}
+				else
+				{
+					address = std::format("[{}]", valueIn(p.address, kScratchA, false, loc));
+				}
+				std::string valueReg = valueIn(p.value, valueScratch, p.isFloat, loc);
+				_emitter.instr(std::format("{} {}, {}", storeMnemonicFor(p.size, p.isFloat), address, valueReg), comment);
 				break;
 			}
 
@@ -922,6 +1043,9 @@ namespace ceresc::codegen
 					_skipInstr[i - 1] = true;
 					_skipInstr[i - 2] = true;
 				}
+				FoldedAddress folded;
+				if (findFoldableAddress(instrs, i, folded))
+					_skipInstr[i - 1] = true; // the `add` disappears into the access's own operand
 			}
 
 			for (usize i = 0; i < instrs.size(); ++i)
@@ -938,6 +1062,219 @@ namespace ceresc::codegen
 
 	// ---- globals and string literals --------------------------------------------------------------
 
+	std::string CodeGen::scalarArrayTypeName(const Type* type)
+	{
+		// `int m[2][3]` is Array(Array(int, 3), 2) (libs/ast's own outermost-first construction), and
+		// CASM spells the same shape `u32[2][3]` (11-Data-Types-and-Literals.md), so the dimensions
+		// come out in exactly the order they are unwrapped.
+		std::vector<u32> dimensions;
+		const Type* element = type;
+		while (element && element->isArray())
+		{
+			dimensions.push_back(element->arraySize());
+			element = element->arrayElementType();
+		}
+		if (!element || element->isStruct() || dimensions.empty())
+			return {}; // not this shape - the caller falls back to a flat word array
+
+		std::string name = fieldTypeName(element->sizeInBytes(), element->isFloat());
+		for (u32 dimension : dimensions)
+			name += std::format("[{}]", dimension);
+		return name;
+	}
+
+	std::optional<std::string> CodeGen::scalarArrayInitText(const Type* type, const Expr* init) const
+	{
+		if (!type || !init)
+			return std::nullopt;
+
+		// A string literal fills a char array as bytes, terminating zero and all - CASM's own
+		// `let greeting: u8[16] = "Hello, CeresVM!"` (11-Data-Types-and-Literals.md), which pads the
+		// rest with zeros exactly like a short value list does.
+		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
+		{
+			if (type->isArray() && type->arrayElementType() && type->arrayElementType()->sizeInBytes() == 1)
+				return std::format("\"{}\"", escapeCasmString(literal->value().view()));
+
+			// CASM documents string syntax only for the complete character array. Nested character
+			// arrays use an explicit byte list, whose short-list zero fill supplies the terminator.
+			std::string text = "[";
+			for (usize i = 0; i < literal->value().view().size(); ++i)
+			{
+				if (i != 0)
+					text += ", ";
+				text += std::format("{}", static_cast<u8>(literal->value().view()[i]));
+			}
+			return text + "]";
+		}
+
+		if (const auto* list = dynamic_cast<const InitListExpr*>(init))
+		{
+			if (!type->isArray())
+			{
+				if (list->elements().empty())
+					return std::optional<std::string>("0");
+				return scalarArrayInitText(type, list->elements().front());
+			}
+			const Type* element = type->arrayElementType();
+			std::string text = "[";
+			bool first = true;
+			for (const Expr* value : list->elements())
+			{
+				std::optional<std::string> part = scalarArrayInitText(element, value);
+				if (!part)
+					return std::nullopt;
+				if (!first)
+					text += ", ";
+				text += *part;
+				first = false;
+			}
+			// A short list is fine: CASM zero-fills the remaining elements, the same rule C has.
+			return text + "]";
+		}
+
+		if (type->isFloat())
+		{
+			std::optional<f32> value = foldGlobalFloat(init);
+			return value ? std::optional<std::string>(std::format("{}", *value)) : std::nullopt;
+		}
+		std::optional<i64> value = foldGlobalInt(init);
+		return value ? std::optional<std::string>(std::format("{}", *value)) : std::nullopt;
+	}
+
+	bool CodeGen::buildGlobalImage(const Type* type, const Expr* init, u32 offset, std::vector<u8>& image) const
+	{
+		if (!type)
+			return false;
+		if (!init)
+			return true; // nothing to write - the image is already zero, which is what C promises
+
+		u32 size = type->sizeInBytes();
+		if (offset + size > image.size())
+			return false; // sema already reported the overflow
+
+		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
+		{
+			std::string_view text = literal->value().view();
+			for (usize i = 0; i < text.size() && i < size; ++i)
+				image[offset + i] = static_cast<u8>(text[i]);
+			return true; // the terminating zero and any padding are already zero
+		}
+
+		if (const auto* list = dynamic_cast<const InitListExpr*>(init))
+		{
+			if (type->isArray())
+			{
+				const Type* element = type->arrayElementType();
+				u32 elementSize = element ? element->sizeInBytes() : 1u;
+				u32 index = 0;
+				for (const Expr* value : list->elements())
+				{
+					if (index >= type->arraySize())
+						break;
+					if (!buildGlobalImage(element, value, offset + index * elementSize, image))
+						return false;
+					++index;
+				}
+				return true;
+			}
+			if (type->isStruct())
+			{
+				StructDecl* structDecl = type->structDecl();
+				if (!structDecl)
+					return false;
+				std::span<const FieldDecl> fields = structDecl->fields();
+				usize index = 0;
+				for (const Expr* value : list->elements())
+				{
+					if (index >= fields.size())
+						break;
+					if (!buildGlobalImage(fields[index].type, value, offset + sema::fieldOffset(*structDecl, static_cast<u32>(index)), image))
+						return false;
+					++index;
+				}
+				return true;
+			}
+			// A scalar with braces - `int x = { 5 }`; sema already required exactly one value.
+			return list->elements().empty() || buildGlobalImage(type, list->elements().front(), offset, image);
+		}
+
+		// One scalar, written little-endian (02-Memory.md) in its own declared width.
+		u64 bits = 0;
+		if (type->isFloat())
+		{
+			std::optional<f32> value = foldGlobalFloat(init);
+			if (!value)
+				return false;
+			bits = std::bit_cast<u32>(*value);
+		}
+		else
+		{
+			std::optional<i64> value = foldGlobalInt(init);
+			if (!value)
+				return false;
+			bits = static_cast<u64>(*value);
+		}
+		for (u32 i = 0; i < size && i < 8; ++i)
+			image[offset + i] = static_cast<u8>((bits >> (8 * i)) & 0xFF);
+		return true;
+	}
+
+	void CodeGen::generateAggregateGlobal(const VarDecl& decl)
+	{
+		const Type* type = decl.type();
+		std::string name = mangledName(decl.name());
+		std::string typeComment = std::format("{} ({} bytes)", AstPrinter::typeName(type), type->sizeInBytes());
+
+		// An array of scalars keeps its real shape - both because it reads better and because the
+		// assembler then gives it the element type's own alignment.
+		if (std::string arrayType = scalarArrayTypeName(type); !arrayType.empty())
+		{
+			if (!decl.initializer())
+			{
+				_emitter.raw(std::format("let {}: {}", name, arrayType));
+				return;
+			}
+			std::optional<std::string> values = scalarArrayInitText(type, decl.initializer());
+			if (!values)
+			{
+				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				return;
+			}
+			_emitter.raw(std::format("let {}: {} = {}", name, arrayType, *values));
+			return;
+		}
+
+		// Anything involving a struct: one flat word array of the right byte count, four-byte
+		// aligned - see generateAggregateGlobal()'s declaration in codegen.h for why not a CASM
+		// `struct`. Every field offset is already a constant in the IR, so the only thing the
+		// spelling loses is the field names, which the comment puts back.
+		u32 words = (type->sizeInBytes() + 3) / 4;
+		if (!decl.initializer())
+		{
+			_emitter.raw(std::format("let {}: u32[{}]   // {}", name, words, typeComment));
+			return;
+		}
+
+		std::vector<u8> image(static_cast<usize>(words) * 4, 0);
+		if (!buildGlobalImage(type, decl.initializer(), 0, image))
+		{
+			_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+			return;
+		}
+
+		std::string values;
+		for (u32 w = 0; w < words; ++w)
+		{
+			u32 value = static_cast<u32>(image[w * 4]) | (static_cast<u32>(image[w * 4 + 1]) << 8) |
+				(static_cast<u32>(image[w * 4 + 2]) << 16) | (static_cast<u32>(image[w * 4 + 3]) << 24);
+			if (w != 0)
+				values += ", ";
+			values += std::format("0x{:08X}", value);
+		}
+		_emitter.raw(std::format("let {}: u32[{}] = [{}]   // {}", name, words, values, typeComment));
+	}
+
 	void CodeGen::generateGlobal(const VarDecl& decl)
 	{
 		const Type* type = decl.type();
@@ -945,7 +1282,7 @@ namespace ceresc::codegen
 			return;
 		if (type->isArray() || type->isStruct())
 		{
-			_diagnostics.error(decl.location(), "aggregate global variables of type '{}' are not supported in this version", AstPrinter::typeName(type));
+			generateAggregateGlobal(decl);
 			return;
 		}
 

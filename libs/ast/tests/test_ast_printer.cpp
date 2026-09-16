@@ -522,3 +522,19 @@ TEST(ast_printer, translation_unit)
 	TranslationUnit* unit = arena.create<TranslationUnit>(loc(), std::span<Decl* const>(decls, 2));
 	CHECK_EQ(printer.print(*unit), "(unit (var x int <null>) (var y float <null>))");
 }
+
+TEST(ast_printer, init_list_expr_nests_the_way_its_braces_do)
+{
+	// `{ 1, { 2, 3 } }` - the flat (call ...)-style shape means a nested list simply nests, which
+	// is what makes a printed initializer readable against the type it was checked against.
+	support::Arena arena;
+	AstPrinter printer;
+	Expr* one = arena.create<IntLiteralExpr>(loc(), u64(1));
+	Expr* two = arena.create<IntLiteralExpr>(loc(), u64(2));
+	Expr* three = arena.create<IntLiteralExpr>(loc(), u64(3));
+	Expr* innerElements[] = { two, three };
+	Expr* inner = arena.create<InitListExpr>(loc(), std::span<Expr* const>(innerElements, 2));
+	Expr* outerElements[] = { one, inner };
+	Expr* outer = arena.create<InitListExpr>(loc(), std::span<Expr* const>(outerElements, 2));
+	CHECK_EQ(printer.print(*outer), "(init-list 1 (init-list 2 3))");
+}

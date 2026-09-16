@@ -691,7 +691,7 @@ TEST(sema, initializing_an_array_with_a_scalar_expression_is_an_error)
 {
 	CheckOutcome outcome = checkSource("int main() { int arr[3] = 5; }");
 	CHECK(!outcome.ok);
-	CHECK(containsMessage(outcome, "incompatible type"));
+	CHECK(containsMessage(outcome, "must be initialized with an initializer list or a string literal"));
 }
 
 TEST(sema, a_function_returning_pointer_can_return_a_decayed_local_array)
@@ -781,4 +781,238 @@ TEST(sema, a_well_formed_program_using_every_Fase4_feature_checks_cleanly)
 		"    return distanceSquared(origin, origin);"
 		"}");
 	CHECK(outcome.ok);
+}
+
+// ---- initializers (Fase 7) -----------------------------------------------------------------------
+
+TEST(sema, an_array_initializer_list_of_the_right_length_type_checks)
+{
+	CheckOutcome outcome = checkSource("int a[3] = { 1, 2, 3 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, an_array_initializer_list_may_be_shorter_than_the_array)
+{
+	// The rest zero-fills, as in C - so a short list is not an error, only a long one is.
+	CheckOutcome outcome = checkSource("int a[4] = { 1 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, too_many_values_in_an_array_initializer_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int a[2] = { 1, 2, 3 };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "which holds 2"));
+}
+
+TEST(sema, a_nested_array_initializer_checks_each_row_against_the_row_type)
+{
+	CheckOutcome outcome = checkSource("int m[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, too_many_values_in_a_row_of_a_nested_array_initializer_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int m[2][2] = { { 1, 2, 3 }, { 4, 5 } };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "which holds 2"));
+}
+
+TEST(sema, brace_elision_in_a_nested_array_initializer_is_reported_explicitly)
+{
+	// `int m[2][2] = { 1, 2, 3, 4 }` is valid C and deliberately rejected here - see
+	// Sema::checkInitializer()'s own note. The diagnostic has to say WHY, not just "bad type".
+	CheckOutcome outcome = checkSource("int m[2][2] = { 1, 2, 3, 4 };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "omitting the inner braces"));
+}
+
+TEST(sema, a_struct_initializer_list_maps_values_to_fields_positionally)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; int y; };"
+		"struct P p = { 1, 2 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_struct_initializer_list_may_leave_later_fields_out)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; int y; int z; };"
+		"struct P p = { 1 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, too_many_values_in_a_struct_initializer_is_an_error)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; int y; };"
+		"struct P p = { 1, 2, 3 };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "which has 2 field(s)"));
+}
+
+TEST(sema, a_struct_field_of_the_wrong_type_in_an_initializer_is_an_error)
+{
+	// Checked field by field, against that field's own type - so a value that could not be assigned
+	// to the field is reported here too, at the element rather than at the whole declaration.
+	CheckOutcome outcome = checkSource(
+		"struct Q { int a; };"
+		"struct P { int x; };"
+		"struct Q q;"
+		"struct P p = { q };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+}
+
+TEST(sema, brace_elision_for_a_struct_typed_field_is_reported_explicitly)
+{
+	CheckOutcome outcome = checkSource(
+		"struct Inner { int a; int b; };"
+		"struct Outer { struct Inner in; int c; };"
+		"struct Outer o = { 1, 2, 3 };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "omitting the inner braces"));
+}
+
+TEST(sema, a_nested_struct_field_with_its_own_braces_type_checks)
+{
+	CheckOutcome outcome = checkSource(
+		"struct Inner { int a; int b; };"
+		"struct Outer { struct Inner in; int c; };"
+		"struct Outer o = { { 1, 2 }, 3 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_string_literal_initializes_a_char_array)
+{
+	CheckOutcome outcome = checkSource("char s[8] = \"hola\";");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_string_literal_that_does_not_fit_its_char_array_is_an_error)
+{
+	// Four characters plus the terminating zero need five bytes - the message says so, because the
+	// off-by-one is the whole point of getting this wrong.
+	CheckOutcome outcome = checkSource("char s[4] = \"hola\";");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "5 byte(s) including its terminating zero"));
+}
+
+TEST(sema, a_string_literal_cannot_initialize_an_array_of_a_wider_element)
+{
+	CheckOutcome outcome = checkSource("int a[8] = \"hola\";");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "requires an array of 'char'"));
+}
+
+TEST(sema, a_string_literal_fills_one_row_of_a_two_dimensional_char_array)
+{
+	CheckOutcome outcome = checkSource("char names[2][8] = { \"ada\", \"grace\" };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_braced_string_literal_initializes_a_char_array)
+{
+	CheckOutcome outcome = checkSource("char s[8] = { \"hola\" };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_nested_braced_string_literal_initializes_a_char_array_row)
+{
+	CheckOutcome outcome = checkSource("char names[2][8] = { { \"ada\" }, { \"grace\" } };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_struct_value_is_valid_as_an_aggregate_element)
+{
+	CheckOutcome outcome = checkSource(
+		"struct Inner { int a; int b; };"
+		"struct Outer { struct Inner in; int c; };"
+		"struct Inner inner;"
+		"struct Outer o = { inner, 3 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, compound_assignment_to_a_struct_is_an_error)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; };"
+		"int main() { struct P a; struct P b; a += b; return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "compound assignment is not valid for struct"));
+}
+
+TEST(sema, a_scalar_accepts_a_single_braced_value)
+{
+	CheckOutcome outcome = checkSource("int x = { 5 };");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_scalar_with_more_than_one_braced_value_is_an_error)
+{
+	CheckOutcome outcome = checkSource("int x = { 5, 6 };");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "takes exactly one value"));
+}
+
+TEST(sema, an_array_initializer_list_works_on_a_local_too)
+{
+	CheckOutcome outcome = checkSource("int main() { int a[2] = { 1, 2 }; return a[0]; }");
+	CHECK(outcome.ok);
+}
+
+// ---- structs by value (Fase 7) -------------------------------------------------------------------
+
+TEST(sema, assigning_one_struct_to_another_of_the_same_type_type_checks)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; int y; };"
+		"int main() { struct P a; struct P b; a.x = 1; b = a; return b.x; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, assigning_between_two_different_struct_types_is_an_error)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; };"
+		"struct Q { int x; };"
+		"int main() { struct P p; struct Q q; p = q; return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible"));
+}
+
+TEST(sema, a_function_can_take_and_return_a_struct_by_value)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; int y; };"
+		"struct P doubled(struct P p) { struct P r; r.x = p.x * 2; r.y = p.y * 2; return r; }"
+		"int main() { struct P a; a.x = 1; a.y = 2; struct P b = doubled(a); return b.x + b.y; }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, passing_the_wrong_struct_type_by_value_is_still_an_error)
+{
+	CheckOutcome outcome = checkSource(
+		"struct P { int x; };"
+		"struct Q { int x; };"
+		"int f(struct P p);"
+		"int main() { struct Q q; return f(q); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+}
+
+TEST(sema, a_member_access_on_a_struct_returning_call_type_checks_but_is_not_an_lvalue)
+{
+	CheckOutcome reading = checkSource(
+		"struct P { int x; };"
+		"struct P make();"
+		"int main() { return make().x; }");
+	CHECK(reading.ok);
+
+	CheckOutcome writing = checkSource(
+		"struct P { int x; };"
+		"struct P make();"
+		"int main() { make().x = 1; return 0; }");
+	CHECK(!writing.ok);
 }

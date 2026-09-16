@@ -165,6 +165,166 @@ namespace ceresc::sema
 		return false;
 	}
 
+	bool Sema::isCharType(const Type* type) noexcept
+	{
+		return type && (type->isChar() || type->isUChar() || type->isSChar());
+	}
+
+	void Sema::checkInitializer(const Type* type, Expr* init)
+	{
+		if (!init)
+			return;
+
+		if (auto* list = dynamic_cast<ast::InitListExpr*>(init))
+		{
+			checkInitList(type, *list);
+			return;
+		}
+
+		// `char s[8] = "hola"` - the one non-brace initializer an ARRAY accepts. Note this is the
+		// array itself being filled with the literal's bytes, not a pointer being aimed at the
+		// literal's own .rodata copy (which is what the same StringLiteralExpr means anywhere else,
+		// see visit(StringLiteralExpr&)), so it deliberately does not go through decayArray().
+		if (type && type->isArray() && dynamic_cast<ast::StringLiteralExpr*>(init))
+		{
+			checkExpr(init); // still annotate the literal - libs/ir reads its PooledString, not its type
+			if (!isCharType(type->arrayElementType()))
+			{
+				_diagnostics.error(init->location(), "initializing '{}' with a string literal requires an array of 'char'", typeName(type));
+				return;
+			}
+			auto* literal = static_cast<ast::StringLiteralExpr*>(init);
+			usize needed = literal->value().view().size() + 1; // + the terminating zero
+			if (needed > type->arraySize())
+			{
+				_diagnostics.error(init->location(), "string literal needs {} byte(s) including its terminating zero, but '{}' holds {}",
+					needed, typeName(type), type->arraySize());
+			}
+			return;
+		}
+
+		const Type* initType = decayArray(checkExpr(init));
+
+		if (type && type->isArray())
+		{
+			// An array is never assignable from a plain expression in C - it has no assignment at
+			// all - so this cannot fall through to isAssignable() and say "incompatible type", which
+			// would suggest the right-hand side is the problem rather than the form.
+			_diagnostics.error(init->location(), "an array like '{}' must be initialized with an initializer list or a string literal", typeName(type));
+			return;
+		}
+
+		if (!isAssignable(type, initType))
+		{
+			_diagnostics.error(init->location(), "initializing '{}' with an expression of incompatible type '{}'",
+				typeName(type), typeName(initType));
+		}
+	}
+
+	void Sema::checkInitList(const Type* type, ast::InitListExpr& list)
+	{
+		std::span<Expr* const> elements = list.elements();
+		list.setType(type); // what this list was checked against - see expr.h
+
+		if (type && type->isArray())
+		{
+			const Type* elementType = type->arrayElementType();
+			if (elements.size() == 1 && elementType && isCharType(elementType) &&
+				dynamic_cast<ast::StringLiteralExpr*>(elements.front()))
+			{
+				// Braces around a character-array string initializer are transparent.
+				checkInitializer(type, elements.front());
+				return;
+			}
+			if (elements.size() > type->arraySize())
+			{
+				_diagnostics.error(list.location(), "{} value(s) in an initializer list for '{}', which holds {}",
+					elements.size(), typeName(type), type->arraySize());
+			}
+			for (Expr* element : elements)
+			{
+				if (elementType && (elementType->isArray() || elementType->isStruct()) &&
+					!dynamic_cast<ast::InitListExpr*>(element) && !dynamic_cast<ast::StringLiteralExpr*>(element))
+				{
+					const Type* elementExprType = decayArray(checkExpr(element));
+					if (isAssignable(elementType, elementExprType))
+						continue; // an aggregate value, not brace elision
+					// Brace elision - see sema.h's own note on why this is reported, not guessed at.
+					_diagnostics.error(element->location(), "expected '{{' to initialize a '{}' here - omitting the inner braces is not accepted in this version",
+						typeName(elementType));
+					continue;
+				}
+				checkInitializer(elementType, element);
+			}
+			return;
+		}
+
+		if (type && type->isStruct())
+		{
+			ast::StructDecl* decl = type->structDecl();
+			if (!decl || !decl->isComplete())
+			{
+				_diagnostics.error(list.location(), "cannot initialize an incomplete type '{}'", typeName(type));
+				for (Expr* element : elements)
+				{
+					if (auto* nested = dynamic_cast<ast::InitListExpr*>(element))
+					{
+						for (Expr* inner : nested->elements())
+							checkExpr(inner);
+						nested->setType(errorRecoveryType());
+					}
+					else
+						checkExpr(element);
+				}
+				return;
+			}
+
+			std::span<const FieldDecl> fields = decl->fields();
+			if (elements.size() > fields.size())
+			{
+				_diagnostics.error(list.location(), "{} value(s) in an initializer list for '{}', which has {} field(s)",
+					elements.size(), typeName(type), fields.size());
+			}
+			for (usize i = 0; i < elements.size(); ++i)
+			{
+				const Type* fieldType = i < fields.size() ? fields[i].type : nullptr;
+				if (!fieldType)
+				{
+					if (auto* nested = dynamic_cast<ast::InitListExpr*>(elements[i]))
+					{
+						for (Expr* inner : nested->elements())
+							checkExpr(inner);
+						nested->setType(errorRecoveryType());
+					}
+					else
+						checkExpr(elements[i]);
+					continue;
+				}
+				if ((fieldType->isArray() || fieldType->isStruct()) &&
+					!dynamic_cast<ast::InitListExpr*>(elements[i]) && !dynamic_cast<ast::StringLiteralExpr*>(elements[i]))
+				{
+					const Type* elementExprType = decayArray(checkExpr(elements[i]));
+					if (isAssignable(fieldType, elementExprType))
+						continue; // an aggregate value, not brace elision
+					_diagnostics.error(elements[i]->location(), "expected '{{' to initialize field '{}' of type '{}' here - omitting the inner braces is not accepted in this version",
+						fields[i].name, typeName(fieldType));
+					continue;
+				}
+				checkInitializer(fieldType, elements[i]);
+			}
+			return;
+		}
+
+		// A scalar/pointer with braces - real C's `int x = { 5 }`. One value, no more.
+		if (elements.size() != 1)
+		{
+			_diagnostics.error(list.location(), "an initializer list for the scalar type '{}' takes exactly one value, not {}",
+				typeName(type), elements.size());
+		}
+		for (Expr* element : elements)
+			checkInitializer(type, element);
+	}
+
 	const Type* Sema::decayArray(const Type* type) noexcept
 	{
 		if (!type || !type->isArray())
@@ -625,6 +785,8 @@ namespace ceresc::sema
 
 		if (!isLValue(node.target()))
 			_diagnostics.error(node.location(), "expression is not assignable");
+		else if (targetType && targetType->isStruct() && node.op() != ast::AssignOp::Assign)
+			_diagnostics.error(node.location(), "compound assignment is not valid for struct type '{}'", typeName(targetType));
 		else if (!isAssignable(targetType, valueType))
 			_diagnostics.error(node.location(), "assigning to '{}' from incompatible type '{}'", typeName(targetType), typeName(valueType));
 
@@ -742,6 +904,20 @@ namespace ceresc::sema
 	}
 
 	// ---- statements -----------------------------------------------------------------------------
+
+	void Sema::visit(ast::InitListExpr& node)
+	{
+		// Only reachable if an InitListExpr ever shows up somewhere checkInitializer() is not what
+		// looks at it. libs/parser builds one only from parseInitializer() (expr.h/parser.h), so on
+		// well-formed input this never runs - it exists so a future caller that forgets to route an
+		// initializer through checkInitializer() gets a real diagnostic instead of an unchecked
+		// subtree with null types reaching libs/ir.
+		_diagnostics.error(node.location(), "an initializer list is only valid as a variable's initializer");
+		for (Expr* element : node.elements())
+			checkExpr(element);
+		node.setType(errorRecoveryType());
+		_lastExprType = node.type();
+	}
 
 	void Sema::visit(ast::EmptyStmt&) {}
 
@@ -930,14 +1106,7 @@ namespace ceresc::sema
 		declareSymbol(symbol);
 
 		if (node.initializer())
-		{
-			const Type* initType = decayArray(checkExpr(node.initializer()));
-			if (!isAssignable(node.type(), initType))
-			{
-				_diagnostics.error(node.location(), "initializing '{}' with an expression of incompatible type '{}'",
-					typeName(node.type()), typeName(initType));
-			}
-		}
+			checkInitializer(node.type(), node.initializer());
 	}
 
 	void Sema::visit(ast::FunctionDecl& node)

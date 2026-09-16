@@ -15,6 +15,7 @@
 //   - frameless leaf functions   <-> one uniform frame shape for every function
 //   - register windows/slot reuse <-> one permanent frame field per local/parameter/temporary
 //   - cmp+branch fusion          <-> a materialized 0/1 value, then a branch against zero
+//   - folded addressing modes    <-> one `add` per element address, then a load through it
 //   - constant folding/DCE/...   <-> the IR exactly as IrBuilder emitted it
 //
 // Those simplified forms are not dead weight: they are what makes a miscompilation bisectable
@@ -60,6 +61,7 @@ namespace ceresc::support
 		bool cmpBranchFusion = true;			// Cmp + CondJump-against-zero -> one ifXX
 		bool immediateOperands = true;			// fold a constant operand into addi/ifXX/... directly
 		bool fallthroughBranches = true;		// drop a jump whose target is the next block emitted
+		bool addressFolding = true;				// fold an address computation into the load/store that reads it
 
 		// Defined below optimizationFlags(), which it walks to build O0 - see its own note.
 		static OptimizationOptions forLevel(OptimizationLevel level) noexcept;
@@ -98,6 +100,7 @@ namespace ceresc::support
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },
 			{ "immediates",         &OptimizationOptions::immediateOperands,        "use a constant operand directly as an immediate" },
 			{ "fallthrough",        &OptimizationOptions::fallthroughBranches,      "drop a jump to the block emitted right after it" },
+			{ "address-folding",    &OptimizationOptions::addressFolding,           "use [base + index] / [base + N] instead of a separate add" },
 		};
 		return kFlags;
 	}

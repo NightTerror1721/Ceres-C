@@ -184,6 +184,18 @@ namespace ceresc::parser
 		// Declarations. A variable and a function declaration share the same `type-name identifier`
 		// prefix - parseExternalDecl() parses that prefix once, then branches on whether a '(' follows.
 		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type);
+
+		// §3's `initializer ::= assignment-expr | "{" initializer-list "}"` - the ONE production
+		// that can produce an InitListExpr (expr.h's own note on why that node lives in the Expr
+		// hierarchy at all depends on this being the only place). Recursive, because an element of
+		// an initializer-list is itself an `initializer`, which is what makes `{ { 1, 2 }, { 3, 4 } }`
+		// parse. Returns null on a malformed list, after reporting; the caller is a declarator, which
+		// already knows how to keep going without one.
+		//
+		// No trailing comma: the grammar of §3 is `initializer ("," initializer)*`, and §3 is
+		// explicit that it is the contract "ni más ni menos". `{}` is rejected for the same reason -
+		// the production requires at least one element.
+		Expr* parseInitializer();
 		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType);
 		bool parseParamList(std::vector<Param>& outParams);
 		Decl* parseTypedefDecl();
@@ -200,8 +212,10 @@ namespace ceresc::parser
 		// means `void f(int* a)`, the 10 is documentation only - real C ignores it) - and, precisely
 		// because it decays, the outermost `[...]` may be empty there (`int a[]`, `int m[][4]`) with
 		// no diagnostic. Everywhere else (a plain variable, a struct field, a typedef) there is no
-		// decay and no brace-initializer support in this subset to infer a missing size from (see the
-		// architecture plan §3 - "fixed-size arrays" is the stated v1 scope), so every dimension must
+		// decay, and a missing size is never inferred from a brace initializer in this subset (§3's
+		// `direct-declarator` requires an INT_LITERAL, and `int a[] = { 1, 2 }` therefore is not a
+		// form this grammar accepts, even though parseInitializer() understands the right-hand side
+		// perfectly well), so every dimension must
 		// carry an INT_LITERAL or this reports a diagnostic and treats that dimension as size 1 to
 		// keep building a usable (if wrong) type instead of returning null and losing the declarator
 		// entirely - consistent with this parser's panic-mode philosophy of never letting one bad
@@ -228,6 +242,8 @@ namespace ceresc::parser
 		void synchronizeDeclaration() noexcept;
 
 		Expr* wrapUnary(UnaryOp op, support::SourceLocation location, Expr* operand) noexcept;
+		// Shared by the two nodes that own a variable-length Expr list: CallExpr's arguments and
+		// InitListExpr's elements (expr.h) - both need the same {pointer, count} arena copy.
 		std::span<Expr* const> copyArgsToArena(const std::vector<Expr*>& args) noexcept;
 		std::span<Stmt* const> copyStmtsToArena(const std::vector<Stmt*>& stmts) noexcept;
 		std::span<Decl* const> copyDeclsToArena(const std::vector<Decl*>& decls) noexcept;

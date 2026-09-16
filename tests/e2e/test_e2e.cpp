@@ -432,3 +432,271 @@ TEST(e2e, a_short_circuit_condition_does_not_evaluate_its_right_hand_side)
 		"}",
 		"5");
 }
+
+// ---- composite memory: arrays, pointers and structs (Fase 7) -----------------------------------
+//
+// The phase's own deliverables and exit criterion: `suma_array`, a function that fills and reads a
+// `struct Point`, and a program that sorts ten integers. Each one runs at all three optimization
+// levels like everything above, which is what makes the indexed addressing modes and the struct ABI
+// answerable questions rather than claims about the generated text.
+
+TEST(e2e, suma_array_adds_up_an_array_passed_by_pointer)
+{
+	// The prior audit's own example, and the phase's first deliverable: the array's address crosses
+	// a call boundary and the callee walks it by index.
+	runsTheSameAtEveryLevel("suma_array",
+		"int suma_array(int* values, int count) {"
+		"    int total = 0;"
+		"    for (int i = 0; i < count; i = i + 1) { total = total + values[i]; }"
+		"    return total;"
+		"}"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int values[5] = { 0, 1, 1, 1, 2 };"
+		"    *term = 48 + suma_array(values, 5);" // 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_function_fills_a_struct_point_through_a_pointer_and_the_caller_reads_it_back)
+{
+	// The phase's second deliverable. `&p` escapes into `fill`, so nothing about `p` may be kept in
+	// a register across the call, and the two field writes have to land at the offsets sema computed.
+	runsTheSameAtEveryLevel("struct_point",
+		"struct Point { int x; int y; };"
+		"void fill(struct Point* p, int x, int y) { p->x = x; p->y = y; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Point p;"
+		"    fill(&p, 2, 3);"
+		"    *term = 48 + p.x * 2 + p.y - 2;" // 2*2 + 3 - 2 = 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, selection_sort_of_ten_integers_produces_the_expected_output_byte_for_byte)
+{
+	// The phase's exit criterion, chosen because one program exercises indexing, comparison and a
+	// swap at once - and printing all ten digits checks the whole array, not just that it ran.
+	runsTheSameAtEveryLevel("selection_sort",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int a[10] = { 5, 3, 9, 1, 7, 0, 8, 2, 6, 4 };"
+		"    for (int i = 0; i < 9; i = i + 1) {"
+		"        int min = i;"
+		"        for (int j = i + 1; j < 10; j = j + 1) {"
+		"            if (a[j] < a[min]) { min = j; }"
+		"        }"
+		"        int t = a[i]; a[i] = a[min]; a[min] = t;"
+		"    }"
+		"    for (int i = 0; i < 10; i = i + 1) { *term = 48 + a[i]; }"
+		"    return 0;"
+		"}",
+		"0123456789");
+}
+
+TEST(e2e, a_two_dimensional_array_indexes_by_row_stride)
+{
+	// `m[i][j]` is two scalings, and the row's own address is a decayed sub-array rather than a
+	// pointer loaded from anywhere - the case a single-dimension index rule would get wrong.
+	runsTheSameAtEveryLevel("matrix",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int m[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };"
+		"    *term = 48 + m[1][2];" // 6
+		"    return 0;"
+		"}",
+		"6");
+}
+
+TEST(e2e, pointer_arithmetic_scales_by_the_pointee_size_in_both_directions)
+{
+	// `p + 2` advances eight bytes, and `q - a` divides the byte distance back down to elements -
+	// the two halves of the same scaling rule, which cancel out here only if both are right.
+	runsTheSameAtEveryLevel("pointer_arithmetic",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int a[4] = { 1, 2, 3, 4 };"
+		"    int* p = a;"
+		"    p = p + 2;"
+		"    int* q = &a[3];"
+		"    *term = 48 + *p + (q - a) - 4;" // 3 + 3 - 4 = 2
+		"    return 0;"
+		"}",
+		"2");
+}
+
+TEST(e2e, an_array_of_structs_strides_by_the_whole_struct)
+{
+	runsTheSameAtEveryLevel("struct_array",
+		"struct Point { int x; int y; };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Point pts[3];"
+		"    for (int i = 0; i < 3; i = i + 1) { pts[i].x = i; pts[i].y = i * 2; }"
+		"    *term = 48 + pts[2].x + pts[2].y - 1;" // 2 + 4 - 1 = 5
+		"    *term = 48 + pts[0].y;" // 0, unless the stride overlapped pts[1]
+		"    return 0;"
+		"}",
+		"50");
+}
+
+TEST(e2e, a_partially_initialized_aggregate_has_zeros_everywhere_the_list_did_not_reach)
+{
+	// C's rule, and there is no memset to call - the zeros are stores lowerInitializerInto() emits
+	// itself (libs/ir). A struct's later fields count too, not just an array's tail.
+	runsTheSameAtEveryLevel("partial_initializers",
+		"struct Three { int a; int b; int c; };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int a[4] = { 9 };"
+		"    struct Three t = { 4 };"
+		"    *term = 48 + a[0] + a[1] + a[2] + a[3] + t.a + t.b + t.c - 8;" // 9 + 4 - 8 = 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_char_array_initialized_from_a_string_literal_holds_its_own_copy_of_the_bytes)
+{
+	// Not a pointer into .rodata: the array owns the bytes, so writing one is allowed and the
+	// terminating zero is really there.
+	runsTheSameAtEveryLevel("char_array_init",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    char s[6] = \"hi\";"
+		"    s[2] = 33;"  // '!' - overwrites the terminator the literal put at index 2
+		"    s[3] = 0;"
+		"    for (int i = 0; s[i] != 0; i = i + 1) { *term = s[i]; }"
+		"    return 0;"
+		"}",
+		"hi!");
+}
+
+TEST(e2e, aggregate_globals_live_in_data_and_bss_and_keep_their_values)
+{
+	// One of each shape generateAggregateGlobal() can emit: an initialized scalar array, a string
+	// one, an initialized struct's word image, and an uninitialized struct in @bss.
+	runsTheSameAtEveryLevel("aggregate_globals",
+		"int primes[4] = { 2, 3, 5, 7 };"
+		"char name[4] = \"ok\";"
+		"int grid[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };"
+		"struct Point { int x; int y; };"
+		"struct Point start = { 1, 2 };"
+		"struct Point cursor;"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    cursor.x = 4;"
+		"    for (int i = 0; name[i] != 0; i = i + 1) { *term = name[i]; }"
+		"    *term = 48 + primes[0] + primes[3] + start.x + start.y + cursor.x + cursor.y + grid[1][0] - 15;" // 2+7+1+2+4+0+4-15 = 5
+		"    return 0;"
+		"}",
+		"ok5");
+}
+
+TEST(e2e, a_struct_wider_than_a_word_survives_a_round_trip_through_a_call_by_value)
+{
+	// The hidden-destination-pointer return and the caller-made-copy argument, both at once: `build`
+	// returns twenty bytes and `total` takes them back by value. If either end disagreed about the
+	// ABI the digit would be wrong rather than the program crashing, which is why the value matters.
+	runsTheSameAtEveryLevel("struct_by_value",
+		"struct Big { int a; int b; int c; int d; int e; };"
+		"struct Big build(int n) {"
+		"    struct Big g;"
+		"    g.a = n; g.b = n + 1; g.c = n + 2; g.d = n + 3; g.e = n + 4;"
+		"    return g;"
+		"}"
+		"int total(struct Big g) { return g.a + g.b + g.c + g.d + g.e; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Big g = build(0);"
+		"    *term = 48 + total(g) - 5;" // 0+1+2+3+4 = 10, minus 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_by_value_struct_argument_is_a_copy_the_callee_cannot_write_back_through)
+{
+	// The whole point of passing the address of a COPY rather than of the caller's object: the
+	// callee's writes must not be visible afterwards.
+	runsTheSameAtEveryLevel("struct_by_value_is_a_copy",
+		"struct Pair { int a; int b; };"
+		"int clobber(struct Pair p) { p.a = 99; p.b = 99; return p.a - p.b; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Pair p;"
+		"    p.a = 5; p.b = 0;"
+		"    clobber(p);"
+		"    *term = 48 + p.a + p.b;" // still 5, not 198
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_struct_that_fits_one_word_comes_back_in_the_return_register)
+{
+	// The other side of the size rule: 1/2/4 bytes travel in ret0 with no hidden parameter at all.
+	runsTheSameAtEveryLevel("small_struct_return",
+		"struct One { int x; };"
+		"struct One make(int n) { struct One s; s.x = n; return s; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct One s = make(5);"
+		"    *term = 48 + s.x;"
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_three_byte_struct_round_trips_without_touching_a_fourth_byte)
+{
+	// Three bytes is on the indirect side of the rule precisely so no word store writes a byte the
+	// object does not own - the guard byte after it proves nothing did.
+	runsTheSameAtEveryLevel("three_byte_struct",
+		"struct Three { char a; char b; char c; };"
+		"struct Three make() { struct Three t; t.a = 1; t.b = 2; t.c = 2; return t; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Pack { struct Three t; char guard; };"
+		"    struct Pack p;"
+		"    p.guard = 7;"
+		"    p.t = make();"
+		"    *term = 48 + p.t.a + p.t.b + p.t.c;" // 1 + 2 + 2 = 5
+		"    *term = 48 + p.guard - 2;"           // 7 - 2 = 5, unless the copy overran into it
+		"    return 0;"
+		"}",
+		"55");
+}
+
+TEST(e2e, a_whole_struct_assignment_copies_every_field)
+{
+	runsTheSameAtEveryLevel("struct_assignment",
+		"struct Pair { int a; int b; };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Pair x; struct Pair y;"
+		"    x.a = 2; x.b = 3;"
+		"    y.a = 0; y.b = 0;"
+		"    y = x;"
+		"    *term = 48 + y.a + y.b;" // 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_nested_struct_field_is_reached_through_two_constant_offsets)
+{
+	runsTheSameAtEveryLevel("nested_struct",
+		"struct Inner { int a; int b; };"
+		"struct Outer { struct Inner in; int c; };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Outer o = { { 1, 2 }, 2 };"
+		"    *term = 48 + o.in.a + o.in.b + o.c;" // 1 + 2 + 2 = 5
+		"    return 0;"
+		"}",
+		"5");
+}

@@ -75,6 +75,7 @@ namespace ceresc::sema
 		void visit(ast::CastExpr& node) override;
 		void visit(ast::SizeofExpr& node) override;
 		void visit(ast::TernaryExpr& node) override;
+		void visit(ast::InitListExpr& node) override;
 
 		void visit(ast::EmptyStmt& node) override;
 		void visit(ast::ExprStmt& node) override;
@@ -150,6 +151,34 @@ namespace ceresc::sema
 
 		const ast::Type* checkExpr(ast::Expr* expr);
 		void checkStmt(ast::Stmt* stmt);
+
+		// Checks one `initializer` (§3) against the type being initialized - the declarator-position
+		// counterpart to checkExpr(), and the only path that understands an InitListExpr (expr.h).
+		// Separate from checkExpr() because an initializer is checked TOP-DOWN: a brace list has no
+		// type of its own to infer and report back, it only has a shape that either fits the
+		// declared type or does not, and each element is then checked against whatever type that
+		// position implies. Recurses for a nested aggregate.
+		//
+		// Three forms are accepted, matching real C:
+		//   - a brace list for an array or a struct, positionally, with FEWER elements than the
+		//     aggregate has slots allowed (the rest zero-fills, as in C - see libs/ir for where
+		//     that actually happens) and more being an error;
+		//   - a string literal for a char array (`char s[8] = "hola"`, including one row of a
+		//     `char[2][8]`), which must fit with its terminating zero;
+		//   - any ordinary assignment-expression for a scalar/pointer/whole-struct target, checked
+		//     exactly as an assignment to that type would be.
+		//
+		// Brace elision is deliberately NOT accepted: `int m[2][2] = { 1, 2, 3, 4 }` is reported
+		// rather than guessed at, because the flat and nested forms would otherwise mean different
+		// things depending on a rule nobody reading the code can see ("comprensible antes que
+		// completo", §0). The diagnostic names the missing braces.
+		void checkInitializer(const ast::Type* type, ast::Expr* init);
+		// The brace-list half of checkInitializer(), split out only so the recursion reads as
+		// "list against aggregate" instead of one function with two unrelated halves.
+		void checkInitList(const ast::Type* type, ast::InitListExpr& list);
+		// True for a type a string literal may initialize an array OF - `char`/`signed char`/
+		// `unsigned char`, i.e. exactly the one-byte integer types.
+		static bool isCharType(const ast::Type* type) noexcept;
 
 		bool declareSymbol(const Symbol& symbol);
 		void collectLabels(ast::Stmt* stmt, std::vector<std::string_view>& out);

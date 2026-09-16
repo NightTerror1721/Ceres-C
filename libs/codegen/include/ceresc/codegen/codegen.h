@@ -26,7 +26,7 @@
 // f4/f5) stay pure scratch for moving a spilled value in and out while one instruction is
 // translated, the rest are handed to values whose live range allows it.
 //
-// Three peepholes run here rather than over the IR, because each one is about the ISA rather than
+// Four peepholes run here rather than over the IR, because each one is about the ISA rather than
 // about the program (support::OptimizationOptions switches each off individually):
 //
 //   cmpBranchFusion    A Cmp feeding only a CondJump that tests it against zero is exactly what
@@ -38,10 +38,19 @@
 //                      `ifls r4, 10, .L2` - which the assembler encodes as ADDI/CMPI on its own
 //                      (05-Instruction-Set.md: it picks the form from the operand shapes).
 //   fallthroughBranches A jump to the block that is about to be emitted next is dropped.
+//   addressFolding     An `add` that exists only to compute the address a Load/Store immediately
+//                      reads folds into that access's own operand: `[base + index]` (the ISA's
+//                      indexed forms, LDRX/STRX at 0xB4-0xBD) or `[base + N]`. This is the one
+//                      addressing mode the ISA has and the IR deliberately does not model (§9's
+//                      Load/Store take a single address operand), so recognizing it here is exactly
+//                      the kind of ISA-shaped rewrite this file owns - and it is what makes walking
+//                      an array cost one instruction per element instead of two, which
+//                      05-Instruction-Set.md's own indexed-addressing section is written to explain.
 //
 // With all of them off (-O0), every comparison materializes, every constant is materialized into a
-// register first, and every branch is written out - the simplified, uniform shape the golden tests
-// still pin on the other side. See support/optimization.h for why that path stays alive.
+// register first, every address is computed into a register of its own, and every branch is written
+// out - the simplified, uniform shape the golden tests still pin on the other side. See
+// support/optimization.h for why that path stays alive.
 //
 // Implemented in Fase 6 (scalar expressions/functions/simple scalar globals) and Fase 7 (arrays,
 // pointers, structs) of the phased plan (§13); the optimizations are §13's own Fase 9 list.
@@ -71,6 +80,33 @@ namespace ceresc::codegen
 
 	private:
 		void generateGlobal(const ast::VarDecl& decl);
+		// The `let` declaration for one global of aggregate type - an array or a struct, which has
+		// no single machine width to declare and so needs its own CASM spelling:
+		//
+		//   - an array whose (innermost) element is a scalar keeps its real shape, `u32[4]` /
+		//     `u32[2][3]` / `u8[8]` (11-Data-Types-and-Literals.md), so the .casm reads the way the
+		//     C declaration did and the assembler gives it the element type's own alignment;
+		//   - anything involving a struct becomes one flat `u32[N]` of the right byte count. NOT a
+		//     CASM `struct` plus `let g: Point`: 23-Structs.md's struct-as-a-type spelling means
+		//     `u8[Point]`, whose alignment is one byte, so a word field of it can land misaligned
+		//     and fault at run time. A u32 array is the same bytes with the alignment the object
+		//     actually needs, and the field offsets are already baked into the IR by sema
+		//     (type_layout.h) rather than looked up from a CASM struct, so nothing is lost but the
+		//     field names - which the emitted comment puts back.
+		void generateAggregateGlobal(const ast::VarDecl& decl);
+		// The CASM type text for an array of scalars - `u32[2][3]` for an `int[2][3]`. Empty when
+		// `type` is not that shape (i.e. a struct is involved somewhere), which is the caller's
+		// signal to fall back to the flat word array.
+		static std::string scalarArrayTypeName(const ast::Type* type);
+		// The `[...]` initializer text for an array of scalars, built straight from the AST so the
+		// output keeps the shape the C initializer had. Empty when some element is not a
+		// compile-time constant - the caller diagnoses that, since only it knows the variable's name.
+		std::optional<std::string> scalarArrayInitText(const ast::Type* type, const ast::Expr* init) const;
+		// The little-endian byte image of a constant initializer for an object of `type`, written
+		// into `image` at `offset`. The only way to get a struct into .data: field offsets come from
+		// sema's own layout (type_layout.h), so the image is exactly the memory the running program
+		// will address. False when some element is not a compile-time constant.
+		bool buildGlobalImage(const ast::Type* type, const ast::Expr* init, u32 offset, std::vector<u8>& image) const;
 		void generateFunction(const ast::FunctionDecl& decl, const ir::IrFunction& function);
 		void generateStringLiterals(const ir::IrModule& module);
 
@@ -147,6 +183,51 @@ namespace ceresc::codegen
 		// the Cmp immediately before it - the shape cmpBranchFusion collapses. `cmpOut` receives
 		// that Cmp's payload.
 		bool findFusableCmp(std::span<ir::IrInstr* const> instrs, usize index, const ir::IrCmpPayload*& cmpOut) const;
+
+		// ---- address folding (Fase 7) -----------------------------------------------------------
+
+		// One absorbed address computation: the base register's value plus either another register's
+		// value (the ISA's indexed forms) or a constant displacement - never both, because `rt` and
+		// `imm16` are the same encoding bits (04-Instruction-Format.md).
+		struct FoldedAddress
+		{
+			ir::IrValue base;
+			ir::IrValue index;                // valid when the offset is a register
+			std::optional<i64> displacement;  // set when the offset is a constant instead
+		};
+
+		// True when `instrs[index]` is a Load/Store whose address is produced by the `add`
+		// IMMEDIATELY before it and read by nothing else, and folding that `add` into the access is
+		// possible at all.
+		//
+		// Adjacency is what makes this safe without touching liveness, and it is worth being
+		// explicit about why: with the `add` gone, its two operands have to still be in the
+		// registers ValuePlacement put them in AT THE ACCESS, while ValuePlacement's own liveness
+		// says their last read was the `add`. Nothing is emitted in between, so nothing can have
+		// taken those registers - and the only thing allocated AT the access is a load's own
+		// destination, which may safely reuse one, because every load form computes its address
+		// before it writes rd (05-Instruction-Set.md's LDR/LDRX and the VM's own handlers). Teaching
+		// liveness about non-adjacent folds instead was tried and is a pessimization: extending the
+		// base's live range costs a register, and the value being stored then spills to the very
+		// frame field the fold was saving an instruction on.
+		//
+		// IrBuilder cooperates by lowering a plain assignment's VALUE before its target address
+		// (ir_builder.cpp), which is what puts a store's address computation adjacent to it.
+		//
+		// The remaining condition is the register budget (§10: r4/r5 are the only scratch). An
+		// indexed STORE reads three registers at once - base, index and value - so the one refused
+		// case is the one where all three would have to be fetched from a frame field; it keeps the
+		// plain `add`.
+		//
+		// Called from two places that must agree exactly: the pre-pass that marks the `add` as
+		// consumed, and the Load/Store case that emits the folded form - same contract as
+		// findFusableCmp() above.
+		bool findFoldableAddress(std::span<ir::IrInstr* const> instrs, usize index, FoldedAddress& out) const;
+		// The `[...]` operand text for a folded address, or for a plain one-register address.
+		std::string addressOperand(const FoldedAddress& folded, u32 baseScratch, u32 indexScratch, support::SourceLocation loc);
+		// True when this value has to be shuttled through a scratch register to be read at all -
+		// i.e. it lives in a frame field rather than a register.
+		bool livesInSlot(ir::IrValue value) const;
 
 	private:
 		const support::SourceManager& _sourceManager;

@@ -530,19 +530,96 @@ TEST(parser, array_of_void_is_an_error)
 	CHECK(diagnostics.hasErrors());
 }
 
-TEST(parser, array_brace_initializer_is_reported_as_not_implemented_but_still_recovers)
+// ---- brace initializers (Fase 7) -----------------------------------------------------------------
+//
+// The parser's whole job here is the SHAPE - whether the braces nest the way the declared type
+// needs them is Sema::checkInitializer()'s question, so every well-formed list below parses
+// regardless of what it is initializing.
+
+TEST(parser, array_brace_initializer_parses_as_an_init_list)
+{
+	CHECK_EQ(printUnit("int arr[3] = { 1, 2, 3 };"),
+		"(unit (var arr int[3] (init-list 1 2 3)))");
+}
+
+TEST(parser, nested_brace_initializers_nest_in_the_ast)
+{
+	CHECK_EQ(printUnit("int m[2][2] = { { 1, 2 }, { 3, 4 } };"),
+		"(unit (var m int[2][2] (init-list (init-list 1 2) (init-list 3 4))))");
+}
+
+TEST(parser, a_brace_initializer_element_can_be_any_assignment_expression)
+{
+	CHECK_EQ(printUnit("int n; int arr[2] = { n + 1, -n };"),
+		"(unit (var n int <null>) (var arr int[2] (init-list (+ n 1) (- n))))");
+}
+
+TEST(parser, a_brace_initializer_works_on_a_local_declaration_too)
+{
+	CHECK_EQ(printUnit("void f() { int a[2] = { 7, 8 }; }"),
+		"(unit (func f void (params) (block (decl-stmt (var a int[2] (init-list 7 8))))))");
+}
+
+TEST(parser, a_string_literal_initializer_is_an_ordinary_expression_not_a_list)
+{
+	CHECK_EQ(printUnit("char s[4] = \"hi\";"),
+		"(unit (var s char[4] \"hi\"))");
+}
+
+TEST(parser, an_empty_brace_initializer_is_rejected)
 {
 	support::Arena arena;
 	support::DiagnosticEngine diagnostics;
 	support::StringPool pool;
-	lexer::Lexer lexer("int arr[3] = { 1, 2, 3 }; int y;", testSourceId(), diagnostics, pool);
+	lexer::Lexer lexer("int arr[3] = { }; int y;", testSourceId(), diagnostics, pool);
 	Parser parser(lexer, arena, diagnostics);
 
 	ast::TranslationUnit* unit = parser.parseTranslationUnit();
 	CHECK(unit != nullptr);
-	// The brace list is skipped by depth (not by panic-mode resynchronization), so the second
-	// declaration still parses as its own, unrelated `y` - not swallowed as part of recovery.
+	CHECK(diagnostics.hasErrors());
+	// Panic-mode recovery still gets to the second declaration - one bad initializer does not
+	// take the rest of the file with it.
 	CHECK_EQ(unit->decls().size(), usize(2));
+}
+
+TEST(parser, a_trailing_comma_in_a_brace_initializer_is_rejected_but_the_values_are_kept)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int arr[3] = { 1, 2, };", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	CHECK(diagnostics.hasErrors());
+	CHECK_EQ(unit->decls().size(), usize(1)); // the list itself survives - see parseInitializer()
+}
+
+TEST(parser, an_unterminated_brace_initializer_does_not_hang)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int arr[3] = { 1, 2", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(parser, a_brace_is_still_a_syntax_error_in_an_ordinary_expression)
+{
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	// Only a declarator's initializer position accepts a brace list (expr.h/parser.h) - `x = {1}`
+	// as a statement must stay the error it always was.
+	lexer::Lexer lexer("void f() { int x; x = { 1 }; }", testSourceId(), diagnostics, pool);
+	Parser parser(lexer, arena, diagnostics);
+
+	parser.parseTranslationUnit();
 	CHECK(diagnostics.hasErrors());
 }
 

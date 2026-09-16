@@ -337,7 +337,7 @@ TEST(ir_optimizer, load_forwarding_still_works_for_a_local_of_a_matching_width)
 
 	std::string text = optimizedIr("int main() { int x = 5; x = 7; return x; }", options);
 	CHECK(!contains(text, "load"));
-	CHECK(contains(text, "ret %3")); // %3 is the 7 - the second store replaced what the first made known
+	CHECK(contains(text, "ret %2")); // %2 is the 7 - the second store replaced what the first made known
 }
 
 TEST(ir_optimizer, dead_store_elimination_drops_a_store_nothing_ever_reads)

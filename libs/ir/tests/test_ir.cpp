@@ -8,6 +8,7 @@
 #include <ceresc/support/diagnostics.h>
 #include <ceresc/support/string_pool.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "framework.h"
@@ -76,39 +77,6 @@ namespace
 		return ir::IrPrinter{}.print(module);
 	}
 
-	// Same pipeline as functionIr(), but for tests that care about what IrBuilder itself reports
-	// through its DiagnosticEngine (see requireScalarValue()) rather than the IR text. sema IS
-	// expected to accept these (and CHECK()ed below) - they deliberately feed IrBuilder a program
-	// sema's own isAssignable() considers well-typed (a struct-by-value use), just one this subset
-	// cannot actually lower correctly, so it is IrBuilder, not sema, that must be the one to report
-	// it.
-	bool irBuilderReports(std::string_view source, std::string_view needle)
-	{
-		support::Arena arena;
-		support::DiagnosticEngine diagnostics;
-		support::StringPool pool;
-		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
-		parser::Parser parser(lexer, arena, diagnostics);
-
-		ast::TranslationUnit* unit = parser.parseTranslationUnit();
-		CHECK(unit != nullptr);
-		if (!unit)
-			return false;
-
-		sema::Sema sema(arena, diagnostics);
-		CHECK(sema.check(*unit));
-
-		usize diagnosticsBeforeIr = diagnostics.diagnosticCount();
-		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
-		builder.build(*unit);
-
-		for (usize i = diagnosticsBeforeIr; i < diagnostics.diagnosticCount(); ++i)
-		{
-			if (diagnostics.diagnostics()[i].message.find(needle) != std::string::npos)
-				return true;
-		}
-		return false;
-	}
 }
 
 // ---- literals / arithmetic ---------------------------------------------------------------------
@@ -284,7 +252,7 @@ TEST(ir, if_else_both_branches_join_at_one_merge_block)
 {
 	std::string text = functionIr("int main() { int x = 0; if (x) { x = 1; } else { x = 2; } return x; }");
 	CHECK_EQ(text,
-		"function main(params=0, locals=1) {\n"
+"function main(params=0, locals=1) {\n"
 		"L0:\n"
 		"  %0 = const 0\n"
 		"  %1 = &local 0\n"
@@ -294,14 +262,14 @@ TEST(ir, if_else_both_branches_join_at_one_merge_block)
 		"  %4 = const 0\n"
 		"  br.ne %3, %4, L1, L2\n"
 		"L1:\n"
-		"  %5 = &local 0\n"
-		"  %6 = const 1\n"
-		"  store.word [%5], %6\n"
+		"  %5 = const 1\n"
+		"  %6 = &local 0\n"
+		"  store.word [%6], %5\n"
 		"  jmp L3\n"
 		"L2:\n"
-		"  %7 = &local 0\n"
-		"  %8 = const 2\n"
-		"  store.word [%7], %8\n"
+		"  %7 = const 2\n"
+		"  %8 = &local 0\n"
+		"  store.word [%8], %7\n"
 		"  jmp L3\n"
 		"L3:\n"
 		"  %9 = &local 0\n"
@@ -329,11 +297,11 @@ TEST(ir, while_loop_jumps_back_to_a_header_block_that_tests_the_condition)
 		"  br.ne %3, %4, L2, L3\n"
 		"L2:\n"
 		"  %5 = &local 0\n"
-		"  %6 = &local 0\n"
-		"  %7 = load.word [%6]\n"
-		"  %8 = const 1\n"
-		"  %9 = sub %7, %8\n"
-		"  store.word [%5], %9\n"
+		"  %6 = load.word [%5]\n"
+		"  %7 = const 1\n"
+		"  %8 = sub %6, %7\n"
+		"  %9 = &local 0\n"
+		"  store.word [%9], %8\n"
 		"  jmp L1\n"
 		"L3:\n"
 		"  %10 = &local 0\n"
@@ -354,11 +322,11 @@ TEST(ir, do_while_runs_the_body_once_before_its_first_condition_check)
 		"  jmp L1\n"
 		"L1:\n"
 		"  %2 = &local 0\n"
-		"  %3 = &local 0\n"
-		"  %4 = load.word [%3]\n"
-		"  %5 = const 1\n"
-		"  %6 = add %4, %5\n"
-		"  store.word [%2], %6\n"
+		"  %3 = load.word [%2]\n"
+		"  %4 = const 1\n"
+		"  %5 = add %3, %4\n"
+		"  %6 = &local 0\n"
+		"  store.word [%6], %5\n"
 		"  jmp L2\n"
 		"L2:\n"
 		"  %7 = &local 0\n"
@@ -398,9 +366,9 @@ TEST(ir, for_loop_with_break_and_continue_nested_in_an_if_has_exactly_the_expect
 	CHECK_EQ(text,
 		"function main(params=0, locals=1) {\n"
 		"L0:\n"
-		"  %0 = &local 0\n"
-		"  %1 = const 0\n"
-		"  store.word [%0], %1\n"
+		"  %0 = const 0\n"
+		"  %1 = &local 0\n"
+		"  store.word [%1], %0\n"
 		"  jmp L1\n"
 		"L1:\n"
 		"  %2 = &local 0\n"
@@ -418,11 +386,11 @@ TEST(ir, for_loop_with_break_and_continue_nested_in_an_if_has_exactly_the_expect
 		"  br.ne %10, %11, L5, L6\n"
 		"L3:\n"
 		"  %12 = &local 0\n"
-		"  %13 = &local 0\n"
-		"  %14 = load.word [%13]\n"
-		"  %15 = const 1\n"
-		"  %16 = add %14, %15\n"
-		"  store.word [%12], %16\n"
+		"  %13 = load.word [%12]\n"
+		"  %14 = const 1\n"
+		"  %15 = add %13, %14\n"
+		"  %16 = &local 0\n"
+		"  store.word [%16], %15\n"
 		"  jmp L1\n"
 		"L4:\n"
 		"  %17 = &local 0\n"
@@ -492,19 +460,19 @@ TEST(ir, switch_case_without_break_falls_through_to_the_next_case_via_an_explici
 		"  br.eq %5, %6, L1, L4\n"
 		"L1:\n"
 		"  %8 = &local 1\n"
-		"  %9 = &local 1\n"
-		"  %10 = load.word [%9]\n"
-		"  %11 = const 1\n"
-		"  %12 = add %10, %11\n"
-		"  store.word [%8], %12\n"
+		"  %9 = load.word [%8]\n"
+		"  %10 = const 1\n"
+		"  %11 = add %9, %10\n"
+		"  %12 = &local 1\n"
+		"  store.word [%12], %11\n"
 		"  jmp L2\n"
 		"L2:\n"
 		"  %13 = &local 1\n"
-		"  %14 = &local 1\n"
-		"  %15 = load.word [%14]\n"
-		"  %16 = const 2\n"
-		"  %17 = add %15, %16\n"
-		"  store.word [%13], %17\n"
+		"  %14 = load.word [%13]\n"
+		"  %15 = const 2\n"
+		"  %16 = add %14, %15\n"
+		"  %17 = &local 1\n"
+		"  store.word [%17], %16\n"
 		"  jmp L3\n"
 		"L3:\n"
 		"  %18 = &local 1\n"
@@ -551,9 +519,9 @@ TEST(ir, goto_jumps_directly_to_its_labels_block)
 		"  %5 = load.word [%4]\n"
 		"  ret %5\n"
 		"L2:\n"
-		"  %2 = &local 0\n"
-		"  %3 = const 1\n"
-		"  store.word [%2], %3\n"
+		"  %2 = const 1\n"
+		"  %3 = &local 0\n"
+		"  store.word [%3], %2\n"
 		"  jmp L1\n"
 		"}\n");
 }
@@ -634,11 +602,11 @@ TEST(ir, struct_member_access_adds_the_fields_byte_offset_to_the_base_address)
 	CHECK_EQ(text,
 		"function main(params=0, locals=1) {\n"
 		"L0:\n"
-		"  %0 = &local 0\n"
-		"  %1 = const 4\n"
-		"  %2 = add.u %0, %1\n"
-		"  %3 = const 1\n"
-		"  store.byte [%2], %3\n"
+		"  %0 = const 1\n"
+		"  %1 = &local 0\n"
+		"  %2 = const 4\n"
+		"  %3 = add.u %1, %2\n"
+		"  store.byte [%3], %0\n"
 		"  %4 = &local 0\n"
 		"  %5 = load.word [%4]\n"
 		"  ret %5\n"
@@ -734,9 +702,9 @@ TEST(ir, storing_through_a_dereferenced_array_writes_to_the_arrays_own_address)
 	CHECK_EQ(text,
 		"function main(params=0, locals=1) {\n"
 		"L0:\n"
-		"  %0 = &local 0\n"
-		"  %1 = const 7\n"
-		"  store.word [%0], %1\n"
+		"  %0 = const 7\n"
+		"  %1 = &local 0\n"
+		"  store.word [%1], %0\n"
 		"  %2 = const 0\n"
 		"  ret %2\n"
 		"}\n");
@@ -924,69 +892,234 @@ TEST(ir, float_function_parameter_and_call_argument_are_both_marked_float)
 		"}\n");
 }
 
-// ---- struct-by-value is diagnosed, never silently truncated ------------------------------------
+// ---- composite memory: initializers, whole-struct moves, the struct ABI (Fase 7) ---------------
 
-TEST(ir, assigning_one_struct_variable_to_another_is_diagnosed_not_silently_truncated)
+TEST(ir, an_array_initializer_list_stores_each_element_and_zero_fills_the_rest)
 {
-	// Sema's own isAssignable() allows this (struct P == struct P, see sema.cpp) even though this
-	// subset's documented scope is pointer-only struct passing - IrBuilder is the one that must
-	// catch it (requireScalarValue()), since a plain word Load/Store would otherwise silently copy
-	// only the first 4 bytes of `b` with no diagnostic anywhere in the pipeline.
-	CHECK(irBuilderReports(
-		"struct P { int a; int b; };\n"
-		"int main() { struct P x; struct P y; x = y; return 0; }\n",
-		"using a struct by value"));
+	// One store per listed element at its own constant offset, then one more per element the list
+	// did not reach - C promises the rest is zero, and there is no memset to call (§14).
+	std::string text = functionIr("int main() { int a[3] = { 7, 8 }; return a[0]; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = const 7\n"
+		"  store.word [%0], %1\n"
+		"  %2 = const 8\n"
+		"  %3 = const 4\n"
+		"  %4 = add.u %0, %3\n"
+		"  store.word [%4], %2\n"
+		"  %5 = const 0\n"
+		"  %6 = const 8\n"
+		"  %7 = add.u %0, %6\n"
+		"  store.word [%7], %5\n"
+		"  %8 = &local 0\n"
+		"  %9 = const 0\n"
+		"  %10 = const 4\n"
+		"  %11 = mul.u %9, %10\n"
+		"  %12 = add.u %8, %11\n"
+		"  %13 = load.word [%12]\n"
+		"  ret %13\n"
+		"}\n");
 }
 
-TEST(ir, passing_a_struct_variable_by_value_as_an_argument_is_diagnosed)
+TEST(ir, a_char_array_initialized_from_a_string_literal_stores_its_bytes_not_a_pointer)
 {
-	CHECK(irBuilderReports(
-		"struct P { int a; int b; };\n"
-		"void f(struct P p);\n"
-		"int main() { struct P x; f(x); return 0; }\n",
-		"using a struct by value"));
+	// The literal's bytes go into the array itself - nothing reaches the string-literal table,
+	// which is what a pointer-to-.rodata initializer would produce instead.
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int main() { char s[4] = \"hi\"; return s[0]; }", testSourceId(), diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	sema::Sema sema(arena, diagnostics);
+	CHECK(sema.check(*unit));
+
+	ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
+	ir::IrModule module = builder.build(*unit);
+	CHECK_EQ(module.stringLiterals().size(), usize(0));
+
+	std::string text = ir::IrPrinter{}.print(module);
+	CHECK(text.find("store.byte") != std::string::npos);
+	CHECK(text.find("&global") == std::string::npos);
 }
 
-TEST(ir, reading_a_struct_field_that_is_itself_a_struct_is_diagnosed)
+TEST(ir, assigning_one_struct_to_another_copies_it_word_by_word)
 {
-	CHECK(irBuilderReports(
-		"struct Inner { int a; int b; };\n"
-		"struct Outer { struct Inner in; };\n"
-		"int main() { struct Outer o; struct Inner copy; copy = o.in; return 0; }\n",
-		"using a struct by value"));
+	// A struct-typed expression IS its address (ir_builder.h), so this is a Load/Store pair per
+	// word rather than one scalar store - and one pair, not two, per four aligned bytes.
+	std::string text = functionIr(
+		"struct P { int x; int y; };"
+		"int main() { struct P a; struct P b; b = a; return b.x; }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=2) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = &local 1\n"
+		"  %2 = load.word [%0]\n"
+		"  store.word [%1], %2\n"
+		"  %3 = const 4\n"
+		"  %4 = add.u %0, %3\n"
+		"  %5 = load.word [%4]\n"
+		"  %6 = const 4\n"
+		"  %7 = add.u %1, %6\n"
+		"  store.word [%7], %5\n"
+		"  %8 = &local 1\n"
+		"  %9 = load.word [%8]\n"
+		"  ret %9\n"
+		"}\n");
 }
 
-TEST(ir, an_ordinary_scalar_struct_field_read_is_not_diagnosed)
+TEST(ir, a_struct_of_chars_is_copied_byte_by_byte_because_its_alignment_says_so)
 {
-	CHECK(!irBuilderReports(
-		"struct P { int a; };\n"
-		"int main() { struct P p; return p.a; }\n",
-		"using a struct by value"));
+	// The copy's piece size comes from the TYPE's alignment, not from the frame slot's - a pointer
+	// to such a struct may point anywhere, and a word load off a one-aligned address faults.
+	std::string text = functionIr(
+		"struct Bytes { char a; char b; char c; };"
+		"int main() { struct Bytes x; struct Bytes y; y = x; return y.a; }");
+	CHECK(text.find("load.byte") != std::string::npos);
+	CHECK(text.find("load.word") == std::string::npos);
 }
 
-TEST(ir, a_struct_returning_calls_result_used_directly_is_diagnosed)
+TEST(ir, returning_a_struct_wider_than_a_word_uses_a_hidden_destination_pointer)
 {
-	// A function declared to return `struct P` by value passes sema (isAssignable(P, P) is true,
-	// sema.cpp) even though §10/§14's real ABI support for it (a hidden pointer in arg0) is Fase
-	// 7's job - visit(CallExpr&) must still catch the result being used as a plain scalar now,
-	// same as every other struct-by-value site.
-	CHECK(irBuilderReports(
+	// The architecture plan's own "puntero oculto en arg0, argumentos visibles corridos uno":
+	// `make` takes one parameter it never declared (local 0, the destination), copies its result
+	// there, and returns that same pointer.
+	constexpr std::string_view source =
+		"struct P { int x; int y; };"
+		"struct P make() { struct P p; p.x = 1; return p; }"
+		"int main() { struct P q = make(); return q.x; }";
+
+	CHECK_EQ(functionIr(source, "make"),
+		"function make(params=1, locals=2) {\n"
+		"L0:\n"
+		"  %0 = const 1\n"
+		"  %1 = &local 1\n"
+		"  store.word [%1], %0\n"
+		"  %2 = &local 1\n"
+		"  %3 = &local 0\n"
+		"  %4 = load.word [%3]\n"
+		"  %5 = load.word [%2]\n"
+		"  store.word [%4], %5\n"
+		"  %6 = const 4\n"
+		"  %7 = add.u %2, %6\n"
+		"  %8 = load.word [%7]\n"
+		"  %9 = const 4\n"
+		"  %10 = add.u %4, %9\n"
+		"  store.word [%10], %8\n"
+		"  ret %4\n"
+		"}\n");
+
+	// The caller hands over a frame slot of its own, then copies out of it - the second copy this
+	// version deliberately does not elide (see ir_builder.h).
+	std::string caller = functionIr(source, "main");
+	CHECK(caller.find("param %1\n  call make, 1") != std::string::npos);
+	CHECK(caller.find("%2 = load.word [%1]") != std::string::npos);
+}
+
+TEST(ir, returning_a_struct_that_fits_one_word_comes_back_in_the_return_register)
+{
+	// 1/2/4 bytes travel in ret0 - no hidden parameter at all, so `small` really does take none.
+	constexpr std::string_view source =
+		"struct One { int x; };"
+		"struct One make() { struct One s; s.x = 7; return s; }"
+		"int main() { struct One s = make(); return s.x; }";
+	CHECK(functionIr(source, "make").find("function make(params=0,") != std::string::npos);
+	CHECK(functionIr(source, "main").find("call make, 0") != std::string::npos);
+}
+
+TEST(ir, a_three_byte_struct_goes_through_memory_even_though_it_would_fit_a_register)
+{
+	// A word store would write a fourth byte the object does not own, and there is no three-byte
+	// store - so 3 is on the indirect side of the rule, not with 1/2/4.
+	constexpr std::string_view source =
+		"struct Three { char a; char b; char c; };"
+		"struct Three make() { struct Three t; t.a = 1; return t; }"
+		"int main() { struct Three t = make(); return t.a; }";
+	CHECK(functionIr(source, "make").find("function make(params=1,") != std::string::npos);
+	CHECK(functionIr(source, "main").find("call make, 1") != std::string::npos);
+}
+
+TEST(ir, passing_a_struct_by_value_passes_the_address_of_a_copy_the_caller_made)
+{
+	// By-value semantics without a by-value register class: the caller copies into a slot of its
+	// own frame and passes that slot's address, so the callee may write through it freely.
+	std::string text = functionIr(
+		"struct P { int x; int y; };"
+		"int total(struct P p);"
+		"int main() { struct P a; return total(a); }");
+	CHECK_EQ(text,
+		"function main(params=0, locals=2) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = &local 1\n"
+		"  %2 = load.word [%0]\n"
+		"  store.word [%1], %2\n"
+		"  %3 = const 4\n"
+		"  %4 = add.u %0, %3\n"
+		"  %5 = load.word [%4]\n"
+		"  %6 = const 4\n"
+		"  %7 = add.u %1, %6\n"
+		"  store.word [%7], %5\n"
+		"  param %1\n"
+		"  %8 = call total, 1\n"
+		"  ret %8\n"
+		"}\n");
+}
+
+TEST(ir, reading_a_by_value_struct_parameter_loads_the_pointer_the_caller_passed)
+{
+	// Inside the callee the parameter's slot holds a POINTER, so `p.x` is a load of that pointer
+	// followed by the field access - not a FrameAddr of the slot itself.
+	std::string text = functionIr(
+		"struct P { int x; int y; };"
+		"int total(struct P p) { return p.x; }", "total");
+	CHECK_EQ(text,
+		"function total(params=1, locals=1) {\n"
+		"L0:\n"
+		"  %0 = &local 0\n"
+		"  %1 = load.word [%0]\n"
+		"  %2 = load.word [%1]\n"
+		"  ret %2\n"
+		"}\n");
+}
+
+TEST(ir, a_struct_returning_calls_result_can_be_read_through_a_member_access)
+{
+	// `make().b` is not an lvalue (sema rejects writing it) but reading it is ordinary: the call's
+	// result IS the address of the temp slot it wrote into, so the field offset applies to it
+	// directly - no diagnostic, no bogus address.
+	std::string text = functionIr(
 		"struct P { int a; int b; };\n"
 		"struct P make();\n"
-		"int main() { struct P x; x = make(); return 0; }\n",
-		"using a struct by value"));
+		"int main() { return make().b; }\n");
+	CHECK(text.find("call make, 1") != std::string::npos);
+	CHECK(text.find("load.word") != std::string::npos);
 }
 
-TEST(ir, a_member_access_on_a_struct_returning_call_result_is_diagnosed_not_read_through_a_bogus_address)
+TEST(ir, chained_struct_assignment_copies_twice_from_the_same_source)
 {
-	// `make()` is not one of this subset's lvalue forms (sema::Sema::isLValue(), sema.cpp), but
-	// sema's own visit(MemberExpr&) only requires the `.` base to have struct *type* - not to be an
-	// lvalue - so `make().b` type-checks. lowerAddress()'s fallback for a non-addressable base must
-	// diagnose this itself rather than silently treating the call's result temp as if it were a
-	// real address to add a field offset to and load through.
-	CHECK(irBuilderReports(
-		"struct P { int a; int b; };\n"
-		"struct P make();\n"
-		"int main() { return make().b; }\n",
-		"using a struct by value"));
+	// `a = b = c` works because a struct assignment's own value is its destination's address, so
+	// the outer copy reads out of the inner one's destination - C's by-value chain.
+	std::string text = functionIr(
+		"struct P { int x; };"
+		"int main() { struct P a; struct P b; struct P c; a = b = c; return a.x; }");
+	CHECK(text.find("function main(params=0, locals=3)") != std::string::npos);
+	CHECK_EQ(std::count(text.begin(), text.end(), '\n'), usize(13));
+}
+
+TEST(ir, a_word_sized_byte_aligned_struct_goes_through_memory)
+{
+	// It fits in a register but cannot safely be loaded as a word from a byte-aligned subobject.
+	constexpr std::string_view source =
+		"struct Quad { char a; char b; char c; char d; };"
+		"struct Wrap { char pad; struct Quad q; };"
+		"int total(struct Quad q);"
+		"int main() { struct Wrap w; return total(w.q); }";
+	std::string text = functionIr(source, "main");
+	CHECK(text.find("load.byte") != std::string::npos);
+	CHECK(text.find("call total, 1") != std::string::npos);
 }

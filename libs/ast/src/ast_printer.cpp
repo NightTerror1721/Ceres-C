@@ -317,6 +317,20 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(InitListExpr& node)
+	{
+		// `(init-list 1 2 3)` - deliberately the same flat shape as (call ...) above, so a nested
+		// list prints as a nested one: `{ { 1, 2 }, { 3 } }` is `(init-list (init-list 1 2)
+		// (init-list 3))`, which is exactly the nesting the braces have to match (see expr.h).
+		_output += "(init-list";
+		for (Expr* element : node.elements())
+		{
+			_output += ' ';
+			printChild(element);
+		}
+		_output += ')';
+	}
+
 	// ---- statements ------------------------------------------------------------------------------
 
 	void AstPrinter::visit(EmptyStmt&)

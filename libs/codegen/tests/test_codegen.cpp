@@ -71,7 +71,7 @@ namespace
 	}
 
 	// The mirror of only(): everything on EXCEPT one flag, which is how the "simplified" counterpart
-	// of a single optimization is observed. -O0 would turn off all seventeen at once and tell you
+	// of a single optimization is observed. -O0 would turn off all eighteen at once and tell you
 	// nothing about which one produced a given difference.
 	support::OptimizationOptions without(bool support::OptimizationOptions::* flag)
 	{
@@ -547,7 +547,7 @@ TEST(codegen, a_loop_at_O2)
 // The goldens above pin the two endpoints. These pin each individual switch, so that a regression
 // in one optimization names itself instead of showing up as a diff in a 40-line golden. Each test
 // compares -O2 against -O2-minus-one-flag (without()), or -O0 against -O0-plus-one-flag (only()) -
-// never the two levels, which would change seventeen things at once.
+// never the two levels, which would change eighteen things at once.
 
 TEST(codegen, frameless_leaf_is_what_removes_enter_and_leave)
 {
@@ -701,4 +701,208 @@ TEST(codegen, turning_one_flag_on_top_of_O0_changes_only_that_one_thing)
 
 	CHECK(contains(oneFlag, "struct __frame_pick")); // still the simplified placement
 	CHECK(countOf(oneFlag, "    jp ") < countOf(baseline, "    jp "));
+}
+
+// ---- composite memory: indexed addressing and aggregate globals (Fase 7) -----------------------
+
+TEST(codegen, an_array_element_read_uses_the_indexed_load_form)
+{
+	// 05-Instruction-Set.md's whole point about indexed addressing: "Walking an array used to cost
+	// an add per element". One `mul` to scale the index, then the access reads base and index
+	// together - the assembler picks LDRX from the operand shapes, exactly as it picks ADDI over ADD.
+	CHECK_EQ(atO2("int sum(int* a, int i) { return a[i]; }"),
+		"@text\n"
+		"\n"
+		"// sum - test.c:1\n"
+		"cc_sum:\n"
+		".L0:\n"
+		"    mov r3, r0            // test.c:1\n"
+		"    mov r2, r1            // test.c:1\n"
+		"    mul r7, r2, 4         // test.c:1\n"
+		"    ldr r3, [r3 + r7]     // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
+		"    ret                   // test.c:1\n");
+}
+
+TEST(codegen, an_array_element_write_uses_the_indexed_store_form)
+{
+	std::string text = atO2("void put(int* a, int i, int v) { a[i] = v; }");
+	CHECK(contains(text, "str [r12 + r5], r3"));
+	CHECK(!contains(text, "\n    add ")); // no separate address computation left
+}
+
+TEST(codegen, a_struct_field_read_uses_a_constant_displacement_not_a_separate_add)
+{
+	CHECK_EQ(atO2("struct P { int x; int y; }; int gety(struct P* p) { return p->y; }"),
+		"@text\n"
+		"\n"
+		"// gety - test.c:1\n"
+		"cc_gety:\n"
+		".L0:\n"
+		"    mov r3, r0            // test.c:1\n"
+		"    ldr r3, [r3 + 4]      // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
+		"    ret                   // test.c:1\n");
+}
+
+TEST(codegen, without_address_folding_every_element_address_is_computed_into_a_register_first)
+{
+	// The simplified counterpart this optimization has (support/optimization.h): the `add` is
+	// written out and the access reads a single register. Same program, one flag apart.
+	std::string_view source = "int sum(int* a, int i) { return a[i]; }";
+	std::string folded = atO2(source);
+	std::string plain = generateCasm(source, without(&support::OptimizationOptions::addressFolding));
+
+	CHECK(contains(folded, "ldr r3, [r3 + r7]"));
+	CHECK(!contains(plain, "ldr r3, [r3 + r7]"));
+	CHECK(contains(plain, "    add "));
+	CHECK(countOf(plain, "\n") > countOf(folded, "\n"));
+}
+
+TEST(codegen, address_folding_is_off_at_O0)
+{
+	std::string text = atO0("int sum(int* a, int i) { return a[i]; }");
+	CHECK(contains(text, "    add "));
+	CHECK(!contains(text, " + r"));
+}
+
+TEST(codegen, an_indexed_store_whose_operands_all_live_in_frame_fields_keeps_the_plain_add)
+{
+	// The register budget: base, index and value are three reads at once and only r4/r5 are scratch
+	// (§10). Turning register allocation off puts all three in frame fields, which is exactly the
+	// shape findFoldableAddress() refuses - and it must still produce correct code, not a store
+	// with two operands fighting over one register.
+	support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
+	options.registerAllocation = false;
+	std::string text = generateCasm("void put(int* a, int i, int v) { a[i] = v; }", options);
+	CHECK(contains(text, "    add "));
+	CHECK(!contains(text, "str [r4 + r5]"));
+}
+
+TEST(codegen, aggregate_globals_get_a_let_of_their_own_shape)
+{
+	// An array of scalars keeps its real CASM shape - both because it reads like the C declaration
+	// and because the assembler then gives it the element type's own alignment. Anything involving
+	// a struct becomes a flat word array instead, with the type named in a comment: a struct-typed
+	// `let` in CASM means `u8[P]`, whose alignment is one byte, so a word field of it could land
+	// misaligned and fault (23-Structs.md - verified against the real assembler).
+	CHECK_EQ(atO2(
+		"int primes[4] = { 2, 3, 5, 7 };\n"
+		"char name[8] = \"ada\";\n"
+		"struct P { int x; int y; };\n"
+		"struct P start = { 1, 2 };\n"
+		"struct P cursor;\n"
+		"int board[2][3];\n"
+		"int first() { return primes[0]; }"),
+		"@data\n"
+		"let cc_primes: u32[4] = [2, 3, 5, 7]\n"
+		"let cc_name: u8[8] = \"ada\"\n"
+		"let cc_start: u32[2] = [0x00000001, 0x00000002]   // struct P (8 bytes)\n"
+		"\n"
+		"@bss\n"
+		"let cc_cursor: u32[2]   // struct P (8 bytes)\n"
+		"let cc_board: u32[2][3]\n"
+		"\n"
+		"@text\n"
+		"\n"
+		"// first - test.c:7\n"
+		"cc_first:\n"
+		".L0:\n"
+		"    la r3, cc_primes      // test.c:7\n"
+		"    ldr r2, [r3]          // test.c:7\n"
+		"    mov r0, r2            // test.c:7\n"
+		"    ret                   // test.c:7\n");
+}
+
+TEST(codegen, a_nested_global_array_initializer_keeps_its_nesting)
+{
+	std::string text = atO2("int grid[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } }; int first() { return grid[0][0]; }");
+	CHECK(contains(text, "let cc_grid: u32[2][3] = [[1, 2, 3], [4, 5, 6]]"));
+}
+
+TEST(codegen, a_global_array_accepts_individually_braced_scalar_values)
+{
+	std::string text = atO2("int values[2] = { { 1 }, { 2 } }; int first() { return values[0]; }");
+	CHECK(contains(text, "let cc_values: u32[2] = [1, 2]"));
+}
+
+TEST(codegen, a_nested_char_array_global_uses_byte_lists_for_string_rows)
+{
+	std::string text = atO2("char names[2][4] = { \"ab\", \"cd\" }; int first() { return names[1][0]; }");
+	CHECK(contains(text, "let cc_names: u8[2][4] = [\"ab\", \"cd\"]"));
+}
+
+TEST(codegen, a_global_float_array_declares_f32_elements)
+{
+	std::string text = atO2("float scale[2] = { 1.5, 2.5 }; float first() { return scale[0]; }");
+	CHECK(contains(text, "let cc_scale: f32[2] = [1.5, 2.5]"));
+}
+
+TEST(codegen, a_global_structs_word_image_places_narrow_fields_at_their_real_offsets)
+{
+	// `char a` at 0, `int b` at 4, `short c` at 8 - sema's layout (type_layout.h), the same rule
+	// CASM's own `struct` follows, written out as the little-endian words the program will address.
+	std::string text = atO2(
+		"struct Mixed { char a; int b; short c; };"
+		"struct Mixed m = { 1, 2, 3 };"
+		"int first() { return m.b; }");
+	CHECK(contains(text, "let cc_m: u32[3] = [0x00000001, 0x00000002, 0x00000003]   // struct Mixed (12 bytes)"));
+}
+
+TEST(codegen, a_non_constant_global_initializer_is_diagnosed_rather_than_guessed_at)
+{
+	// .data needs a literal at ASSEMBLE time, so there is nothing to emit here - and staying silent
+	// would mean a zero nobody asked for.
+	support::SourceManager sourceManager;
+	support::SourceId sourceId = sourceManager.registerBuffer("test.c", "int n; int a[2] = { n, 1 };");
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer("int n; int a[2] = { n, 1 };", sourceId, diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	sema::Sema sema(arena, diagnostics);
+	CHECK(sema.check(*unit));
+
+	support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
+	ir::IrBuilder builder(arena, diagnostics, options);
+	ir::IrModule module = builder.build(*unit);
+	codegen::CodeGen codeGen(sourceManager, diagnostics, options);
+	codeGen.generate(*unit, module);
+	CHECK(diagnostics.hasErrors());
+}
+
+TEST(codegen, a_struct_returning_function_takes_a_hidden_destination_pointer_in_arg0)
+{
+	// The visible parameter moves to r1 because r0 carries the destination - the ABI table's
+	// "argumentos visibles corridos uno". The callee returns that same pointer in ret0.
+	std::string text = atO2(
+		"struct P { int x; int y; };"
+		"struct P scaled(int n) { struct P p; p.x = n; p.y = n; return p; }");
+	CHECK(contains(text, "cc_scaled:"));
+	CHECK(contains(text, "mov r0, "));  // the destination pointer goes back out in ret0
+	CHECK(contains(text, "r1"));        // n arrived one register along
+}
+
+TEST(codegen, a_struct_copy_moves_one_word_per_four_aligned_bytes)
+{
+	// Unrolled loads and stores, no call to a memcpy that does not exist (§14) - and exactly as many
+	// pairs as the struct has words.
+	std::string text = atO2(
+		"struct Three { int a; int b; int c; };"
+		"void copy(struct Three* to, struct Three* from) { *to = *from; }");
+	CHECK_EQ(countOf(text, "    ldr "), usize(3));
+	CHECK_EQ(countOf(text, "    str "), usize(3));
+}
+
+TEST(codegen, a_struct_of_bytes_is_copied_one_byte_at_a_time)
+{
+	// Its alignment is 1, so a word load off it could fault - the copy's piece size follows the
+	// type, not the frame slot it happens to sit in.
+	std::string text = atO2(
+		"struct Bytes { char a; char b; char c; };"
+		"void copy(struct Bytes* to, struct Bytes* from) { *to = *from; }");
+	CHECK_EQ(countOf(text, "    ldrb "), usize(3));
+	CHECK_EQ(countOf(text, "    strb "), usize(3));
 }

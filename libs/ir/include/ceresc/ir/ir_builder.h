@@ -35,7 +35,39 @@
 // directly as the Call instruction's callee name - libs/codegen is what resolves that against a
 // real CASM symbol, not this library.
 //
-// Implemented in Fase 5 of the phased plan (§13). IrPrinter (--emit-ir) ships alongside it.
+// ---- how a struct-typed expression is represented ---------------------------------------------
+//
+// The IR has no whole-struct value: §9's opcode table has no Load/Store that moves more than one
+// machine word, and adding one would mean teaching every consumer (the printer, the optimizer's
+// alias analysis, codegen's liveness) about a value that does not fit a register. So instead,
+// **lowering a struct-typed expression yields the ADDRESS of its storage**, never a loaded value -
+// exactly the convention an array-typed expression already follows (see lowerRValue()). A struct is
+// only ever *moved* by emitMemoryCopy(), which lowers to as many ordinary Load/Store pairs as the
+// type's own size and alignment call for; there is no memcpy to call (Ceres's stdlib/ has none yet,
+// see §14), and the sizes are compile-time constants anyway, so the copy is always unrolled.
+//
+// The struct calling convention follows from that, and is derived from the TYPE alone on both ends
+// of a call - IrBuilder never resolves a callee's declaration (see above), so caller and callee
+// cannot disagree about it:
+//
+//   - A struct of exactly 1, 2 or 4 bytes travels in a register, as one byte/half/word: returned in
+//     ret0, passed in an ordinary argument register. One load at one end, one store at the other.
+//   - Every other struct (3 bytes, or more than 4) travels through memory:
+//       * returning one adds a HIDDEN FIRST ARGUMENT holding the destination address (§10's
+//         "puntero oculto en arg0, argumentos visibles corridos uno"). The callee copies its result
+//         there and returns that same pointer in ret0, so nothing about the visible signature has to
+//         change for a caller that ignores the result.
+//       * passing one passes the address of a COPY the caller made in its own frame - by-value
+//         semantics without a by-value register class. The callee's parameter slot holds that
+//         pointer, and reading the parameter's address means loading it (see LocalSymbol::isIndirect).
+//
+// A struct-returning call always lands in a compiler temp slot first, and the caller then copies it
+// where it belongs - so `struct P q = make();` copies twice. Eliding the second copy needs the
+// destination to be threaded down into the call, which is real plumbing for a case this version has
+// no measurements about: it stays a Fase 9 item alongside the rest of §13's optimization list.
+//
+// Implemented in Fase 5 of the phased plan (§13); struct/array/pointer memory in Fase 7. IrPrinter
+// (--emit-ir) ships alongside it.
 
 namespace ceresc::ir
 {
@@ -78,6 +110,7 @@ namespace ceresc::ir
 		void visit(ast::CastExpr& node) override;
 		void visit(ast::SizeofExpr& node) override;
 		void visit(ast::TernaryExpr& node) override;
+		void visit(ast::InitListExpr& node) override;
 
 		void visit(ast::EmptyStmt& node) override;
 		void visit(ast::ExprStmt& node) override;
@@ -113,6 +146,11 @@ namespace ceresc::ir
 			LocalSymbolKind kind = LocalSymbolKind::Local;
 			u32 localSlot = 0; // Local (a frame slot index - see IrFunction::newLocalSlot())
 			i64 enumValue = 0; // EnumConstant (already folded - see foldConstant())
+			// Local only: the slot holds a POINTER to the object rather than the object itself -
+			// a by-value struct parameter that arrived as the address of the caller's copy (see the
+			// struct-convention note in the header comment above). Taking such a parameter's address
+			// means loading that pointer, not computing a FrameAddr.
+			bool isIndirect = false;
 		};
 
 	private:
@@ -143,6 +181,11 @@ namespace ceresc::ir
 		std::unordered_map<const ast::Stmt*, BasicBlock*> _caseBlocks;  // switch case/default entry blocks, keyed by node identity (see collectSwitchCases())
 
 		u32 _nextStringLiteralId = 0;
+
+		// The frame slot holding the hidden destination pointer, for a function that returns a
+		// struct through memory - empty for every other function. Set by visit(FunctionDecl&),
+		// read by visit(ReturnStmt&). See the struct-convention note in the header comment.
+		std::optional<u32> _hiddenReturnSlot;
 
 	private:
 		// Reserves a frame slot for one local VarDecl: a slot a closed sibling scope left behind
@@ -200,22 +243,49 @@ namespace ceresc::ir
 		// A no-op when `fromType`/`toType` agree on isFloat().
 		IrValue convertForStore(support::SourceLocation loc, IrValue value, const ast::Type* fromType, const ast::Type* toType);
 
-		// Reports "using a struct by value here is not supported in this version" when `type` is a
-		// struct - called right before every place this file materializes an ordinary rvalue via a
-		// single scalar Load or Call result (NameExpr, MemberExpr, IndexExpr, `*p`, a struct-
-		// returning call, and lowerAddress()'s own fallback for a non-lvalue struct base like
-		// `make().field`): none of those can honestly represent a struct wider than one word, and
-		// staying silent about it would mean a struct-by-value assignment/argument/expression
-		// (Sema's isAssignable allows `target == source` for two identical struct types - sema.cpp -
-		// even though this subset's documented scope is pointer-only struct passing, see expr.h/
-		// decl.h) silently truncates to its first 4 bytes instead of failing loudly, the opposite of
-		// what §0 of the architecture plan calls for ("los errores enseñan"). Does nothing for every
-		// other type, including a null one (already some other pass's error to report). Deliberately
-		// void, not bool: every call site still falls through to its own best-effort scalar Load/
-		// Store afterward regardless (this project's usual "report and keep going" recovery style,
-		// see sema.h's own header comment) rather than branching on a result - a bool return here
-		// would just be dead weight nobody reads.
-		void requireScalarValue(const ast::Type* type, support::SourceLocation loc);
+		// ---- composite memory (Fase 7) --------------------------------------------------------
+		//
+		// True when a struct of this type travels through memory rather than in a register - see the
+		// struct-convention note in the header comment above. False for every non-struct type.
+		static bool isIndirectStruct(const ast::Type* type) noexcept;
+		// True when `type` is a struct at all, i.e. when lowering an expression of it yields an
+		// address rather than a value.
+		static bool isStructType(const ast::Type* type) noexcept;
+
+		// Copies `sizeInBytes` bytes from [sourceAddr] to [destAddr], unrolled into ordinary
+		// Load/Store pairs of the widest piece `alignment` permits (word if 4-aligned, half if
+		// 2-aligned, byte otherwise) - the only way a struct ever moves, see the header comment.
+		// `alignment` is the TYPE's own alignment, so a struct of chars is copied byte by byte even
+		// though its frame slot happens to be word-aligned: the same copy has to stay correct for a
+		// pointer aimed anywhere, not just at a frame slot.
+		void emitMemoryCopy(support::SourceLocation loc, IrValue destAddr, IrValue sourceAddr, u32 sizeInBytes, u32 alignment);
+		// `base + offset` as an IrValue, or `base` itself when the offset is zero - the one bit of
+		// address arithmetic every composite access below shares.
+		IrValue offsetAddress(support::SourceLocation loc, IrValue base, u32 offset);
+		// Writes `sizeInBytes` zero bytes at [destAddr + startOffset], same piece-size rule as
+		// emitMemoryCopy() - what an initializer list shorter than its aggregate leaves behind (C
+		// zero-fills the rest, and there is no memset to call either).
+		void emitZeroFill(support::SourceLocation loc, IrValue destAddr, u32 startOffset, u32 sizeInBytes, u32 alignment);
+
+		// Stores `init` into the object of type `type` living at [baseAddr + offset] - the lowering
+		// counterpart to Sema::checkInitializer(), handling the same three initializer forms (a
+		// brace list, a string literal for a char array, and an ordinary expression) and recursing
+		// for a nested aggregate. Everything the list does not reach is zero-filled, so the object
+		// is fully defined afterwards exactly as C promises.
+		//
+		// Every one of those stores is written out: there is no memset to call (§14 - Ceres's
+		// stdlib/ has no mem.casm yet) and no loop is synthesized, so `int a[100] = { 1 };` really
+		// does cost a hundred stores. That is the honest price of the simplification, and it is
+		// visible in the emitted .casm rather than hidden behind a runtime call - the moment
+		// stdlib/ grows a memset, this is the one place that has to change.
+		void lowerInitializerInto(support::SourceLocation loc, IrValue baseAddr, u32 offset,
+			const ast::Type* type, ast::Expr* init);
+
+		// Reserves a fresh, unnamed frame slot to hold one struct temporary - a struct-returning
+		// call's destination, or the caller's copy of a by-value struct argument. Deliberately not
+		// newLocalSlotFor(): a compiler temp belongs to no lexical scope, so it must not be handed
+		// to the scope-based slot-reuse pool that a declared local's slot goes through.
+		u32 newStructTempSlot(u32 sizeInBytes);
 
 		void collectLabelBlocks(ast::Stmt* stmt);
 		void collectSwitchCases(ast::Stmt* stmt, std::vector<std::pair<i64, BasicBlock*>>& cases, BasicBlock*& defaultBlock);

@@ -60,6 +60,7 @@ namespace ceresc::ast
 		void visit(CastExpr& node) override;
 		void visit(SizeofExpr& node) override;
 		void visit(TernaryExpr& node) override;
+		void visit(InitListExpr& node) override;
 
 		void visit(EmptyStmt& node) override;
 		void visit(ExprStmt& node) override;

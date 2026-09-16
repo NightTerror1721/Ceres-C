@@ -9,7 +9,18 @@
 
 // Expr hierarchy: IntLiteralExpr, FloatLiteralExpr, CharLiteralExpr, BoolLiteralExpr,
 // StringLiteralExpr, NameExpr, CallExpr, UnaryExpr, BinaryExpr, AssignExpr, IndexExpr, MemberExpr,
-// CastExpr, SizeofExpr, TernaryExpr.
+// CastExpr, SizeofExpr, TernaryExpr, InitListExpr.
+//
+// InitListExpr is the odd one out: `{ 1, 2, 3 }` is an *initializer*, not an expression the
+// grammar accepts anywhere an expression goes (§3: `initializer ::= assignment-expr | "{"
+// initializer-list "}"`), and it has no type of its own until something is initialized with it.
+// It lives in this hierarchy anyway rather than as a fourth top-level node kind, because that is
+// what lets VarDecl keep its single `Expr* initializer()` member and lets sema/IrBuilder reach it
+// through the same accept()/visit() dispatch as every other initializer - the alternative would be
+// a parallel Initializer hierarchy whose only member is this one class. What keeps it honest is
+// that nothing but an initializer position ever produces one: libs/parser only ever builds it from
+// parseInitializer(), never from parseAssignment() (see parser.h), so a stray `{` inside an
+// ordinary expression is still the syntax error it always was.
 //
 // TernaryExpr (`cond ? then : else`) sits between assignment and the binary table in the
 // precedence chain, right-associative like assignment: libs/parser's parseAssignment() calls
@@ -41,7 +52,7 @@
 // static_assert after each class. Arena::create<T> requires T to be trivially destructible, and a
 // virtual destructor alone would break that; this is safe because no AST node is ever deleted
 // through a base pointer, only ever torn down all at once with the whole Arena (see arena.h). Any
-// node with a variable-length child list (only CallExpr right now) stores a non-owning
+// node with a variable-length child list (CallExpr and InitListExpr) stores a non-owning
 // {pointer, count} view over arena-allocated storage instead of a std::vector, for the same reason
 // a std::vector member would break the trivially-destructible requirement.
 //
@@ -354,4 +365,34 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<TernaryExpr>, "TernaryExpr must be trivially destructible (Arena-allocated)");
+
+	// `{ 1, 2, 3 }` / `{ { 1, 2 }, { 3, 4 } }` - a brace initializer for an array or a struct (§3's
+	// `initializer-list`). Elements are whatever `initializer` itself can be, so an element is
+	// either an ordinary expression or another InitListExpr for a nested aggregate.
+	//
+	// Nesting is NOT elided in this version: a sub-array or a struct field that is itself an
+	// aggregate needs its own braces, and sema reports the flat form explicitly rather than
+	// guessing (see libs/sema). The node carries no element-to-field mapping of its own - position
+	// is the whole contract, resolved against the declared type by sema, exactly like CASM's own
+	// positional struct initializers (CeresASM docs/23-Structs.md).
+	//
+	// type() is set by sema to the type being initialized, so codegen/IrBuilder can ask an
+	// InitListExpr what shape it was checked against instead of re-deriving it from the VarDecl.
+	class InitListExpr final : public Expr
+	{
+	private:
+		Expr* const* _elements; // non-owning view over arena-allocated storage - see CallExpr above
+		u32 _elementCount;
+
+	public:
+		InitListExpr(support::SourceLocation location, std::span<Expr* const> elements) noexcept :
+			Expr(location), _elements(elements.data()), _elementCount(static_cast<u32>(elements.size()))
+		{}
+
+	public:
+		std::span<Expr* const> elements() const noexcept { return { _elements, _elementCount }; }
+		u32 elementCount() const noexcept { return _elementCount; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<InitListExpr>, "InitListExpr must be trivially destructible (Arena-allocated)");
 }
