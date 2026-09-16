@@ -3,17 +3,27 @@
 [← Back to index](README.md)
 
 A text-to-text pass that runs before the lexer, turning a source file plus everything it includes
-into one buffer. It implements five directives and nothing else.
+into one buffer.
 
 | Directive | What it does |
 | --- | --- |
 | `#include "file.h"` | Next to the including file first, then the search path. |
 | `#include <file.h>` | The search path only (`-I`). |
 | `#define NAME text` | An object-like macro: every later `NAME` identifier becomes `text`. |
+| `#define F(a, b) text` | A function-like macro. Arguments are substituted as whole identifiers. |
+| `#define F(a, ...) text` | A variadic macro; `__VA_ARGS__` is the comma-separated remaining arguments. |
 | `#undef NAME` | Forgets one. |
+| `#if`, `#elif`, `#else`, `#endif` | Selects source based on an integer constant expression. |
+| `#ifdef`, `#ifndef` | Selects source based on whether a macro is defined. |
+| `#error message` | Emits an error and stops a successful compilation. |
+| `#warning message` | Emits a warning without failing preprocessing. |
 | `#pragma once` | This file contributes nothing if it is included again. |
 
-Anything else — `#if`, `#ifdef`, `#else`, `#endif`, `#error`, `#line` — is reported by name:
+`#if` expressions support integer literals, parentheses, unary `+ - ! ~`, arithmetic, shifts,
+comparisons, equality, bitwise operators and `&&`/`||`, with C precedence. Undefined identifiers
+evaluate to zero. `defined NAME` and `defined(NAME)` test macro existence without expanding `NAME`.
+
+Anything else — notably `#line`, stringification (`#`) and token pasting (`##`) — is reported by name:
 
 ```
 main.c:1:1: error: '#ifdef' is not supported in this version - only #include, #define, #undef and
@@ -65,10 +75,11 @@ has an initializer — which is exactly what a header's `extern` plus a source f
 
 ## Macros
 
-Object-like only. A macro with arguments says so rather than complaining about the name:
+Both object-like and function-like macros are supported:
 
 ```c
-#define MAX(a, b) a    // error: macros with arguments are not supported in this version
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define TRACE(...) print(__VA_ARGS__)
 ```
 
 Substitution is by whole identifier, and never inside a string literal, a character literal or a
@@ -82,7 +93,8 @@ int NAMEx;             // stays NAMEx - a different identifier
 ```
 
 A macro may expand into another one. A macro defined in terms of itself stops being rewritten after
-a bounded number of passes, with a warning, instead of looping forever.
+a bounded number of passes, with a warning, instead of looping forever. This is text substitution:
+arguments are not stringified or pasted, and an argument must fit on the same physical source line.
 
 `-D` predefines one from the command line, and a bare name means `1`:
 
@@ -126,19 +138,12 @@ simple.
 | A header that cannot be found | `cannot find include file 'nowhere.h'` |
 | A header that includes itself | `include cycle: '...' includes itself` |
 | `#include` with no quotes or angle brackets | `#include expects "file.h" or <file.h>` |
-| `#define` with a parameter list | `macros with arguments are not supported in this version` |
 | A macro defined in terms of itself | a warning, after a bounded number of passes |
-| Any other directive | `'#xxx' is not supported in this version` |
+| A malformed conditional nest | a diagnostic naming the unmatched directive |
+| `#error message` | an error containing `message` |
+| Any other directive | `'#xxx' is not supported` |
 
 ## What is missing, and why
-
-**Conditional compilation.** `#if`/`#ifdef`/`#else`/`#endif` need a constant-expression evaluator
-and a nesting stack of their own. They are the obvious next step, and the reason `#pragma once`
-exists in the meantime.
-
-**Macros with arguments.** Real token-level macro expansion is a different machine from the
-line-oriented substitution here — argument capture, rescanning rules, and `#`/`##`. Doing it
-half-way is worse than not doing it.
 
 **`__FILE__`, `__LINE__` and friends.** They would be easy to add on top of the line map, and
 nothing needs them yet.

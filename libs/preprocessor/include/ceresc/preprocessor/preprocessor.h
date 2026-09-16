@@ -14,17 +14,19 @@
 // Lexer", not a TokenKind). It turns a source file plus everything it includes into one buffer for
 // libs/lexer to read, and a line map that says where each line of that buffer came from.
 //
-// What it implements, and nothing else:
+// What it implements:
 //
 //   #include "file.h"   Relative to the including file's own directory first, then the search path.
 //   #include <file.h>   The search path only.
-//   #define NAME text   An object-like macro: every later NAME identifier becomes `text`.
+//   #define NAME text   An object-like macro.
+//   #define F(x) text   A function-like macro, including `...` / `__VA_ARGS__`.
 //   #undef NAME         Forgets one.
+//   #if/#elif/#else/#endif and #ifdef/#ifndef conditional compilation.
+//   #error/#warning diagnostics from the source.
 //   #pragma once        This file contributes nothing if it is included again.
 //
-// Macros with arguments, #if/#ifdef/#else/#endif, #error, #line and token pasting are not here.
-// That is a deliberate line, not an oversight, and every other directive is reported as a
-// diagnostic naming itself rather than being skipped in silence.
+// `#` stringification, `##` token pasting and `#line` are intentionally not implemented. Every
+// other directive is reported by name rather than skipped in silence.
 //
 // `#pragma once` carries real weight because of what is missing around it: without #ifndef there is
 // no other way to write an include guard, so a header included twice would declare everything
@@ -85,6 +87,23 @@ namespace ceresc::preprocessor
 	class Preprocessor
 	{
 	public:
+		struct Macro
+		{
+			std::string replacement;
+			std::vector<std::string> parameters;
+			bool functionLike = false;
+			bool variadic = false;
+		};
+
+		struct Conditional
+		{
+			bool parentActive = true;
+			bool active = true;
+			bool branchTaken = false;
+			bool sawElse = false;
+			support::SourceLocation location{};
+		};
+
 		Preprocessor(support::SourceManager& sourceManager, support::DiagnosticEngine& diagnostics) noexcept :
 			_sourceManager(sourceManager), _diagnostics(diagnostics)
 		{}
@@ -104,7 +123,9 @@ namespace ceresc::preprocessor
 		void define(std::string name, std::string replacement)
 		{
 			_predefines[name] = replacement;
-			_macros[std::move(name)] = std::move(replacement);
+			Macro macro;
+			macro.replacement = std::move(replacement);
+			_macros[std::move(name)] = std::move(macro);
 		}
 
 		// Expands `path` and everything it includes. Registers every file it reads with the
@@ -119,18 +140,16 @@ namespace ceresc::preprocessor
 		// Resolves an `#include` target to a path that exists, or returns an empty string.
 		std::string resolveInclude(std::string_view target, bool angled, const std::string& includingFile) const;
 
-		// Substitutes every object-like macro in `line`, leaving string literals, character literals
-		// and comments alone. Rescans its own output so one macro may expand into another, bounded
-		// by a small pass limit rather than by a recursion guard - a macro that expands to itself
-		// stops being rewritten instead of looping forever.
+		// Substitutes object-like and function-like macros, leaving literals and comments alone.
 		std::string expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment);
+		bool evaluateIfExpression(std::string_view expression, support::SourceLocation location, i64& value);
 
 	private:
 		support::SourceManager& _sourceManager;
 		support::DiagnosticEngine& _diagnostics;
 		std::vector<std::string> _includeDirectories;
 		std::unordered_map<std::string, std::string> _predefines;
-		std::unordered_map<std::string, std::string> _macros;
+		std::unordered_map<std::string, Macro> _macros;
 		std::vector<std::string> _pragmaOnce; // canonical paths that asked not to be included again
 	};
 }

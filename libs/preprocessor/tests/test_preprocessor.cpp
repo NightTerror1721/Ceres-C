@@ -330,27 +330,42 @@ TEST(preprocessor, a_predefined_macro_behaves_like_one_written_in_the_file)
 	CHECK(contains(result.text, "int x = 3;"));
 }
 
-TEST(preprocessor, an_unsupported_directive_names_itself)
+TEST(preprocessor, conditional_directives_select_the_active_branch)
 {
-	// The point is that it is a KNOWN gap rather than an unreadable line - #if is the one people
-	// reach for first, and a generic "syntax error" would hide that this version simply lacks it.
 	TempDirectory dir;
-	std::string path = dir.write("main.c", "#ifdef DEBUG\nint x;\n#endif\n");
-
+	std::string path = dir.write("main.c",
+		"#define LEVEL 2\n"
+		"#if defined(LEVEL) && LEVEL * 2 == 4\nint selected;\n"
+		"#elif 1\nint wrong;\n#else\nint also_wrong;\n#endif\n");
 	Result result = expand(path);
-	CHECK(!result.ok);
-	CHECK(!result.diagnostics.empty());
-	CHECK(contains(result.diagnostics.front(), "ifdef"));
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int selected;"));
+	CHECK(!contains(result.text, "int wrong;"));
+	CHECK(!contains(result.text, "int also_wrong;"));
 }
 
-TEST(preprocessor, a_macro_with_arguments_says_so_rather_than_complaining_about_the_name)
+TEST(preprocessor, function_like_and_variadic_macros_substitute_arguments)
 {
 	TempDirectory dir;
-	std::string path = dir.write("main.c", "#define MAX(a, b) a\n");
+	std::string path = dir.write("main.c",
+		"#define MAX(a, b) ((a) > (b) ? (a) : (b))\n"
+		"#define CALL(f, ...) f(__VA_ARGS__)\n"
+		"int x = MAX(2, 3);\nCALL(print, x, 4);\n");
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int x = ((2) > (3) ? (2) : (3));"));
+	CHECK(contains(result.text, "print(x, 4);"));
+}
+
+TEST(preprocessor, error_and_warning_are_reported_only_in_active_branches)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "#if 0\n#error hidden\n#endif\n#warning visible\n#error visible failure\n");
 	Result result = expand(path);
 	CHECK(!result.ok);
-	CHECK(!result.diagnostics.empty());
-	CHECK(contains(result.diagnostics.front(), "arguments"));
+	CHECK_EQ(result.diagnostics.size(), usize(2));
+	CHECK(contains(result.diagnostics[0], "visible"));
+	CHECK(contains(result.diagnostics[1], "visible failure"));
 }
 
 TEST(preprocessor, a_file_with_no_includes_maps_every_line_onto_itself)
