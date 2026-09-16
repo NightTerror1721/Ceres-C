@@ -1088,3 +1088,18 @@ TEST(parser, register_is_not_allowed_on_a_function)
 	// rejected on one.
 	CHECK(unitHasErrors("register int f(void);"));
 }
+
+TEST(parser, the_machine_builtins_are_syntax_rather_than_calls)
+{
+	CHECK_EQ(printUnit("int main(void) { __builtin_sti(); return 0; }"),
+		"(unit (func main int (params) (block (expr-stmt (__builtin_sti)) (return 0))))");
+	CHECK_EQ(printUnit("int main(void) { __builtin_cli(); __builtin_halt(); return 0; }"),
+		"(unit (func main int (params) (block (expr-stmt (__builtin_cli)) (expr-stmt (__builtin_halt)) (return 0))))");
+
+	// None of the three takes an operand.
+	CHECK(parseFails("int main(void) { __builtin_sti(1); return 0; }"));
+
+	// Only in call position, so the names stay available to a program that has its own.
+	CHECK_EQ(printUnit("int __builtin_sti; int main(void) { return __builtin_sti; }"),
+		"(unit (var __builtin_sti int <null>) (func main int (params) (block (return __builtin_sti))))");
+}

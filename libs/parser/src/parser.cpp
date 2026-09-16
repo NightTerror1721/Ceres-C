@@ -28,6 +28,29 @@ namespace ceresc::parser
 		return std::nullopt;
 	}
 
+	std::optional<ast::MachineOp> Parser::machineBuiltinFor(std::string_view name) noexcept
+	{
+		if (name == "__builtin_sti")  return ast::MachineOp::Sti;
+		if (name == "__builtin_cli")  return ast::MachineOp::Cli;
+		if (name == "__builtin_halt") return ast::MachineOp::Halt;
+		return std::nullopt;
+	}
+
+	Expr* Parser::parseMachineBuiltin(SourceLocation location, ast::MachineOp op)
+	{
+		advance(); // the builtin's name
+		if (!expect(TokenKind::LParen, "'(' after a machine builtin"))
+			return nullptr;
+		// None of the three takes an operand, so the argument list is empty or the program is wrong.
+		if (!check(TokenKind::RParen))
+		{
+			_diagnostics.error(_current.location(), "'{}' takes no arguments", ast::machineOpName(op));
+			return nullptr;
+		}
+		advance(); // ')'
+		return _arena.create<ast::MachineOpExpr>(location, op);
+	}
+
 	Expr* Parser::parseVaBuiltin(SourceLocation location, ast::VaOp op)
 	{
 		advance(); // the builtin's name
@@ -463,6 +486,10 @@ namespace ceresc::parser
 				// its own keeps working.
 				if (std::optional<ast::VaOp> op = vaBuiltinFor(name); op && _next.is(TokenKind::LParen))
 					return parseVaBuiltin(location, *op);
+				// The machine builtins are the same idea one step lower: a name in call position that
+				// stands for an instruction rather than for a function.
+				if (std::optional<ast::MachineOp> machineOp = machineBuiltinFor(name); machineOp && _next.is(TokenKind::LParen))
+					return parseMachineBuiltin(location, *machineOp);
 				advance();
 				return _arena.create<ast::NameExpr>(location, name);
 			}

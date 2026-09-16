@@ -330,6 +330,13 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(MachineOpExpr& node)
+	{
+		_output += '(';
+		_output += machineOpName(node.op());
+		_output += ')';
+	}
+
 	void AstPrinter::visit(VaExpr& node)
 	{
 		_output += '(';

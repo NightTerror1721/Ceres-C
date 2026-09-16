@@ -200,6 +200,12 @@ namespace ceresc::ir
 				_output += std::format("{} = va_start\n", valueName(payload.result));
 				break;
 			}
+			case IrOpcode::MachineOp:
+			{
+				_output += ast::machineOpMnemonic(instr.as<IrMachineOpPayload>().op);
+				_output += '\n';
+				break;
+			}
 			case IrOpcode::Jump:
 			{
 				const auto& payload = instr.as<IrJumpPayload>();

@@ -958,6 +958,15 @@ namespace ceresc::codegen
 				break;
 			}
 
+			case IrOpcode::MachineOp:
+			{
+				// One instruction, written out as it stands. `halt` here is the one that suspends until
+				// an interrupt arrives, not main's shutdown sequence - that one goes through the system
+				// control device first (see the Return case above).
+				_emitter.instr(std::string(ast::machineOpMnemonic(instr.as<IrMachineOpPayload>().op)), comment);
+				break;
+			}
+
 			case IrOpcode::Jump:
 			{
 				const auto& p = instr.as<IrJumpPayload>();

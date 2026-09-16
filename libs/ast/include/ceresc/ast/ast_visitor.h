@@ -50,6 +50,7 @@ namespace ceresc::ast
 		virtual void visit(SizeofExpr& node) = 0;
 		virtual void visit(AlignofExpr& node) = 0;
 		virtual void visit(VaExpr& node) = 0;
+		virtual void visit(MachineOpExpr& node) = 0;
 		virtual void visit(TernaryExpr& node) = 0;
 		virtual void visit(InitListExpr& node) = 0;
 
@@ -94,6 +95,7 @@ namespace ceresc::ast
 	inline void SizeofExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void AlignofExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void VaExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
+	inline void MachineOpExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void TernaryExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void InitListExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 

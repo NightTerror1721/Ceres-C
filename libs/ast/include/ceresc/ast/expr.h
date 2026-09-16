@@ -415,6 +415,61 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<VaExpr>, "VaExpr must be trivially destructible (Arena-allocated)");
 
+	// One machine instruction this language has no other way to reach. All three govern interrupt
+	// delivery, which is the one part of the machine a program cannot express through ordinary C:
+	// there is no memory address to store into and no arithmetic that has the effect.
+	enum class MachineOp : u8
+	{
+		Sti,  // set the Interrupt flag - user interrupts 16-63 are masked until it is set
+		Cli,  // clear it again, for a critical section a handler must not preempt
+		Halt  // stop fetching until an interrupt arrives; the dispatcher clears the Halting flag
+	};
+
+	constexpr std::string_view machineOpName(MachineOp op) noexcept
+	{
+		switch (op)
+		{
+			case MachineOp::Sti:  return "__builtin_sti";
+			case MachineOp::Cli:  return "__builtin_cli";
+			case MachineOp::Halt: return "__builtin_halt";
+		}
+		return "";
+	}
+
+	// The CASM mnemonic each one lowers to - one instruction, no operands, no result.
+	constexpr std::string_view machineOpMnemonic(MachineOp op) noexcept
+	{
+		switch (op)
+		{
+			case MachineOp::Sti:  return "sti";
+			case MachineOp::Cli:  return "cli";
+			case MachineOp::Halt: return "halt";
+		}
+		return "";
+	}
+
+	// `__builtin_sti()` and friends: an instruction spelled as a call, recognized by the parser the
+	// same way the va_* builtins are, because there is no header to declare them in and nothing for
+	// a real function to contain but the one instruction.
+	//
+	// Written with the `__builtin_` prefix rather than as bare keywords on purpose: the prefix is
+	// reserved to the implementation in C, so no existing program can be using the name, and it
+	// reads as what it is - an escape hatch to the machine rather than part of the language.
+	// docs/06 keeps the list; an interrupt handler is what they exist for (docs/10).
+	class MachineOpExpr final : public Expr
+	{
+	private:
+		MachineOp _op;
+
+	public:
+		MachineOpExpr(support::SourceLocation location, MachineOp op) noexcept : Expr(location), _op(op) {}
+
+	public:
+		MachineOp op() const noexcept { return _op; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<MachineOpExpr>, "MachineOpExpr must be trivially destructible (Arena-allocated)");
+
 	class TernaryExpr final : public Expr
 	{
 	private:

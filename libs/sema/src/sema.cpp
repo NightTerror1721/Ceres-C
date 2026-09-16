@@ -968,6 +968,15 @@ namespace ceresc::sema
 		_lastExprType = &Type::UInt;
 	}
 
+	void Sema::visit(ast::MachineOpExpr& node)
+	{
+		// Nothing to check. The parser only builds one of these for a name it recognizes, and the
+		// grammar already required the empty argument list - none of the three takes an operand, and
+		// none produces a value.
+		node.setType(&Type::Void);
+		_lastExprType = &Type::Void;
+	}
+
 	void Sema::visit(ast::VaExpr& node)
 	{
 		using ast::VaOp;

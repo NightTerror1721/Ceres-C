@@ -2,6 +2,7 @@
 
 #include <ceresc/support/types.h>
 #include <ceresc/support/source_location.h>
+#include <ceresc/ast/expr.h> // ast::MachineOp - see IrMachineOpPayload
 #include <string_view>
 #include <type_traits>
 #include <variant>
@@ -54,7 +55,8 @@ namespace ceresc::ir
 
 	enum class IrOpcode : u8
 	{
-		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, Return
+		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, Return,
+		MachineOp
 	};
 
 	// Binary arithmetic/bitwise ops. Shr and Sar are two distinct opcodes - not one "Shr" opcode
@@ -276,17 +278,28 @@ namespace ceresc::ir
 		IrValue value;
 	};
 
+	// One machine instruction with no operands and no result: `sti`, `cli` or `halt`. It exists
+	// because those three are the one part of this machine a C program cannot reach any other way -
+	// there is no address to store into and no arithmetic with the effect. Not pure, obviously, and
+	// deliberately NOT a Call: it clobbers nothing, so it must not cost a function its register
+	// window (ValuePlacement reads IrOpcode::Call to decide exactly that).
+	struct IrMachineOpPayload
+	{
+		ast::MachineOp op = ast::MachineOp::Sti;
+	};
+
 	using IrInstrPayload = std::variant<
 		IrConstPayload, IrBinOpPayload, IrUnOpPayload, IrCmpPayload, IrCopyPayload,
 		IrFrameAddrPayload, IrGlobalAddrPayload, IrLoadPayload, IrStorePayload, IrParamPayload,
-		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrReturnPayload>;
+		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrReturnPayload,
+		IrMachineOpPayload>;
 	// Declaration order here must match IrOpcode's own order exactly - opcode() below derives the
 	// opcode from the variant's index() instead of storing a second, redundant tag. The size check
 	// alone only pins the *count*: swapping two payload types (e.g. Load/Store), or adding an
 	// IrOpcode enumerator without a matching payload, would keep the count at 14 while silently
 	// remapping opcode() and every switch in ir_printer.cpp/ir_function.cpp to the wrong payload -
 	// so each alternative's *position* is pinned individually too, not just the total.
-	static_assert(std::variant_size_v<IrInstrPayload> == 15, "IrInstrPayload must have exactly one alternative per IrOpcode");
+	static_assert(std::variant_size_v<IrInstrPayload> == 16, "IrInstrPayload must have exactly one alternative per IrOpcode");
 	template <IrOpcode Op, typename Payload>
 	concept OpcodeMapsToPayload = std::is_same_v<std::variant_alternative_t<static_cast<usize>(Op), IrInstrPayload>, Payload>;
 	static_assert(OpcodeMapsToPayload<IrOpcode::Const, IrConstPayload>);
@@ -304,6 +317,7 @@ namespace ceresc::ir
 	static_assert(OpcodeMapsToPayload<IrOpcode::Jump, IrJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::CondJump, IrCondJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Return, IrReturnPayload>);
+	static_assert(OpcodeMapsToPayload<IrOpcode::MachineOp, IrMachineOpPayload>);
 
 	// Declared before IrInstr so resultOf()/forEachOperand() below can be defined right after it -
 	// see their own comment for why they live here rather than in each consumer.

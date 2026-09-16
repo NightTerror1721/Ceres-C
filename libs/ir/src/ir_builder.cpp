@@ -1347,6 +1347,16 @@ namespace ceresc::ir
 		_lastValue = emitConstInt(node.location(), node.argumentType() ? static_cast<i64>(node.argumentType()->alignment()) : 1);
 	}
 
+	void IrBuilder::visit(ast::MachineOpExpr& node)
+	{
+		// One instruction, no operands, no result - and no value for the enclosing expression, since
+		// all three are void. Nothing else to lower.
+		IrMachineOpPayload payload;
+		payload.op = node.op();
+		emitVoid(node.location(), payload);
+		_lastValue = IrValue{};
+	}
+
 	void IrBuilder::visit(ast::VaExpr& node)
 	{
 		using ast::VaOp;

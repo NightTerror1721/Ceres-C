@@ -120,6 +120,22 @@ optimizations, and `restrict` and `register` are checked contracts that the back
 ignore. That is deliberate: a qualifier that silently licensed a wrong answer would be worse than
 one that is merely not yet exploited.
 
+### Interrupt delivery needs a builtin
+
+`sti`, `cli` and `halt` are the one part of the machine no C expression reaches: there is no address
+to store into and no arithmetic with the effect. They are spelled `__builtin_sti()`,
+`__builtin_cli()` and `__builtin_halt()` — recognized by the parser in call position, the way the
+`va_*` builtins are, since there is no header to declare them in and nothing an ordinary function
+could contain but the one instruction. Each takes no arguments and produces `void`.
+
+`__builtin_sti()` is what a program needs before a *user* interrupt (16–63) can be delivered at all;
+the reserved ones (0–15) are always deliverable. `__builtin_halt()` suspends the machine until an
+interrupt arrives, which is the point of installing a handler for one.
+
+The `__builtin_` prefix is reserved to the implementation in C, so no existing program can be using
+these names — and because they are only recognized in call position, one that uses the spelling for
+a variable of its own still works.
+
 ### No integer literal suffixes
 
 `100u`, `100L` and `1.5f` are not accepted. A literal's type comes from its form and from what it is

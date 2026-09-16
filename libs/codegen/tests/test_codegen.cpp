@@ -1127,3 +1127,20 @@ TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
 	std::string casm = atO2("int g(int v); int f(int n) { register int x = n; return g(x) + x; }");
 	CHECK(contains(casm, "struct __frame_f"));
 }
+
+// ---- machine builtins --------------------------------------------------------------------------
+
+TEST(codegen, the_machine_builtins_emit_their_one_instruction)
+{
+	std::string casm = atO2("int main(void) { __builtin_cli(); __builtin_sti(); return 0; }");
+	CHECK(contains(casm, "\n    cli"));
+	CHECK(contains(casm, "\n    sti"));
+}
+
+TEST(codegen, a_machine_builtin_does_not_cost_a_function_its_register_window)
+{
+	// It is not a Call and clobbers nothing, so ValuePlacement must not treat it as one - a leaf
+	// function that only masks interrupts still keeps its locals in registers.
+	std::string casm = atO2("int f(int n) { __builtin_cli(); return n + n; }");
+	CHECK(!contains(casm, "struct __frame_f"));
+}

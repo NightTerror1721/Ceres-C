@@ -259,6 +259,12 @@ namespace ceresc::parser
 		static std::optional<ast::VaOp> vaBuiltinFor(std::string_view name) noexcept;
 		Expr* parseVaBuiltin(support::SourceLocation location, ast::VaOp op);
 
+		// The machine builtins (__builtin_sti/__builtin_cli/__builtin_halt), recognized the same way
+		// and for the same reason: there is no header to declare them in, and nothing an ordinary
+		// function could contain but the one instruction. See docs/10-Interrupts.md.
+		static std::optional<ast::MachineOp> machineBuiltinFor(std::string_view name) noexcept;
+		Expr* parseMachineBuiltin(support::SourceLocation location, ast::MachineOp op);
+
 		// direct-declarator's "[" INT_LITERAL? "]")* suffix (§7's grammar) - called after an
 		// identifier at every declarator site (local/global VarDecl, struct field, typedef, param)
 		// once `elementType` (everything parseTypeName() already built, i.e. the base type plus any
