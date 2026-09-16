@@ -1,10 +1,15 @@
 ## Compiler output left behind by running an example in place, e.g.
 ##     ceresc examples/07_structs.c --run
-## which writes the .casm next to the source and then the .cres next to that. The examples
+## which writes the .casm next to the source, then the .cobj and .cres next to that. The examples
 ## themselves and their .expected goldens are version-controlled; what the compiler makes from
 ## them is not.
+##
+## Only the TOP level ignores .casm: every .casm there is generated from a sibling .c. Under
+## examples/interop/ a .casm is hand-written source, so it is listed by name in its own rules.
 examples/*.casm
-examples/*.cres
+*.cobj
+*.cres
+*.decls.casm
 
 ## CMake (CMakePresets.json binaryDir, and local preset overrides that shouldn't be shared)
 /build/

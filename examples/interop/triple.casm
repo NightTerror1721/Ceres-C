@@ -1,0 +1,16 @@
+// A routine written in assembly and called from C.
+//
+// The name is the C name, with nothing added: a C symbol keeps its own name in the generated
+// assembly, so the two sides agree without a decoder ring. `global` is what publishes it to the
+// linker - without it, nothing outside this file could see it.
+//
+// The C side says `extern int triple(int n);` and calls it like any other function. The calling
+// convention is CeresASM's own (docs/24-Calling-Convention.md): the argument arrives in r0 and the
+// result goes back in r0.
+
+@text
+
+global triple:
+    add r1, r0, r0      // r1 = 2n
+    add r0, r1, r0      // r0 = 3n
+    ret

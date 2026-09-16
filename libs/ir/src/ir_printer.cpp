@@ -1,5 +1,6 @@
 #include <ceresc/ir/ir_printer.h>
 #include <format>
+#include <string>
 
 namespace ceresc::ir
 {
@@ -34,6 +35,8 @@ namespace ceresc::ir
 			case IrUnOp::LogicalNot: return "lnot";
 			case IrUnOp::IntToFloat: return "itof";
 			case IrUnOp::FloatToInt: return "ftoi";
+			case IrUnOp::Narrow: return "narrow";
+			case IrUnOp::ToBool: return "tobool";
 		}
 		return "<unknown-unop>";
 	}
@@ -120,8 +123,11 @@ namespace ceresc::ir
 			case IrOpcode::UnOp:
 			{
 				const auto& payload = instr.as<IrUnOpPayload>();
-				_output += std::format("{} = {}{}{} {}\n", valueName(payload.result), opName(payload.op),
-					payload.isFloat ? ".f" : "", payload.isUnsigned ? ".u" : "", valueName(payload.operand));
+				// Narrow prints its width too - "%4 = narrow.byte.u %3" - since that is the whole
+				// content of the instruction: two narrows of different widths would read identically.
+				std::string suffix = payload.op == IrUnOp::Narrow ? std::format(".{}", sizeName(payload.narrowSize)) : std::string{};
+				_output += std::format("{} = {}{}{}{} {}\n", valueName(payload.result), opName(payload.op),
+					suffix, payload.isFloat ? ".f" : "", payload.isUnsigned ? ".u" : "", valueName(payload.operand));
 				break;
 			}
 			case IrOpcode::Cmp:
@@ -155,8 +161,11 @@ namespace ceresc::ir
 			case IrOpcode::Load:
 			{
 				const auto& payload = instr.as<IrLoadPayload>();
-				_output += std::format("{} = load.{}{} [{}]\n", valueName(payload.result), sizeName(payload.size),
-					payload.isFloat ? ".f" : "", valueName(payload.address));
+				// ".s" marks a sign-extending narrow load (`ldrsb`/`ldrsh`), a different instruction
+				// from the zero-extending one and not deducible from the size alone.
+				_output += std::format("{} = load.{}{}{} [{}]\n", valueName(payload.result), sizeName(payload.size),
+					payload.isFloat ? ".f" : "", (payload.isSigned && payload.size != IrMemSize::Word) ? ".s" : "",
+					valueName(payload.address));
 				break;
 			}
 			case IrOpcode::Store:

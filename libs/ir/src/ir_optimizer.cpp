@@ -21,6 +21,8 @@ namespace ceresc::ir
 		// inlining a long body duplicates its whole instruction stream at every call site, and this
 		// project's own priority is output a reader can follow (§0), not the last percent of speed.
 		constexpr usize kMaxInlineInstrs = 32;
+		// What `inline` buys a function that asks for it - see isInlinable().
+		constexpr usize kMaxInlineInstrsWhenRequested = 160;
 
 		// resultOf()/forEachOperand()/successorsOf() come from libs/ir's own headers (ir_instr.h,
 		// ir_function.h) rather than being repeated here - see their comment there.
@@ -192,6 +194,31 @@ namespace ceresc::ir
 					if (operand.floatValue < -2147483648.0f || operand.floatValue >= 2147483648.0f)
 						return std::nullopt;
 					return ConstValue{ false, wrap32(static_cast<i64>(static_cast<i32>(operand.floatValue))), 0.0f };
+				case IrUnOp::Narrow:
+				{
+					// Folding this matters more than it looks: EVERY `char c = 'a';` now goes
+					// through a Narrow, and without folding, -O1 would emit an `sxtb` of a literal
+					// in front of each one.
+					if (operand.isFloat)
+						return std::nullopt;
+					u32 bits = static_cast<u32>(operand.intValue);
+					if (p.narrowSize == IrMemSize::Byte)
+					{
+						u32 low = bits & 0xFFu;
+						return ConstValue{ false, p.isUnsigned ? static_cast<i64>(low)
+															   : static_cast<i64>(static_cast<i8>(low)), 0.0f };
+					}
+					if (p.narrowSize == IrMemSize::Half)
+					{
+						u32 low = bits & 0xFFFFu;
+						return ConstValue{ false, p.isUnsigned ? static_cast<i64>(low)
+															   : static_cast<i64>(static_cast<i16>(low)), 0.0f };
+					}
+					return ConstValue{ false, wrap32(operand.intValue), 0.0f }; // Word: nothing to narrow
+				}
+				case IrUnOp::ToBool:
+					return operand.isFloat ? std::nullopt
+						: std::optional<ConstValue>(ConstValue{ false, operand.intValue != 0 ? 1 : 0, 0.0f });
 			}
 			return std::nullopt;
 		}
@@ -841,11 +868,12 @@ namespace ceresc::ir
 		{
 			if (!options.unusedFunctionElimination)
 				return false;
-			// Only ever safe because this compiler emits one self-contained program per source file:
-			// `main` is the only symbol anything outside can reach (12-Labels-and-Symbols.md - the
-			// linker looks up exactly that name, and codegen marks nothing else `global`), so a
-			// function no chain of calls from `main` reaches can never run. Separate compilation
-			// would change that, and this pass with it.
+			// A function is a root when something outside this unit could call it: `main`, which the
+			// linker looks up by name, and every function with external linkage, which another object
+			// may call at link time (12-Labels-and-Symbols.md). Only a `static` function that no chain
+			// of calls from a root reaches can be dropped - this used to assume one self-contained
+			// translation unit, which stopped being true the moment ceresc learned to compile several
+			// files into objects and link them.
 			bool hasMain = false;
 			for (const auto& function : module.functions())
 				if (function->name() == "main")
@@ -857,9 +885,15 @@ namespace ceresc::ir
 			for (const auto& function : module.functions())
 				byName.emplace(function->name(), function.get());
 
-			std::vector<std::string_view> worklist{ "main" };
+			std::vector<std::string_view> worklist;
 			std::unordered_map<std::string_view, bool> reached;
-			reached["main"] = true;
+			for (const auto& function : module.functions())
+			{
+				if (function->name() != "main" && !function->hasExternalLinkage())
+					continue;
+				reached[function->name()] = true;
+				worklist.push_back(function->name());
+			}
 			while (!worklist.empty())
 			{
 				std::string_view name = worklist.back();
@@ -1062,7 +1096,10 @@ namespace ceresc::ir
 				return false;
 
 			std::span<IrInstr* const> instrs = function.blocks().front()->instrs();
-			if (instrs.empty() || instrs.size() > kMaxInlineInstrs)
+			// `inline` raises the size limit rather than removing it: the request is a hint about what
+			// is worth copying, not a licence to copy a four-hundred-instruction body into every call.
+			usize limit = function.isInlineHint() ? kMaxInlineInstrsWhenRequested : kMaxInlineInstrs;
+			if (instrs.empty() || instrs.size() > limit)
 				return false;
 			if (instrs.back()->opcode() != IrOpcode::Return)
 				return false;

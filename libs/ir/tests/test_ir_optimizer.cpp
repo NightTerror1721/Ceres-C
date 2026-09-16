@@ -430,9 +430,16 @@ TEST(ir_optimizer, a_function_nothing_calls_is_dropped)
 	support::OptimizationOptions options = support::OptimizationOptions::none();
 	options.unusedFunctionElimination = true;
 
-	std::string text = wholeModuleIr("int unusedOne(int a) { return a; } int main() { return 1; }", options);
+	// `static` is load-bearing here, not decoration: a function with external linkage may be
+	// called by another object at link time, so nothing in THIS unit calling it proves nothing.
+	// Only an internal-linkage function can be dropped for being unreachable.
+	std::string text = wholeModuleIr("static int unusedOne(int a) { return a; } int main() { return 1; }", options);
 	CHECK(!contains(text, "function unusedOne"));
 	CHECK(contains(text, "function main"));
+
+	// The same function without `static` stays, for exactly that reason.
+	std::string exported = wholeModuleIr("int unusedOne(int a) { return a; } int main() { return 1; }", options);
+	CHECK(contains(exported, "function unusedOne"));
 }
 
 TEST(ir_optimizer, a_function_reached_only_indirectly_is_kept)

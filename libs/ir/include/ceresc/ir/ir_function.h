@@ -24,6 +24,14 @@
 //
 // Implemented in Fase 5 of the phased plan (§13).
 
+namespace ceresc::ast
+{
+	// Forward declaration only: IrStaticLocal keeps a VarDecl* so codegen can read its type and its
+	// initializer, which is the same borrowing relationship IrFunction already has with ast::Type.
+	// Including decl.h here would pull the whole AST into every consumer of the IR for one pointer.
+	class VarDecl;
+}
+
 namespace ceresc::ir
 {
 	class BasicBlock
@@ -83,6 +91,14 @@ namespace ceresc::ir
 		std::vector<IrLocalSlot> _localSlots; // includes params, at indices [0, paramCount) - see newLocalSlot()/reserveParamSlots()
 		std::vector<std::unique_ptr<BasicBlock>> _blocks;
 		u32 _nextTempId = 0;
+		// Two facts about the DECLARATION that the optimizer cannot re-derive from the body:
+		//
+		//   externalLinkage - another object may call this, so unused-function elimination must keep
+		//                     it even when nothing in this unit does. `static` is what takes it away.
+		//   inlineHint      - the program asked for `inline`. It raises the size limit the inliner
+		//                     applies, so the request means something rather than being decoration.
+		bool _externalLinkage = true;
+		bool _inlineHint = false;
 
 	public:
 		IrFunction(std::string_view name, const ast::Type* returnType) noexcept :
@@ -102,6 +118,9 @@ namespace ceresc::ir
 		u32 localCount() const noexcept { return static_cast<u32>(_localSlots.size()); }
 		std::span<const IrLocalSlot> localSlots() const noexcept { return _localSlots; }
 		std::span<const std::unique_ptr<BasicBlock>> blocks() const noexcept { return _blocks; }
+		bool hasExternalLinkage() const noexcept { return _externalLinkage; }
+		bool isInlineHint() const noexcept { return _inlineHint; }
+		void setLinkage(bool external, bool inlineHint) noexcept { _externalLinkage = external; _inlineHint = inlineHint; }
 
 		BasicBlock& createBlock()
 		{
@@ -212,6 +231,17 @@ namespace ceresc::ir
 		support::PooledString value;
 	};
 
+	// A `static` local: spelled inside a function, but stored like a file-scope variable, because it
+	// has to outlive the call. Lowering turns every reference to it into a GlobalAddr of `name`, and
+	// codegen emits the storage from `decl` exactly as it emits a real global - the only differences
+	// are that `name` carries the function's name too (so two functions may each have their own
+	// `count`) and that it is never `global`, since C gives it no linkage at all.
+	struct IrStaticLocal
+	{
+		std::string_view name;      // the file-scope symbol, e.g. "main.calls"
+		const ast::VarDecl* decl;   // the declaration its type and initializer come from
+	};
+
 	// The result of lowering one whole TranslationUnit: one IrFunction per FunctionDecl definition
 	// (a prototype with no body lowers to nothing - see ir_builder.cpp), plus the string literal
 	// table every GlobalAddr referencing a string constant points into.
@@ -220,6 +250,7 @@ namespace ceresc::ir
 	private:
 		std::vector<std::unique_ptr<IrFunction>> _functions;
 		std::vector<IrGlobalString> _stringLiterals;
+		std::vector<IrStaticLocal> _staticLocals;
 
 	public:
 		IrModule() = default;
@@ -233,6 +264,7 @@ namespace ceresc::ir
 	public:
 		std::span<const std::unique_ptr<IrFunction>> functions() const noexcept { return _functions; }
 		std::span<const IrGlobalString> stringLiterals() const noexcept { return _stringLiterals; }
+		std::span<const IrStaticLocal> staticLocals() const noexcept { return _staticLocals; }
 
 		IrFunction& addFunction(std::string_view name, const ast::Type* returnType)
 		{
@@ -243,6 +275,11 @@ namespace ceresc::ir
 		void addStringLiteral(std::string_view name, support::PooledString value)
 		{
 			_stringLiterals.push_back(IrGlobalString{ name, value });
+		}
+
+		void addStaticLocal(std::string_view name, const ast::VarDecl* decl)
+		{
+			_staticLocals.push_back(IrStaticLocal{ name, decl });
 		}
 
 		// Drops every function whose index in functions() has `keep[i] == false` - unused-function

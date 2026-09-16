@@ -19,9 +19,11 @@ straight run of instructions ending in a jump or a return.
 | `UnOp` | `%t = op %a` | Neg, Not, LogicalNot, IntToFloat, FloatToInt. |
 | `Cmp` | `%t = cmp.eq/ne/lt/le/gt/ge %a, %b` | Produces 0 or 1 — see the note on `setcc` below. |
 | `Copy` | `%t = %a` | An alias; usually disappears in the back end. |
+| `Narrow` | `%t = narrow.byte/half[.u] %a` | An int-to-int width change: truncate, then extend by the target type's own signedness. |
+| `ToBool` | `%t = tobool %a` | C's int-to-bool rule: zero stays zero, anything else becomes one. |
 | `FrameAddr` | `%t = &local N` | The address of a local or parameter's frame slot. |
 | `GlobalAddr` | `%t = &global "name"` | The address of a global, or of a string literal. |
-| `Load` | `%t = load.<size> [%addr]` | `size` ∈ {byte, half, word}. |
+| `Load` | `%t = load.<size>[.s] [%addr]` | `size` ∈ {byte, half, word}; `.s` means the loaded type is signed. |
 | `Store` | `store.<size> [%addr], %v` | |
 | `Param` | `param %v` | Queues one outgoing argument. |
 | `Call` | `%t = call f, N` | `N` is how many `Param`s were queued. |
@@ -44,12 +46,15 @@ Verified against CeresASM's `docs/05-Instruction-Set.md` and `docs/06-Pseudo-Ins
 | `UnOp Neg` (int) | `imul rd, rs, -1` | The documented expansion of the `neg` pseudo, written out — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 | `UnOp Neg` (float) | `neg fd, fs` → `FNEG` | |
 | `UnOp Not` | `not rd, rs` | Register form only; no immediate. |
+| `Narrow` (signed) | `sxtb` / `sxth` | One instruction either way. |
+| `Narrow` (unsigned) | `and rd, rs, 255` / `and rd, rs, 65535` | `and`'s immediate is zero-extended, so 0xFFFF arrives intact. |
+| `ToBool` | `min rd, rs, 1` | Unsigned `min`, so the result is 0 only when the operand is. One instruction, no branch. |
 | `Cmp eq`/`ne` | `ifeq` / `ifne` | Same for signed and unsigned. |
 | `Cmp lt/le/gt/ge` | `ifls`/`ifle`/`ifgr`/`ifge` (signed) · `ifbl`/`ifbe`/`ifab`/`ifae` (unsigned, pointers, sizes) | |
-| `Load` byte/half/word | `ldrb` / `ldrh` / `ldr` | `[base + N]` with a constant offset, `[base + rIdx]` when the offset is in a register. |
+| `Load` byte/half/word | `ldrb`/`ldrh` (unsigned) · `ldrsb`/`ldrsh` (signed) · `ldr` | The pair comes from the loaded TYPE. A word load fills the register, so it has no such choice. `[base + N]` with a constant offset, `[base + rIdx]` when the offset is in a register. |
 | `Store` byte/half/word | `strb` / `strh` / `str` | Same two addressing forms. |
 | `FrameAddr` | `la rd, [sp + Frame.slotN]`, or nothing at all if the local lives in a register | |
-| `GlobalAddr` | `la rd, symbol` | String literals become `@rodata` entries (`let ccstr0: u8[15] = "ceres compiler"`). |
+| `GlobalAddr` | `la rd, symbol` | String literals become `@rodata` entries (`let __ccstr0: u8[15] = "ceres compiler"`). |
 | `Param` / `Call` | first four of each bank in `arg0`–`arg3`/`f0`–`f3`, the rest in the outgoing area, then `call f` | |
 | `Jump` / `CondJump` | `jp` / the `ifXX` above | |
 | `Return` | `mov ret0, %v` then `leave`/`ret` | `main` halts the machine instead — see below. |
@@ -127,7 +132,7 @@ lay it out, exactly as a hand-written program following the calling convention w
 struct __frame_suma_array
     slot0: u32
 endstruct
-cc_suma_array:
+global suma_array:
     enter __frame_suma_array
     ...
     leave
@@ -143,12 +148,35 @@ shorthand: the real condition is "needs nothing from a frame", which a function 
 can still satisfy, because `call`/`ret` put the return address on the hardware stack rather than in
 the frame.
 
-### Names
+### Names and linkage
 
-Every user symbol is prefixed with `cc_`. A C identifier is not guaranteed to avoid CASM's own
-reserved words (`const`, `global`, `struct`, `word`, `true`, ...), and a collision would otherwise
-surface as a confusing assembler syntax error instead of a Ceres-C diagnostic. `main` is the one
-exception — the linker looks up that exact spelling to find the entry point.
+**A C symbol keeps its own name.** `int triple(int)` is `triple` in the generated assembly, and a
+routine written in CASM as `global triple:` is what `extern int triple(int);` names. That is what
+makes interoperability work in both directions without a decoder ring — see
+[07-CASM-Interop.md](07-CASM-Interop.md).
+
+The price is a small collision class: a C identifier that happens to be one of CeresASM's reserved
+words (`let`, `global`, `struct`, `word`, `u32`, `align`, `true`, a register name, ...) cannot be
+read as an identifier by the assembler. Ceres-C reports that as its own diagnostic, naming the
+declaration and asking you to rename it, rather than letting it surface as an assembler syntax
+error pointing at generated text.
+
+`global` in front of a label or a `let` is what publishes a symbol to the linker
+(12-Labels-and-Symbols.md), so it is exactly C's external linkage:
+
+| C | Generated CASM |
+| --- | --- |
+| `int f(void) { ... }` | `global f:` |
+| `static int f(void) { ... }` | `f:` — internal, and droppable if nothing calls it |
+| `int counter = 0;` | `global let counter: u32 = 0` in `@data` |
+| `static int counter = 0;` | `let counter: u32 = 0` |
+| `const int limit = 3;` | `global let limit: u32 = 3` in **`@rodata`** |
+| `extern int counter;` | nothing — the storage belongs to whoever defines it |
+| `static int n;` inside `f` | `let f__n: u32` in `@bss` — file-scope storage, no linkage |
+
+A `const` global with an initializer goes to `@rodata`, where the machine itself enforces the
+qualifier: a store into it raises `MemoryFault` rather than quietly working. That is also why sema
+refuses to convert a `const int*` to an `int*` — the promise is not a formality.
 
 ### How `main` ends
 

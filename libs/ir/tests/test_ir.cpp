@@ -599,17 +599,22 @@ TEST(ir, struct_member_access_adds_the_fields_byte_offset_to_the_base_address)
 	// `p.x` (offset 0, folds away - see lowerAddress()'s own note) must read straight off &local
 	// with no offset added; `p.y` (a non-zero offset) must add exactly that offset, not some other
 	// wrong-but-plausible constant a looser "an add exists somewhere" check would miss.
+	//
+	// The `narrow.byte` in front of the store is the int-to-char conversion `p.y = 1` performs. It
+	// is emitted even for a literal that already fits: this builder tracks no constants, and
+	// constant folding removes it at every level above -O0 (ir_optimizer.cpp's foldUnOp).
 	CHECK_EQ(text,
 		"function main(params=0, locals=1) {\n"
 		"L0:\n"
 		"  %0 = const 1\n"
-		"  %1 = &local 0\n"
-		"  %2 = const 4\n"
-		"  %3 = add.u %1, %2\n"
-		"  store.byte [%3], %0\n"
-		"  %4 = &local 0\n"
-		"  %5 = load.word [%4]\n"
-		"  ret %5\n"
+		"  %1 = narrow.byte %0\n"
+		"  %2 = &local 0\n"
+		"  %3 = const 4\n"
+		"  %4 = add.u %2, %3\n"
+		"  store.byte [%4], %1\n"
+		"  %5 = &local 0\n"
+		"  %6 = load.word [%5]\n"
+		"  ret %6\n"
 		"}\n");
 }
 

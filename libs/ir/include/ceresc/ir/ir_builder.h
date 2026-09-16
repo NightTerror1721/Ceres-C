@@ -6,6 +6,8 @@
 #include <ceresc/support/diagnostics.h>
 #include <ceresc/support/optimization.h>
 #include <optional>
+#include <set>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -151,6 +153,11 @@ namespace ceresc::ir
 			// struct-convention note in the header comment above). Taking such a parameter's address
 			// means loading that pointer, not computing a FrameAddr.
 			bool isIndirect = false;
+			// Global only: the file-scope symbol this name really refers to, when that is not the name
+			// itself. Set for a `static` local, whose CASM symbol carries its function's name so two
+			// functions can each have their own `count` (see IrStaticLocal, ir_function.h). Empty means
+			// "the C name, verbatim", which is every ordinary global.
+			std::string_view globalName;
 		};
 
 	private:
@@ -165,6 +172,17 @@ namespace ceresc::ir
 
 		std::vector<std::unordered_map<std::string_view, LocalSymbol>> _scopes; // function-local block scopes; empty at file scope
 		std::unordered_map<std::string_view, LocalSymbol> _globalSymbols;      // file-scope variables + file-scope enum constants
+
+		// Every function the translation unit declares OR defines, by name - filled up front in
+		// build() so a call can be lowered before the callee's own declaration has been visited.
+		// Used for one thing: converting each argument to its parameter's declared type, which is
+		// what keeps a narrow parameter's value narrowed when it never reaches memory (see
+		// convertForStore()).
+		std::unordered_map<std::string_view, const ast::FunctionDecl*> _functionDecls;
+
+		// Every file-scope symbol a `static` local has already been given, so a second one wanting the
+		// same `function__name` gets a suffix instead of silently sharing storage with it.
+		std::set<std::string, std::less<>> _staticLocalNames;
 
 		// Frame-slot reuse across disjoint lexical scopes (options().localSlotReuse). `_scopeSlots`
 		// records which slots each open scope introduced; popping a scope returns them to
@@ -241,6 +259,14 @@ namespace ceresc::ir
 		// narrowing back to `x`'s real int storage) both need this, unlike a plain BinOp/Cmp operand
 		// pair, which sema has already unified onto one common type by the time IrBuilder sees it.
 		// A no-op when `fromType`/`toType` agree on isFloat().
+		//
+		// It also realizes the two integer-to-integer conversions C does define as real operations:
+		// narrowing to a `char`/`short` (truncate, then re-extend by the target's own signedness)
+		// and converting to `bool` (zero stays zero, anything else becomes one). Those used to be
+		// left to whatever a later store happened to truncate, which is wrong the moment the value
+		// never reaches memory - see IrUnOp::Narrow's own note (ir_instr.h). Every path that moves a
+		// value into storage of a declared type goes through here: initialization, assignment,
+		// compound assignment, `return`, an argument moving into a parameter, and an explicit cast.
 		IrValue convertForStore(support::SourceLocation loc, IrValue value, const ast::Type* fromType, const ast::Type* toType);
 
 		// ---- composite memory (Fase 7) --------------------------------------------------------
@@ -306,12 +332,22 @@ namespace ceresc::ir
 		IrValue emitConstFloat(support::SourceLocation loc, f32 value);
 		void emitConstInto(support::SourceLocation loc, IrValue result, i64 value); // reuses a temp id already allocated - see materializeBoolean()
 		void emitCopyInto(support::SourceLocation loc, IrValue result, IrValue source, bool isFloat = false); // ditto - see visit(TernaryExpr&)
-		IrValue emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat = false);
+		// `isSigned` picks `ldrsb`/`ldrsh` over `ldrb`/`ldrh` for a Byte/Half load - it comes from the
+		// loaded TYPE's own signedness, never from the address's. Use loadOfType() below wherever
+		// there is a Type to ask; this raw form exists for the few loads that describe a machine word
+		// rather than a C object (a one-register struct argument, a whole-object copy's pieces).
+		IrValue emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat = false, bool isSigned = false);
+
+		// emitLoad() for a value of a known C type: picks the width, the bank and the signedness
+		// from `type` in one place, so a caller cannot get two of the three right and forget the
+		// third. That is exactly how narrow signed loads came to be zero-extending.
+		IrValue loadOfType(support::SourceLocation loc, IrValue address, const ast::Type* type);
 		void emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat = false);
 		IrValue emitFrameAddr(support::SourceLocation loc, u32 localIndex);
 		IrValue emitGlobalAddr(support::SourceLocation loc, std::string_view name);
 		IrValue emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat = false);
 		IrValue emitUnOp(support::SourceLocation loc, IrUnOp op, IrValue operand, bool isFloat = false, bool isUnsigned = false);
+		IrValue emitNarrow(support::SourceLocation loc, IrValue operand, IrMemSize size, bool isUnsigned);
 
 		// Copies `text` into `_arena` and returns a stable string_view over that copy - used to
 		// synthesize a string literal's label (".str0", ...), which needs a lifetime outliving the

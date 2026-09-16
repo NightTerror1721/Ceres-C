@@ -1016,3 +1016,137 @@ TEST(sema, a_member_access_on_a_struct_returning_call_type_checks_but_is_not_an_
 		"int main() { make().x = 1; return 0; }");
 	CHECK(!writing.ok);
 }
+
+// ---- const -------------------------------------------------------------------------------------
+
+TEST(sema, a_const_object_cannot_be_assigned_to)
+{
+	CheckOutcome outcome = checkSource("int main() { const int limit = 3; limit = 4; return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "it is const"));
+}
+
+TEST(sema, a_const_object_cannot_be_incremented_or_compound_assigned)
+{
+	CHECK(!checkSource("int main() { const int n = 1; n++; return 0; }").ok);
+	CHECK(!checkSource("int main() { const int n = 1; --n; return 0; }").ok);
+	CHECK(!checkSource("int main() { const int n = 1; n += 2; return 0; }").ok);
+}
+
+TEST(sema, a_const_global_cannot_be_assigned_to_either)
+{
+	CheckOutcome outcome = checkSource("const int limit = 3;\nint main() { limit = 4; return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "it is const"));
+}
+
+TEST(sema, const_may_be_written_on_either_side_of_the_type)
+{
+	// `const int` and `int const` are the same type in C, and both have to reach the same place.
+	CHECK(!checkSource("int main() { int const n = 1; n = 2; return 0; }").ok);
+	CHECK(checkSource("int main() { int const n = 1; return n; }").ok);
+}
+
+TEST(sema, a_pointer_to_const_and_a_const_pointer_are_different_types)
+{
+	// Which side of the star the word is on is the whole difference: one forbids writing through
+	// the pointer, the other forbids changing where it points.
+	CHECK(!checkSource("int main() { int n = 0; const int* p = &n; *p = 1; return 0; }").ok);
+	CHECK(checkSource("int main() { int n = 0; const int* p = &n; p = 0; return *p; }").ok);
+
+	CHECK(checkSource("int main() { int n = 0; int* const p = &n; *p = 1; return 0; }").ok);
+	CHECK(!checkSource("int main() { int n = 0; int* const p = &n; p = 0; return 0; }").ok);
+}
+
+TEST(sema, a_conversion_may_add_const_but_never_drop_it)
+{
+	CHECK(checkSource("int main() { int n = 0; int* w = &n; const int* r = w; return *r; }").ok);
+
+	CheckOutcome dropping = checkSource("int main() { int n = 0; const int* r = &n; int* w = r; return *w; }");
+	CHECK(!dropping.ok);
+	CHECK(containsMessage(dropping, "incompatible type"));
+}
+
+TEST(sema, a_const_parameter_is_accepted_and_still_cannot_be_written)
+{
+	CHECK(checkSource("int length(const char* text) { int n = 0; while (text[n] != 0) n++; return n; }").ok);
+	CHECK(!checkSource("void f(const int n) { n = 1; }").ok);
+}
+
+// ---- storage classes ---------------------------------------------------------------------------
+
+TEST(sema, the_storage_classes_parse_and_type_check)
+{
+	CHECK(checkSource("static int counter = 0;\nint main() { return counter; }").ok);
+	CHECK(checkSource("extern int elsewhere;\nint main() { return elsewhere; }").ok);
+	CHECK(checkSource("int main() { auto int n = 1; return n; }").ok);
+	CHECK(checkSource("static inline int twice(int n) { return n * 2; }\nint main() { return twice(2); }").ok);
+}
+
+TEST(sema, auto_is_only_allowed_inside_a_block)
+{
+	CheckOutcome outcome = checkSource("auto int n = 1;\nint main() { return n; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'auto'"));
+}
+
+TEST(sema, two_storage_classes_on_one_declaration_say_which_two)
+{
+	CheckOutcome outcome = checkSource("static extern int n;\nint main() { return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "cannot combine"));
+}
+
+TEST(sema, inline_is_only_allowed_on_a_function)
+{
+	CheckOutcome outcome = checkSource("inline int n = 1;\nint main() { return n; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'inline'"));
+}
+
+TEST(sema, a_static_local_needs_a_compile_time_initializer)
+{
+	// Its initial value becomes bytes in the loaded image, so there is no moment at which a
+	// run-time expression could be evaluated for it.
+	CHECK(checkSource("int main() { static int n = 1 + 2; return n; }").ok);
+
+	CheckOutcome outcome = checkSource("int seed = 4;\nint main() { static int n = seed; return n; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "compile-time constant"));
+}
+
+TEST(sema, an_extern_declaration_in_a_block_cannot_have_an_initializer)
+{
+	CheckOutcome outcome = checkSource("int main() { extern int n = 1; return n; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "'extern'"));
+}
+
+TEST(sema, an_extern_declaration_followed_by_the_definition_is_one_object)
+{
+	// Exactly what a header's `extern` plus the source file's definition looks like after the
+	// preprocessor has run them together - and the reason headers work at all.
+	CHECK(checkSource("extern int counter;\nint counter = 0;\nint main() { return counter; }").ok);
+	CHECK(checkSource("int counter = 0;\nextern int counter;\nint main() { return counter; }").ok);
+}
+
+TEST(sema, two_definitions_of_the_same_global_are_still_a_redefinition)
+{
+	CheckOutcome outcome = checkSource("int counter = 0;\nint counter = 1;\nint main() { return counter; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition"));
+}
+
+TEST(sema, redeclaring_a_global_with_a_different_type_is_an_error)
+{
+	CheckOutcome outcome = checkSource("extern int counter;\nfloat counter = 0.0;\nint main() { return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "different type"));
+}
+
+TEST(sema, a_local_is_still_not_redeclarable)
+{
+	CheckOutcome outcome = checkSource("int main() { int n = 1; int n = 2; return n; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "redefinition"));
+}

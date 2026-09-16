@@ -65,12 +65,25 @@ namespace ceresc::ir
 	enum class IrBinOp : u8 { Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Sar };
 
 	// IntToFloat/FloatToInt exist because casting across the int/float line is a real runtime
-	// operation (itof/iitof/ftoi/ftoii, §10) - unlike an int-to-int width change, which this project
-	// realizes for free through the memSize a later Load/Store picks (see IrBuilder::visit(CastExpr&),
-	// ir_builder.cpp), there is no bit-pattern trick that reinterprets an i32 as an f32. IrBuilder
-	// emits one of these two whenever a CastExpr's operand type and result type disagree on
-	// isFloat(); codegen (Fase 6+) is what picks the exact mnemonic from IrUnOpPayload::isUnsigned.
-	enum class IrUnOp : u8 { Neg, Not, LogicalNot, IntToFloat, FloatToInt };
+	// operation (itof/iitof/ftoi/ftoii, §10): there is no bit-pattern trick that reinterprets an i32
+	// as an f32. IrBuilder emits one of these two whenever a conversion's source and target types
+	// disagree on isFloat(); codegen is what picks the exact mnemonic from IrUnOpPayload::isUnsigned.
+	//
+	// Narrow is an int-to-int WIDTH change - `(char)x`, or storing an int into a `short`. This used
+	// to be assumed free, on the theory that the memSize of a later Load/Store would realize it. It
+	// is not: a value of narrow type can be produced, used and consumed without ever touching
+	// memory (the optimizer's whole job is to arrange exactly that), and `(int)(char)0x101` has to
+	// be 1 whether or not a store happened in between. IrUnOpPayload::narrowSize says how wide the
+	// result is and isUnsigned whether the spare bits are filled with zeros or with the sign.
+	//
+	// ToBool is the int-to-bool conversion, which C defines as "zero stays zero, anything else
+	// becomes one" rather than as a truncation - `(bool)256` is `true`, not `false`.
+	//
+	// Together these three give the IR one invariant the back end and the optimizer both rely on: a
+	// value whose C type is narrow is ALWAYS already in its narrowed representation. That is what
+	// makes forwarding a stored value straight to a load sound - the store's value is exactly what
+	// the load would have read back.
+	enum class IrUnOp : u8 { Neg, Not, LogicalNot, IntToFloat, FloatToInt, Narrow, ToBool };
 
 	// Shared by Cmp and CondJump - "exactamente uno de los seis predicados con/sin signo" (§9).
 	enum class IrCmpPredicate : u8 { Eq, Ne, Lt, Le, Gt, Ge };
@@ -124,8 +137,12 @@ namespace ceresc::ir
 		bool isFloat = false;    // Neg only: selects FNEG over `neg` (imul rd, rs, -1, §10) - Not/
 		                         // LogicalNot never see a float operand (sema requires an integer/
 		                         // scalar one)
-		bool isUnsigned = false; // IntToFloat/FloatToInt only: the INTEGER side's signedness - which
-		                         // real opcode to pick (itof/iitof, ftoi/ftoii, §10)
+		bool isUnsigned = false; // IntToFloat/FloatToInt: the INTEGER side's signedness - which real
+		                         // opcode to pick (itof/iitof, ftoi/ftoii, §10). Narrow: whether the
+		                         // bits above the result's width are filled with zeros (`and`) or
+		                         // with the sign (`sxtb`/`sxth`)
+		IrMemSize narrowSize = IrMemSize::Word; // Narrow only: Byte or Half. Word would be a no-op,
+		                                        // and IrBuilder never emits one
 		IrValue operand;
 	};
 
@@ -165,8 +182,12 @@ namespace ceresc::ir
 	{
 		IrValue result;
 		IrMemSize size = IrMemSize::Word;
-		bool isFloat = false; // selects `ldr fd, [...]` (always Word-sized, §10's FLDR) over the
-		                      // integer load family chosen by `size`
+		bool isFloat = false;  // selects `ldr fd, [...]` (always Word-sized, §10's FLDR) over the
+		                       // integer load family chosen by `size`
+		bool isSigned = false; // Byte/Half only: selects `ldrsb`/`ldrsh` over `ldrb`/`ldrh`. A
+		                       // `signed char` read back from memory has to come out negative, and
+		                       // the zero-extending forms are the reason it used not to. Word loads
+		                       // already fill the register, and a float load has no such choice
 		IrValue address;
 	};
 

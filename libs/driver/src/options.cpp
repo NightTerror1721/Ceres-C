@@ -19,35 +19,7 @@ namespace ceresc::driver
 			for (const support::OptimizationFlag& flag : support::optimizationFlags())
 				out << std::format("      {:<20}{}\n", flag.name, flag.description);
 		}
-	}
 
-	void printUsage(std::ostream& out)
-	{
-		out <<
-			"usage: ceresc <file.c> [-o <file.casm>] [--emit-ast] [--emit-ir] [-S | --run]\n"
-			"               [--ceres-path <dir>] [-Werror] [-O<level>] [-f<opt>]\n"
-			"       ceresc --version | --help\n"
-			"\n"
-			"  <file.c>            the C subset source file to compile\n"
-			"  -o <file.casm>      where to write the generated CASM text (default: <file.casm>)\n"
-			"  --emit-ast          print the annotated AST (s-expression form) and stop\n"
-			"  --emit-ir           print the IR and stop\n"
-			"  -S                  stop at the CASM text, do not assemble it (the default)\n"
-			"  --run               assemble and run the generated program with `ceres asm`/`ceres run`\n"
-			"  --ceres-path <dir>  where to find the `ceres` binary (default: look it up on PATH)\n"
-			"  -Werror             treat warnings as errors\n"
-			"  --version           print the version and stop\n"
-			"  --help, -h          print this text\n"
-			"\n"
-			"-S and --run are opposites and resolve in argument order: the last one written wins.\n"
-			"\n"
-			"optimization (on by default, -O1):\n";
-
-		printOptimizationUsage(out);
-	}
-
-	namespace
-	{
 		// Applies `-f<name>` / `-fno-<name>` to `options`. Returns false for a name that is not one
 		// of support::optimizationFlags()' own - the caller reports it and gives up, rather than
 		// silently ignoring a flag the user believes took effect.
@@ -71,12 +43,67 @@ namespace ceresc::driver
 			}
 			return false;
 		}
+
+		// `NAME` or `NAME=value`, as -D takes it. A bare name defines the macro as `1`, which is
+		// what every C compiler does and what makes `-D DEBUG` useful on its own.
+		std::pair<std::string, std::string> splitDefine(std::string_view text)
+		{
+			usize equals = text.find('=');
+			if (equals == std::string_view::npos)
+				return { std::string(text), "1" };
+			return { std::string(text.substr(0, equals)), std::string(text.substr(equals + 1)) };
+		}
+	}
+
+	void printUsage(std::ostream& out)
+	{
+		out <<
+			"usage: ceresc <file.c|file.casm>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
+			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--ceres-path <dir>]\n"
+			"               [-Werror] [-O<level>] [-f<opt>]\n"
+			"       ceresc --version | --help\n"
+			"\n"
+			"  <file.c>            a C subset source file to compile\n"
+			"  <file.casm>         a CeresASM source to assemble and link alongside the C ones\n"
+			"  -o <output>         the .casm to write (one C input), or the linked program (several)\n"
+			"  -I <dir>            a directory to search for #include <...> and #include \"...\"\n"
+			"  -D <name>[=<val>]   predefine an object-like macro (a bare name means 1)\n"
+			"  --emit-ast          print the annotated AST (s-expression form) and stop\n"
+			"  --emit-ir           print the IR and stop\n"
+			"  -E                  print the preprocessed source and stop\n"
+			"  -S                  stop at the CASM text, do not assemble it (the default)\n"
+			"  --run               assemble, link and run the program with `ceres asm`/`ceres run`\n"
+			"  --ceres-path <dir>  where to find the `ceres` binary (default: look it up on PATH)\n"
+			"  -Werror             treat warnings as errors\n"
+			"  --version           print the version and stop\n"
+			"  --help, -h          print this text\n"
+			"\n"
+			"-S and --run are opposites and resolve in argument order: the last one written wins.\n"
+			"\n"
+			"optimization (on by default, -O1):\n";
+
+		printOptimizationUsage(out);
 	}
 
 	std::optional<Options> parseOptions(std::span<const char* const> args, std::ostream& diagnosticsOut)
 	{
 		Options options;
-		bool sawInput = false;
+
+		// Every option that takes a separate value accepts both spellings - `-I dir` and `-Idir`,
+		// `-D NAME` and `-DNAME`, `-o out` and (for symmetry) nothing joined, since `-oout` is not a
+		// spelling anyone uses. Reading a value that is not there is an error rather than a silently
+		// ignored flag.
+		auto valueFor = [&](std::string_view arg, std::string_view flag, usize& i) -> std::optional<std::string>
+		{
+			if (arg.size() > flag.size())
+				return std::string(arg.substr(flag.size()));
+			if (i + 1 >= args.size())
+			{
+				diagnosticsOut << "ceresc: '" << flag << "' requires an argument\n";
+				return std::nullopt;
+			}
+			return std::string(args[++i]);
+		};
 
 		for (usize i = 0; i < args.size(); ++i)
 		{
@@ -84,6 +111,7 @@ namespace ceresc::driver
 
 			if (arg == "--emit-ast") { options.emitAst = true; continue; }
 			if (arg == "--emit-ir") { options.emitIr = true; continue; }
+			if (arg == "-E") { options.emitPreprocessed = true; continue; }
 			// Opposites, resolved in argument order rather than by precedence - see Options::run.
 			if (arg == "-S") { options.run = false; continue; }
 			if (arg == "--run") { options.run = true; continue; }
@@ -115,22 +143,34 @@ namespace ceresc::driver
 
 			if (arg == "-o")
 			{
-				if (i + 1 >= args.size())
-				{
-					diagnosticsOut << "ceresc: '-o' requires an argument\n";
+				std::optional<std::string> value = valueFor(arg, "-o", i);
+				if (!value)
 					return std::nullopt;
-				}
-				options.outputPath = args[++i];
+				options.outputPath = std::move(*value);
+				continue;
+			}
+			if (arg.starts_with("-I"))
+			{
+				std::optional<std::string> value = valueFor(arg, "-I", i);
+				if (!value)
+					return std::nullopt;
+				options.includeDirectories.push_back(std::move(*value));
+				continue;
+			}
+			if (arg.starts_with("-D"))
+			{
+				std::optional<std::string> value = valueFor(arg, "-D", i);
+				if (!value)
+					return std::nullopt;
+				options.defines.push_back(splitDefine(*value));
 				continue;
 			}
 			if (arg == "--ceres-path")
 			{
-				if (i + 1 >= args.size())
-				{
-					diagnosticsOut << "ceresc: '--ceres-path' requires an argument\n";
+				std::optional<std::string> value = valueFor(arg, "--ceres-path", i);
+				if (!value)
 					return std::nullopt;
-				}
-				options.ceresPath = args[++i];
+				options.ceresPath = std::move(*value);
 				continue;
 			}
 
@@ -141,18 +181,12 @@ namespace ceresc::driver
 				return std::nullopt;
 			}
 
-			if (sawInput)
-			{
-				diagnosticsOut << "ceresc: multiple input files are not supported\n";
-				return std::nullopt;
-			}
-			options.inputPath = arg;
-			sawInput = true;
+			options.inputPaths.emplace_back(arg);
 		}
 
 		// `--version` is a question about the compiler, not a request to compile something, so it
 		// is the one flag that stands on its own without an input file.
-		if (!sawInput && !options.showVersion)
+		if (options.inputPaths.empty() && !options.showVersion)
 		{
 			printUsage(diagnosticsOut);
 			return std::nullopt;

@@ -75,20 +75,56 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<Decl>, "Decl must be trivially destructible because it is allocated in an arena and never deleted individually");
 
+	// The storage-class specifier a declaration was written with. `const` is NOT here: it is a type
+	// QUALIFIER, so it lives on the Type (Type::isConst()) and travels with the type through
+	// pointers and arrays, which a per-declaration flag could not do.
+	//
+	// `inline` is deliberately not in this enum either, even though §3's grammar lists it next to
+	// the others: real C lets it combine with them (`static inline`), so FunctionDecl carries it as
+	// its own flag rather than as a fifth mutually-exclusive value.
+	enum class StorageClass : u8
+	{
+		None,    // the default: external linkage at file scope, automatic storage in a block
+		Static,  // internal linkage at file scope; at block scope, storage that outlives the call
+		Extern,  // a declaration, not a definition: defined by another translation unit or in CASM
+		Auto     // explicit automatic storage. Legal only in a block, where it is also the default
+	};
+
+	constexpr std::string_view storageClassName(StorageClass storageClass) noexcept
+	{
+		switch (storageClass)
+		{
+			case StorageClass::Static: return "static";
+			case StorageClass::Extern: return "extern";
+			case StorageClass::Auto:   return "auto";
+			case StorageClass::None:   break;
+		}
+		return "";
+	}
+
 	class VarDecl final : public Decl
 	{
 	private:
 		const Type* _type;
 		Expr* _initializer; // nullable - `int x;` has none
+		StorageClass _storageClass = StorageClass::None;
 
 	public:
-		VarDecl(support::SourceLocation location, std::string_view name, const Type* type, Expr* initializer = nullptr) noexcept :
-			Decl(location, name), _type(type), _initializer(initializer)
+		VarDecl(support::SourceLocation location, std::string_view name, const Type* type, Expr* initializer = nullptr,
+			StorageClass storageClass = StorageClass::None) noexcept :
+			Decl(location, name), _type(type), _initializer(initializer), _storageClass(storageClass)
 		{}
 
 	public:
 		const Type* type() const noexcept { return _type; }
 		Expr* initializer() const noexcept { return _initializer; }
+		StorageClass storageClass() const noexcept { return _storageClass; }
+
+		// True for a declaration that reserves no storage of its own: `extern int x;` names
+		// something another unit defines. `extern int x = 1;` is a definition despite the keyword,
+		// which is exactly why this asks about the initializer too.
+		bool isExternDeclaration() const noexcept { return _storageClass == StorageClass::Extern && !_initializer; }
+
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<VarDecl>, "VarDecl must be trivially destructible (Arena-allocated)");
@@ -198,10 +234,14 @@ namespace ceresc::ast
 		Param const* _params; // non-owning view over an arena-allocated array - see the header comment above
 		u32 _paramCount;
 		CompoundStmt* _body; // nullable - see the header comment above
+		StorageClass _storageClass = StorageClass::None;
+		bool _isInline = false;
 
 	public:
-		FunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType, std::span<const Param> params, CompoundStmt* body = nullptr) noexcept :
-			Decl(location, name), _returnType(returnType), _params(params.data()), _paramCount(static_cast<u32>(params.size())), _body(body)
+		FunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType, std::span<const Param> params,
+			CompoundStmt* body = nullptr, StorageClass storageClass = StorageClass::None, bool isInline = false) noexcept :
+			Decl(location, name), _returnType(returnType), _params(params.data()), _paramCount(static_cast<u32>(params.size())),
+			_body(body), _storageClass(storageClass), _isInline(isInline)
 		{}
 
 	public:
@@ -209,6 +249,18 @@ namespace ceresc::ast
 		std::span<const Param> params() const noexcept { return { _params, _paramCount }; }
 		CompoundStmt* body() const noexcept { return _body; }
 		bool isDefinition() const noexcept { return _body != nullptr; }
+		StorageClass storageClass() const noexcept { return _storageClass; }
+
+		// `inline` on a definition. Here it is a request the optimizer honours rather than a
+		// linkage rule: the function is still emitted, and the inliner treats it as worth inlining
+		// regardless of its size whenever inlining is on at all (libs/ir/ir_optimizer.cpp).
+		bool isInline() const noexcept { return _isInline; }
+
+		// True when the function has external linkage - i.e. `global` in the generated CASM, and
+		// therefore visible to another object at link time. `static` is the only thing that takes
+		// that away; `extern` is what every function has by default anyway.
+		bool hasExternalLinkage() const noexcept { return _storageClass != StorageClass::Static; }
+
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<FunctionDecl>, "FunctionDecl must be trivially destructible (Arena-allocated)");

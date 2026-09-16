@@ -57,6 +57,22 @@
 
 namespace ceresc::codegen
 {
+	// One symbol this translation unit publishes: what another unit has to be TOLD about it before
+	// it can refer to it.
+	//
+	// The assembler picks an opcode from the shape of an operand - `mov r1, counter` encodes
+	// differently depending on what `counter` is (25-Separate-Compilation.md) - so an object cannot
+	// simply reference a name it has never seen declared. libs/driver collects these from every unit
+	// into one declarations file that each generated .casm imports, which is what makes a call or a
+	// global read cross a file boundary at all. See docs/07-CASM-Interop.md.
+	struct ExternalDeclaration
+	{
+		std::string name;
+		bool isFunction = false;
+		std::string section;   // "@text", "@data", "@bss" or "@rodata" - where the real definition lives
+		std::string typeText;  // the CASM type for a variable ("u32", "u8[8]", ...); empty for a function
+	};
+
 	class CodeGen
 	{
 	public:
@@ -78,8 +94,26 @@ namespace ceresc::codegen
 		// same already-sema-checked TranslationUnit and the IrBuilder::build() call over it.
 		std::string generate(const ast::TranslationUnit& unit, const ir::IrModule& module);
 
+		// Every externally visible symbol `unit` defines or declares, in the form another object
+		// needs in order to name it. Reads the AST only - no code generation - so it can be called
+		// before, after or instead of generate().
+		std::vector<ExternalDeclaration> collectExternalDeclarations(const ast::TranslationUnit& unit) const;
+
 	private:
-		void generateGlobal(const ast::VarDecl& decl);
+		// Reports every C symbol whose name the assembler cannot read as an identifier. A C symbol
+		// keeps its own name in the generated CASM (see mangledName()'s note, codegen.cpp) - that is
+		// what makes a routine written in CASM callable from C under one name rather than two - and
+		// this is the price: the handful of CeresASM reserved words become names a C program may not
+		// give a function, a global or a static local. Reported here, once, before anything is
+		// emitted, so the message names the C declaration instead of an assembler syntax error
+		// pointing at generated text.
+		void checkSymbolNames(const ast::TranslationUnit& unit, const ir::IrModule& module);
+
+		// `symbolName` is what the CASM `let` is called: the C name for an ordinary global, and the
+		// function-qualified one for a `static` local (ir_function.h's IrStaticLocal). `exported`
+		// adds the `global` keyword that publishes it to the linker - C's external linkage, which a
+		// `static` of either kind does not have.
+		void generateGlobal(const ast::VarDecl& decl, std::string_view symbolName, bool exported);
 		// The `let` declaration for one global of aggregate type - an array or a struct, which has
 		// no single machine width to declare and so needs its own CASM spelling:
 		//
@@ -93,7 +127,7 @@ namespace ceresc::codegen
 		//     actually needs, and the field offsets are already baked into the IR by sema
 		//     (type_layout.h) rather than looked up from a CASM struct, so nothing is lost but the
 		//     field names - which the emitted comment puts back.
-		void generateAggregateGlobal(const ast::VarDecl& decl);
+		void generateAggregateGlobal(const ast::VarDecl& decl, std::string_view symbolName, bool exported);
 		// The CASM type text for an array of scalars - `u32[2][3]` for an `int[2][3]`. Empty when
 		// `type` is not that shape (i.e. a struct is involved somewhere), which is the caller's
 		// signal to fall back to the flat word array.

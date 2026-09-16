@@ -57,14 +57,15 @@ ctest --preset gcc-debug
 ```
 
 Without it, the `e2e` and `examples` suites **skip** rather than fail, so a checkout of Ceres-C on
-its own still goes green. A CI job that means to test the whole path is responsible for setting the
-variable — [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) does.
+its own still goes green. They also find a CeresASM checkout sitting next to this one on their own,
+by walking up from wherever the test runs. A CI job that means to test the whole path is responsible
+for setting the variable — [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) does.
 
 ## Your first program
 
-Ceres-C has no standard library and no preprocessor. There is no `#include`, no `printf` and no
-`malloc`. A program prints by storing a byte into the terminal device's output register, exactly as
-a hand-written CASM program does:
+Ceres-C has no standard library: no `printf`, no `malloc`, and no header to include for them. A
+program prints by storing a byte into the terminal device's output register, exactly as a
+hand-written CASM program does:
 
 ```c
 int main(void)
@@ -87,6 +88,27 @@ device instead, so `return 0` means "stop" and nothing else — `ceres run` exit
 and 1 on a fault, never with a value the program chose. Anything a program wants to report, it
 prints.
 
+## More than one file
+
+Name every piece on one command line. A `.c` is compiled; a `.casm` is assembled and linked
+alongside it:
+
+```sh
+ceresc io.c hello.c triple.casm -o hello.cres --run
+```
+
+Headers work the way you expect — `#include`, `#define` for object-like macros, and `#pragma once`
+as the include guard (there is no `#ifndef` in this version). `-I` adds a search directory and `-D`
+predefines a macro:
+
+```sh
+ceresc src/main.c -I include -D DEBUG --run
+```
+
+[`examples/interop/`](../examples/interop) is a complete program of this shape: two C files, a
+header, and two hand-written assembly files that call into C and are called from it. See
+[07-CASM-Interop.md](07-CASM-Interop.md) and [08-Preprocessor.md](08-Preprocessor.md).
+
 ## Looking at what it produced
 
 The point of emitting text is that you can read it:
@@ -95,9 +117,10 @@ The point of emitting text is that you can read it:
 ceresc examples/15_suma_array.c -o suma.casm    # the CASM, with a comment per line of C
 ceresc examples/15_suma_array.c --emit-ir       # the intermediate representation
 ceresc examples/15_suma_array.c --emit-ast      # the type-checked syntax tree
+ceresc examples/15_suma_array.c -E              # the preprocessed source
 ```
 
-[04-Tutorial-C-to-CASM.md](04-Tutorial-C-to-CASM.md) walks that exact file through all three.
+[04-Tutorial-C-to-CASM.md](04-Tutorial-C-to-CASM.md) walks that exact file through every one of them.
 
 ## Running the examples
 

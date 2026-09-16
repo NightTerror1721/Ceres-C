@@ -151,6 +151,19 @@ namespace ceresc::ast
 			return makeCompound(arena, TypeKind::Enum, isConst, isVolatile, enumDecl);
 		}
 
+		// `type` with its const qualifier set, without changing anything else. Returns `type` itself
+		// when it is already const, and one of the ConstXxx statics above for a scalar, so the common
+		// cases allocate nothing; only a qualified pointer/array/struct/enum needs a new Type.
+		//
+		// Implemented in type.cpp rather than inline: the scalar mapping is a switch over every
+		// TypeKind, which is a lot of code to put in a header for something no caller inlines.
+		static const Type* withConst(support::Arena& arena, const Type* type) noexcept;
+
+		// The same type with every qualifier dropped - what a comparison that should ignore const
+		// asks for. `int` and `const int` are different types to operator==, which is right for
+		// assignability but wrong for "do these two pointers point at the same thing".
+		static const Type* withoutQualifiers(support::Arena& arena, const Type* type) noexcept;
+
 	public:
 		static const Type Void;
 		static const Type Bool, ConstBool, VolatileBool, ConstVolatileBool;

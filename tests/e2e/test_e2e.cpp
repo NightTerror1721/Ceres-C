@@ -72,7 +72,7 @@ namespace
 		}
 
 		ceresc::driver::Options options;
-		options.inputPath = cPath.string();
+		options.inputPaths.push_back(cPath.string());
 		options.outputPath = casmPath.string();
 		options.run = false; // this suite drives asm/run itself, to capture stdout - see the header comment
 		options.optimization = ceresc::support::OptimizationOptions::forLevel(level);
@@ -650,39 +650,15 @@ TEST(e2e, a_nested_struct_field_is_reached_through_two_constant_offsets)
 		"5");
 }
 
-// ---- bugs this suite pins, but does not fix ---------------------------------------------------
+// ---- integer conversions: width and signedness -------------------------------------------------
 //
-// Found while building examples/ for Fase 8 (§13). All three are front/back-end gaps from earlier
-// phases, not integration problems, so they are recorded here rather than worked around: the
-// marker fails today by design and turns the run RED the moment the behaviour becomes correct,
-// which is the signal to delete it. docs/06-Known-Limitations.md describes each one in prose.
-//
-// The helper below fails on purpose when there is no `ceres` to run against, too. An ordinary TEST
-// skips in that case; a TEST_KNOWN_FAILURE that skipped would report "unexpectedly passed" and go
-// red on a checkout with no sibling CeresASM, which says nothing about the bug.
+// These three were pinned as known failures while building examples/ for Fase 8 (§13) and fixed
+// afterwards; they stay as ordinary tests because each one is a rule the back end can silently stop
+// honouring. All three run at every optimization level like everything above, which is the point:
+// the first of them used to give DIFFERENT answers at -O0 and -O1, since the bug only appeared when
+// a value round-tripped through memory.
 
-namespace
-{
-	void pinnedBugIsFixedWhenThisPasses(std::string_view name, std::string_view source, std::string_view correct)
-	{
-		using ceresc::support::OptimizationLevel;
-
-		if (!findCeresDirectory())
-		{
-			CHECK(findCeresDirectory().has_value()); // see the note above: never silently "passes"
-			return;
-		}
-		for (OptimizationLevel level : { OptimizationLevel::O0, OptimizationLevel::O1, OptimizationLevel::O2 })
-		{
-			std::string output = compileAssembleAndRun(name, source, level);
-			CHECK_EQ(std::format("O{}:{}", static_cast<int>(level), output),
-				std::format("O{}:{}", static_cast<int>(level), correct));
-		}
-	}
-}
-
-TEST_KNOWN_FAILURE(e2e, a_negative_signed_char_read_back_from_memory_keeps_its_sign,
-	"narrow loads never sign-extend: `ldrb`/`ldrh` are unsigned, and -O0 disagrees with -O1/-O2")
+TEST(e2e, a_negative_signed_char_read_back_from_memory_keeps_its_sign)
 {
 	// §10's IR->CASM table says every load is unsigned "en v1", which was consistent with §14's
 	// original "char/short siempre unsigned" decision - but that decision was superseded on
@@ -695,7 +671,7 @@ TEST_KNOWN_FAILURE(e2e, a_negative_signed_char_read_back_from_memory_keeps_its_s
 	// register is one byte wide, so `*term = 48 - small` would print the same character whether
 	// `small` came back as -3 or as 253 - the store truncates the difference away. Asking whether
 	// it is negative does not.
-	pinnedBugIsFixedWhenThisPasses("signed_char_roundtrip",
+	runsTheSameAtEveryLevel("signed_char_roundtrip",
 		"int opaque(int v) { return v; }"
 		"int main() {"
 		"    char* term = (char*)0xFF000004;"
@@ -706,12 +682,11 @@ TEST_KNOWN_FAILURE(e2e, a_negative_signed_char_read_back_from_memory_keeps_its_s
 		"1");
 }
 
-TEST_KNOWN_FAILURE(e2e, a_cast_to_a_narrower_integer_type_truncates,
-	"(char)/(short) casts are no-ops: the value keeps all 32 bits at every optimization level")
+TEST(e2e, a_cast_to_a_narrower_integer_type_truncates)
 {
 	// Unlike the one above, this is wrong the same way at all three levels: the conversion is
 	// dropped entirely rather than lowered to a truncation.
-	pinnedBugIsFixedWhenThisPasses("narrowing_cast",
+	runsTheSameAtEveryLevel("narrowing_cast",
 		"int opaque(int v) { return v; }"
 		"int main() {"
 		"    char* term = (char*)0xFF000004;"
@@ -722,10 +697,9 @@ TEST_KNOWN_FAILURE(e2e, a_cast_to_a_narrower_integer_type_truncates,
 		"1");
 }
 
-TEST_KNOWN_FAILURE(e2e, converting_an_int_to_bool_normalizes_to_zero_or_one,
-	"an int assigned to a bool keeps its value instead of becoming 0/1")
+TEST(e2e, converting_an_int_to_bool_normalizes_to_zero_or_one)
 {
-	pinnedBugIsFixedWhenThisPasses("bool_normalization",
+	runsTheSameAtEveryLevel("bool_normalization",
 		"int opaque(int v) { return v; }"
 		"int main() {"
 		"    char* term = (char*)0xFF000004;"
@@ -734,4 +708,129 @@ TEST_KNOWN_FAILURE(e2e, converting_an_int_to_bool_normalizes_to_zero_or_one,
 		"    return 0;"
 		"}",
 		"1");
+}
+
+TEST(e2e, an_argument_is_converted_to_its_parameters_type_before_the_call)
+{
+	// The conversion has to happen at the CALL, not inside the callee: a narrow parameter the
+	// optimizer keeps in the register it arrived in is narrowed nowhere else.
+	runsTheSameAtEveryLevel("argument_conversion",
+		"int opaque(int v) { return v; }"
+		"int widen(signed char c) { return c; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (widen(opaque(0x1FD)) == -3);" // 0x1FD as a signed char is -3
+		"    return 0;"
+		"}",
+		"1");
+}
+
+TEST(e2e, an_unsigned_narrow_value_reads_back_as_a_large_positive_number)
+{
+	// The other half of the same rule: `unsigned char` must NOT sign-extend, so 200 stays 200
+	// rather than becoming -56.
+	runsTheSameAtEveryLevel("unsigned_narrow",
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    unsigned char big = (unsigned char)opaque(200);"
+		"    unsigned short wide = (unsigned short)opaque(60000);"
+		"    *term = 48 + (big == 200) + (wide == 60000) + (big > 0) + (wide > 0) + 1;" // 48 + 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_narrow_value_survives_a_round_trip_through_a_struct_field)
+{
+	// Fields are narrow storage too, and their loads pick the same signed/unsigned form.
+	runsTheSameAtEveryLevel("narrow_fields",
+		"struct Mixed { signed char a; unsigned char b; short c; unsigned short d; };"
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    struct Mixed m;"
+		"    m.a = (signed char)opaque(-1);"
+		"    m.b = (unsigned char)opaque(255);"
+		"    m.c = (short)opaque(-2);"
+		"    m.d = (unsigned short)opaque(65535);"
+		"    *term = 48 + (m.a == -1) + (m.b == 255) + (m.c == -2) + (m.d == 65535) + 1;" // 48 + 5
+		"    return 0;"
+		"}",
+		"5");
+}
+
+// ---- storage classes and const ------------------------------------------------------------------
+
+TEST(e2e, a_static_local_keeps_its_value_between_calls)
+{
+	// The one thing `static` on a local really means: storage that outlives the call. It becomes a
+	// file-scope object under a name carrying its function's, so two functions may each have one.
+	runsTheSameAtEveryLevel("static_local",
+		"int next() { static int counter = 0; counter = counter + 1; return counter; }"
+		"int other() { static int counter = 10; counter = counter + 1; return counter; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    next(); next();"
+		"    *term = 48 + next();"   // '3'
+		"    *term = 48 + other() - 10;" // '1' - a different object with the same C name
+		"    return 0;"
+		"}",
+		"31");
+}
+
+TEST(e2e, a_static_local_is_initialized_once_at_load_time_not_on_every_call)
+{
+	runsTheSameAtEveryLevel("static_local_init",
+		"int tick() { static int n = 5; n = n + 1; return n; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    tick(); tick();"
+		"    *term = 48 + tick() - 3;" // 5+3 = 8, minus 3
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_static_function_is_callable_and_simply_not_published)
+{
+	runsTheSameAtEveryLevel("static_function",
+		"static int hidden(int n) { return n + 2; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + hidden(3);"
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, an_inline_function_computes_the_same_answer_whether_or_not_it_was_inlined)
+{
+	// `inline` raises the inliner's size limit; at -O0 nothing is inlined at all. Both have to
+	// agree, which is the whole point of running every level.
+	runsTheSameAtEveryLevel("inline_function",
+		"inline int square(int n) { return n * n; }"
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + square(opaque(2)) + 1;" // 4 + 1
+		"    return 0;"
+		"}",
+		"5");
+}
+
+TEST(e2e, a_const_global_lives_in_rodata_and_is_still_readable)
+{
+	// @rodata is where the machine itself enforces the qualifier, so the interesting part is that
+	// an ordinary read of it still works from there.
+	runsTheSameAtEveryLevel("const_global",
+		"const int limit = 5;"
+		"const char greeting[3] = \"ok\";"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    for (int i = 0; greeting[i] != 0; i = i + 1) { *term = greeting[i]; }"
+		"    *term = 48 + limit;"
+		"    return 0;"
+		"}",
+		"ok5");
 }

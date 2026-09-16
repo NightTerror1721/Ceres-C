@@ -84,7 +84,7 @@ namespace
 		fs::path outputPath = workDir / std::format("{}.stdout.txt", stem);
 
 		ceresc::driver::Options options;
-		options.inputPath = source.string();
+		options.inputPaths.push_back(source.string());
 		options.outputPath = casmPath.string();
 		options.run = false; // driven from here so stdout can be captured - see ceres_tool.h
 		options.optimization = ceresc::support::OptimizationOptions::forLevel(level);
@@ -164,5 +164,112 @@ TEST(examples, every_example_compiles_assembles_and_prints_what_its_expected_fil
 			std::string prefix = std::format("{} -O{}:\n", name, static_cast<int>(level));
 			CHECK_EQ(prefix + compileAssembleAndRun(source, level), prefix + expected);
 		}
+	}
+}
+
+// ---- the multi-file example ------------------------------------------------------------------
+//
+// examples/interop/ is one program out of two C files, a header and two hand-written .casm files.
+// It lives in a subdirectory precisely so the single-file loop above does not try to compile its
+// pieces one at a time - directory_iterator does not descend - and it gets its own test because
+// what it exercises is the driver rather than the language: several inputs, the generated
+// declarations file, `ceres asm -c` per unit and one `ceres link`.
+
+namespace
+{
+	fs::path interopDirectory() { return examplesDirectory() / "interop"; }
+
+	// Builds and runs the interop program at `level`, returning what it printed.
+	std::string buildAndRunInterop(ceresc::support::OptimizationLevel level)
+	{
+		std::optional<fs::path> ceresDir = findCeresDirectory();
+		if (!ceresDir)
+			return std::string(kNoCeres);
+
+		fs::path source = interopDirectory();
+		fs::path workDir = fs::temp_directory_path() / "ceresc_interop" / std::format("O{}", static_cast<int>(level));
+		std::error_code error;
+		fs::remove_all(workDir, error);
+		fs::create_directories(workDir, error);
+
+		// Copied into a scratch directory rather than built in place: the build writes a .casm next
+		// to each source, and a test should not leave anything in the repository.
+		for (const fs::directory_entry& entry : fs::directory_iterator(source, error))
+		{
+			if (entry.is_regular_file())
+				fs::copy_file(entry.path(), workDir / entry.path().filename(), fs::copy_options::overwrite_existing, error);
+		}
+
+		ceresc::driver::Options options;
+		options.inputPaths = {
+			(workDir / "io.c").string(),
+			(workDir / "hello.c").string(),
+			(workDir / "triple.casm").string(),
+			(workDir / "banner.casm").string(),
+		};
+		options.outputPath = (workDir / "hello.cres").string();
+		options.optimization = ceresc::support::OptimizationOptions::forLevel(level);
+		options.ceresPath = ceresDir->string();
+		options.run = false; // linked below by hand, so stdout can be captured
+
+		if (ceresc::driver::run(options) != 0)
+			return "<ceresc failed to compile the interop example>";
+
+		fs::path ceresBinary = *ceresDir / kCeresExecutableName;
+		fs::path outputPath = workDir / "stdout.txt";
+		std::vector<fs::path> objects;
+		for (std::string_view name : { "io.casm", "hello.casm", "triple.casm", "banner.casm" })
+		{
+			fs::path casmPath = workDir / fs::path(std::string(name));
+			fs::path objectPath = casmPath;
+			objectPath.replace_extension(".cobj");
+			std::string command = std::format("{} asm -c {} -o {}", quote(ceresBinary), quote(casmPath), quote(objectPath));
+			if (runSubprocessCapturingStdout(command, outputPath) != 0)
+				return std::format("<ceres asm failed on {}: {}>", name, readFile(outputPath));
+			objects.push_back(objectPath);
+		}
+
+		std::string linkCommand = std::format("{} link", quote(ceresBinary));
+		for (const fs::path& object : objects)
+			linkCommand += std::format(" {}", quote(object));
+		linkCommand += std::format(" -o {}", quote(workDir / "hello.cres"));
+		if (runSubprocessCapturingStdout(linkCommand, outputPath) != 0)
+			return std::format("<ceres link failed: {}>", readFile(outputPath));
+
+		std::string runCommand = std::format("{} run {}", quote(ceresBinary), quote(workDir / "hello.cres"));
+		if (runSubprocessCapturingStdout(runCommand, outputPath) != 0)
+			return std::format("<ceres run faulted: {}>", readFile(outputPath));
+
+		return withoutCarriageReturns(readFile(outputPath));
+	}
+}
+
+TEST(examples, the_interop_example_has_all_of_its_pieces)
+{
+	// A structural check that needs no `ceres`: the example is five files that only mean anything
+	// together, so losing one of them should not wait for a build to notice.
+	for (std::string_view name : { "io.h", "io.c", "hello.c", "triple.casm", "banner.casm", "hello.expected" })
+	{
+		std::string label{ name };
+		CHECK_EQ(label + ": " + (fs::exists(interopDirectory() / fs::path(std::string(name))) ? "present" : "missing"),
+			label + ": present");
+	}
+}
+
+TEST(examples, the_interop_example_builds_from_several_files_and_prints_what_it_should)
+{
+	using ceresc::support::OptimizationLevel;
+
+	if (!findCeresDirectory())
+	{
+		std::printf("  (skipped: no sibling CeresASM checkout found - set CERESC_CERES_PATH)\n");
+		return;
+	}
+
+	std::string expected = withoutCarriageReturns(readFile(interopDirectory() / "hello.expected"));
+	for (OptimizationLevel level : { OptimizationLevel::O0, OptimizationLevel::O1, OptimizationLevel::O2 })
+	{
+		std::string prefix = std::format("interop -O{}:\n", static_cast<int>(level));
+		CHECK_EQ(prefix + buildAndRunInterop(level), prefix + expected);
 	}
 }

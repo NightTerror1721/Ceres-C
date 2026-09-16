@@ -75,6 +75,7 @@ endif()
 # Declaration order follows the dependency graph of §1: nothing is declared before what it
 # depends on.
 add_subdirectory(libs/support)
+add_subdirectory(libs/preprocessor)
 add_subdirectory(libs/lexer)
 add_subdirectory(libs/ast)
 add_subdirectory(libs/parser)

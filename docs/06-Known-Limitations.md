@@ -2,84 +2,18 @@
 
 [← Back to index](README.md)
 
-Two kinds of thing are on this page, and they are kept apart on purpose:
-
-- **Bugs** — the compiler produces wrong code for a program it accepts. Each one has a reproducer
-  and a `TEST_KNOWN_FAILURE` in `tests/e2e` that will turn the build **red** the day the behaviour
-  becomes correct, which is the signal to delete both the marker and the entry here.
-- **Limits** — a deliberate simplification. Documented so that whoever picks this up knows where the
-  line was drawn and why, rather than rediscovering it.
+Deliberate simplifications, documented so that whoever picks this up knows where the line was drawn
+and why, rather than rediscovering it.
 
 Nothing under [`examples/`](../examples) depends on anything on this page, so the shipped programs
 describe the language as it actually behaves.
 
----
+> Four bugs used to be listed here — narrow loads that never sign-extended, `(char)` casts that did
+> not truncate, int-to-`bool` conversions that did not normalize, and a `const`/storage-class gap in
+> the parser. All four are fixed, and each is now pinned by an ordinary test rather than a
+> known-failure marker. The fifth entry below is not ours.
 
-## Bugs
-
-### Narrow loads never sign-extend
-
-`ldrb` and `ldrh` are unsigned, and nothing extends the sign afterwards, so a negative `signed char`
-or `short` read back **from memory** comes back as a large positive number. The two optimization
-levels disagree, which is what makes it a bug rather than a documented limit: at `-O0` the value
-round-trips through a one-byte frame slot and loses its sign, while at `-O1`/`-O2` it may stay in a
-register and keep it.
-
-```c
-int opaque(int v) { return v; }
-int main(void)
-{
-    char* term = (char*)0xFF000004;
-    signed char small = (signed char)opaque(-3);
-    *term = 48 + (small < 0);   // '1' is correct; -O0 prints '0'
-    return 0;
-}
-```
-
-The architecture plan's IR→CASM table says every load is unsigned "en v1", which was consistent with
-its original decision that `char`/`short` were always unsigned. That decision was superseded on
-2026-09-14 — signed narrow types are in scope now — but the table was never revisited, so the back
-end still implements the older rule.
-
-Pinned by `e2e / a_negative_signed_char_read_back_from_memory_keeps_its_sign`.
-
-### Casts to a narrower integer type are no-ops
-
-`(char)x` and `(short)x` do not truncate. The conversion is dropped rather than lowered, so the
-value keeps all 32 bits — the same way at every optimization level.
-
-```c
-int opaque(int v) { return v; }
-int main(void)
-{
-    char* term = (char*)0xFF000004;
-    int wide = opaque(0x101);               // 257; its low byte is 1
-    *term = 48 + ((int)(char)wide == 1);    // '1' is correct; prints '0'
-    return 0;
-}
-```
-
-Pinned by `e2e / a_cast_to_a_narrower_integer_type_truncates`.
-
-### Converting an int to `bool` does not normalize
-
-In C, any non-zero value converts to `true`, i.e. to 1. Here the value is carried across unchanged,
-so a `bool` can hold 42.
-
-```c
-int opaque(int v) { return v; }
-int main(void)
-{
-    char* term = (char*)0xFF000004;
-    bool flag = opaque(42);
-    *term = 48 + flag;   // '1' is correct; prints 'Z' (48 + 42)
-    return 0;
-}
-```
-
-Pinned by `e2e / converting_an_int_to_bool_normalizes_to_zero_or_one`.
-
-### The assembler miscompiles the integer `neg` pseudo-instruction
+## The assembler miscompiles the integer `neg` pseudo-instruction
 
 This one is in **CeresASM**, not in Ceres-C, and it is worked around here rather than fixed here.
 `neg rd, rs` is documented to expand to `imul rd, rs, -1`, but it assembles to `IMUL rd, r15, r0` —
@@ -107,34 +41,27 @@ can go.
 
 ## Limits
 
-### `const` and the storage-class specifiers are not parsed
+### The preprocessor has no conditionals
 
-`const`, `static`, `extern`, `auto` and `inline` are in the grammar
-([02-Grammar.md](02-Grammar.md)) and are recognized by the lexer, but the parser does not accept
-them anywhere yet:
+`#include`, `#define` (object-like), `#undef` and `#pragma once` are implemented;
+`#if`/`#ifdef`/`#else`/`#endif`, macros with arguments, `#error`, `#line` and `__FILE__`/`__LINE__`
+are not. `#pragma once` is what makes headers usable without them. See
+[08-Preprocessor.md](08-Preprocessor.md).
 
-```c
-const int limit = 3;            // error: expected a declaration but found 'const'
-static int counter;             // error: expected a declaration but found 'static'
-void f(const char* s) { }       // error: expected type name but found 'const'
-```
+### A C symbol cannot be named after a CeresASM reserved word
 
-The type system already carries a `const` flag, so this is a parser gap rather than a design
-decision. Nothing else depends on it: a global is visible across the whole translation unit anyway,
-since there is only ever one.
-
-### No preprocessor
-
-There is no `#include`, no `#define` and no conditional compilation. A preprocessor would be a
-text-to-text pass running before the lexer, not a feature of it. This is why every example under
-`examples/` defines its own `put`/`putstr`/`putint` instead of sharing them.
+A C symbol keeps its own name in the generated assembly, which is what makes interoperability work
+in both directions (see [07-CASM-Interop.md](07-CASM-Interop.md)). The price is that a function,
+global or static local named `let`, `global`, `word`, `u32`, `align`, `assert`, `true`, `sp`, `r3`
+or any of the other reserved words is a Ceres-C error asking you to rename it. Most of that list is
+a C keyword anyway.
 
 ### No standard library
 
 No `printf`, no `malloc`, no `memcpy`, no `strlen`. A program prints by storing bytes into the
 terminal device's output register at `0xFF000004`; `examples/08_strings.c` writes the string
-routines it needs. CeresASM's own `stdlib/` currently only has `call.casm`, so there is nothing to
-link against yet either.
+routines it needs, and `examples/interop/io.c` wraps them into something reusable. CeresASM's own
+`stdlib/` currently only has `call.casm`, so there is nothing to link against yet either.
 
 ### No `double`
 
@@ -147,14 +74,17 @@ and has its own register bank.
 Each is a mechanism with no user yet. Function pointers are the most nearly free of the four: the
 ISA already has indirect calls.
 
+### No `volatile`
+
+Which matters here more than it usually would: a device register read twice really should be read
+twice, and nothing stops the optimizer forwarding the first read to the second. `libs/ir`'s
+optimizer treats a `Load` as impure for exactly this reason, but that is a blunt instrument rather
+than the qualifier.
+
 ### No integer literal suffixes
 
 `100u`, `100L` and `1.5f` are not accepted. A literal's type comes from its form and from what it is
 assigned to.
-
-### No conditional operator
-
-`?:` is absent from the subset. `if`/`else` covers it.
 
 ### Division by zero does not fault
 
@@ -173,3 +103,10 @@ control device, and its return value goes into `ret0` only so it stays inspectab
 
 It does not need to be. A recursion with no base case exhausts the real stack and the VM raises
 `StackOverflow`, which is a better diagnostic than anything Ceres-C could synthesize.
+
+### Separate compilation gives up relaxation
+
+A program built from objects is slightly larger than the same sources assembled whole: `ldv`/`stv`
+keep the three words they reserved, because "within reach" is a distance an object cannot know. That
+is CeresASM's own trade-off, inherited here because `--run` always goes through
+`ceres asm -c` + `ceres link` — one shape for one file and for twenty, so the two cannot drift apart.

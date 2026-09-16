@@ -171,7 +171,8 @@ namespace ceresc::parser
 		// condition is the start of the next declaration (or EOF). Stopping on '}' instead would
 		// loop forever on a stray '}' at top level, since nothing above parseTranslationUnit() would
 		// ever consume it.
-		while (!isAtEnd() && !isTypeSpecStart(_current) && !check(TokenKind::KwTypedef))
+		while (!isAtEnd() && !isTypeSpecStart(_current) && !check(TokenKind::KwTypedef) &&
+			!isDeclSpecifierStart(_current.kind()))
 			advance();
 	}
 
@@ -443,14 +444,99 @@ namespace ceresc::parser
 	// ---- type-name (current subset: primitives + signed/unsigned/short/long, no struct/enum/typedef
 	// yet - see type.h) ---------------------------------------------------------------------------
 
+	Parser::DeclSpecifiers Parser::parseDeclSpecifiers()
+	{
+		DeclSpecifiers specifiers;
+		specifiers.location = _current.location();
+
+		for (;;)
+		{
+			SourceLocation here = _current.location();
+			ast::StorageClass storageClass = ast::StorageClass::None;
+			switch (_current.kind())
+			{
+				case TokenKind::KwConst:
+					advance();
+					if (specifiers.isConst)
+						_diagnostics.error(here, "duplicate 'const'");
+					specifiers.isConst = true;
+					specifiers.sawAny = true;
+					continue;
+				case TokenKind::KwInline:
+					advance();
+					if (specifiers.isInline)
+						_diagnostics.error(here, "duplicate 'inline'");
+					specifiers.isInline = true;
+					specifiers.sawAny = true;
+					continue;
+				case TokenKind::KwStatic: storageClass = ast::StorageClass::Static; break;
+				case TokenKind::KwExtern: storageClass = ast::StorageClass::Extern; break;
+				case TokenKind::KwAuto:   storageClass = ast::StorageClass::Auto; break;
+				default:
+					return specifiers;
+			}
+
+			advance();
+			if (specifiers.storageClass != ast::StorageClass::None)
+			{
+				// Not "duplicate": `static extern` is two different answers to one question, and
+				// saying which two is more useful than saying there are two.
+				_diagnostics.error(here, "cannot combine '{}' with '{}' on the same declaration",
+					ast::storageClassName(storageClass), ast::storageClassName(specifiers.storageClass));
+			}
+			specifiers.storageClass = storageClass;
+			specifiers.sawAny = true;
+		}
+	}
+
 	const Type* Parser::parseTypeName()
 	{
+		return parseTypeName(false);
+	}
+
+	const Type* Parser::parseTypeName(bool leadingConst)
+	{
+		// A qualifier may sit on either side of the type-spec - `const int` and `int const` are the
+		// same type in C - and again after every `*`, where it means something different: `const
+		// char* p` is a pointer to const, `char* const p` is a const pointer. Those are two distinct
+		// types and the difference is exactly which side of the star the word is on, which is why
+		// this cannot be collapsed into one leading flag.
+		DeclSpecifiers leading = parseDeclSpecifiers();
+		if (leading.storageClass != ast::StorageClass::None || leading.isInline)
+		{
+			_diagnostics.error(leading.location,
+				"a storage-class specifier is not allowed here - it belongs to a declaration, not to a type name");
+		}
+
 		const Type* base = parseTypeSpec();
 		if (!base)
 			return nullptr;
 
+		bool isConst = leading.isConst || leadingConst;
+		while (check(TokenKind::KwConst)) // trailing form: `int const`
+		{
+			if (isConst)
+				_diagnostics.error(_current.location(), "duplicate 'const'");
+			isConst = true;
+			advance();
+		}
+		if (isConst)
+			base = Type::withConst(_arena, base);
+
 		while (match(TokenKind::Star))
+		{
 			base = Type::makePointer(_arena, base);
+			bool pointerIsConst = false;
+			while (check(TokenKind::KwConst))
+			{
+				if (pointerIsConst)
+					_diagnostics.error(_current.location(), "duplicate 'const'");
+				pointerIsConst = true;
+				advance();
+			}
+			if (pointerIsConst)
+				base = Type::withConst(_arena, base);
+		}
 		return base;
 	}
 
@@ -680,7 +766,10 @@ namespace ceresc::parser
 			default:
 				if (check(TokenKind::Identifier) && _next.is(TokenKind::Colon))
 					return parseLabeledStatement();
-				if (isTypeSpecStart(_current))
+				// A declaration may begin with its storage class instead of its type - `static int n;`
+				// is a declaration just as much as `int n;` is, and reaching parseExprStatement() with
+				// `static` in hand is what used to produce "expected expression but found 'static'".
+				if (isTypeSpecStart(_current) || isDeclSpecifierStart(_current.kind()))
 					return parseDeclStatement();
 				return parseExprStatement();
 		}
@@ -795,7 +884,7 @@ namespace ceresc::parser
 		{
 			// no init-clause - `for (;` already consumed its ';'
 		}
-		else if (isTypeSpecStart(_current))
+		else if (isTypeSpecStart(_current) || isDeclSpecifierStart(_current.kind()))
 		{
 			init = parseDeclStatement(); // consumes its own trailing ';'
 			if (!init)
@@ -963,7 +1052,11 @@ namespace ceresc::parser
 	Stmt* Parser::parseDeclStatement()
 	{
 		SourceLocation location = _current.location();
-		const Type* type = parseTypeName();
+		// Same split as parseExternalDecl(): the storage class belongs to the declaration, the
+		// `const` to the type. A local may say `static`, `extern`, `auto` or nothing at all; which
+		// of those make sense in a block is sema's call, not this one's.
+		DeclSpecifiers specifiers = parseDeclSpecifiers();
+		const Type* type = parseTypeName(specifiers.isConst);
 		if (!type)
 			return nullptr;
 
@@ -988,7 +1081,7 @@ namespace ceresc::parser
 		if (check(TokenKind::LBracket))
 			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
 
-		Decl* decl = finishVarDecl(location, name, type);
+		Decl* decl = finishVarDecl(location, name, type, specifiers);
 		if (!decl)
 			return nullptr;
 		return _arena.create<ast::DeclStmt>(location, decl);
@@ -1031,14 +1124,19 @@ namespace ceresc::parser
 		if (check(TokenKind::KwTypedef))
 			return parseTypedefDecl();
 
+		// Storage classes and `const` come first and belong to the DECLARATION, so they are read
+		// here rather than inside parseTypeName() - which would have no one to hand a storage class
+		// to, and rejects one for that reason. The `const` half is put back on the type afterwards.
+		DeclSpecifiers specifiers = parseDeclSpecifiers();
+
 		if (!isTypeSpecStart(_current))
 		{
-			_diagnostics.error(location, "expected a declaration but found '{}'",
+			_diagnostics.error(_current.location(), "expected a declaration but found '{}'",
 				_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 			return nullptr;
 		}
 
-		const Type* type = parseTypeName();
+		const Type* type = parseTypeName(specifiers.isConst);
 		if (!type)
 			return nullptr;
 
@@ -1059,11 +1157,11 @@ namespace ceresc::parser
 		advance();
 
 		if (check(TokenKind::LParen))
-			return finishFunctionDecl(location, name, type);
+			return finishFunctionDecl(location, name, type, specifiers);
 
 		if (check(TokenKind::LBracket))
 			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
-		return finishVarDecl(location, name, type);
+		return finishVarDecl(location, name, type, specifiers);
 	}
 
 	Decl* Parser::parseTypedefDecl()
@@ -1137,7 +1235,8 @@ namespace ceresc::parser
 		return _arena.create<ast::InitListExpr>(location, copyArgsToArena(elements));
 	}
 
-	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type)
+	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type,
+		const DeclSpecifiers& specifiers)
 	{
 		Expr* initializer = nullptr;
 		if (match(TokenKind::Equal))
@@ -1149,10 +1248,14 @@ namespace ceresc::parser
 		if (!expect(TokenKind::Semicolon, "';'"))
 			return nullptr;
 
-		return _arena.create<ast::VarDecl>(location, name, type, initializer);
+		if (specifiers.isInline)
+			_diagnostics.error(specifiers.location, "'inline' is only allowed on a function");
+
+		return _arena.create<ast::VarDecl>(location, name, type, initializer, specifiers.storageClass);
 	}
 
-	Decl* Parser::finishFunctionDecl(SourceLocation location, std::string_view name, const Type* returnType)
+	Decl* Parser::finishFunctionDecl(SourceLocation location, std::string_view name, const Type* returnType,
+		const DeclSpecifiers& specifiers)
 	{
 		advance(); // '('
 
@@ -1175,7 +1278,18 @@ namespace ceresc::parser
 			return nullptr;
 		}
 
-		return _arena.create<ast::FunctionDecl>(location, name, returnType, copyParamsToArena(params), body);
+		if (specifiers.storageClass == ast::StorageClass::Auto)
+		{
+			// `auto` means automatic STORAGE, which a function does not have. Rejected here rather
+			// than in sema because there is nothing type-dependent about it.
+			_diagnostics.error(specifiers.location, "'auto' is not allowed on a function");
+		}
+		if (specifiers.isInline && !body)
+			_diagnostics.error(specifiers.location, "'inline' is only meaningful on a function definition, not on a prototype");
+
+		return _arena.create<ast::FunctionDecl>(location, name, returnType, copyParamsToArena(params), body,
+			specifiers.storageClass == ast::StorageClass::Auto ? ast::StorageClass::None : specifiers.storageClass,
+			specifiers.isInline);
 	}
 
 	bool Parser::parseParamList(std::vector<Param>& outParams)

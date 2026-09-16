@@ -46,7 +46,8 @@ TEST(options, an_input_file_on_its_own_is_enough)
 {
 	ParseResult result = parse({ "main.c" });
 	CHECK(result.options.has_value());
-	CHECK_EQ(result.options->inputPath, std::string("main.c"));
+	CHECK_EQ(result.options->inputPaths.size(), std::size_t(1));
+	CHECK_EQ(result.options->inputPaths.front(), std::string("main.c"));
 	CHECK(!result.options->emitAst);
 	CHECK(!result.options->emitIr);
 	CHECK(!result.options->run);
@@ -101,7 +102,7 @@ TEST(options, version_is_an_ordinary_flag_and_needs_no_input_file)
 	ParseResult result = parse({ "--version" });
 	CHECK(result.options.has_value());
 	CHECK(result.options->showVersion);
-	CHECK(result.options->inputPath.empty());
+	CHECK(result.options->inputPaths.empty());
 	CHECK(result.output.empty()); // not an error, so nothing is printed to the diagnostics stream
 }
 
@@ -112,7 +113,8 @@ TEST(options, version_is_recognized_wherever_it_appears)
 	ParseResult result = parse({ "main.c", "--version" });
 	CHECK(result.options.has_value());
 	CHECK(result.options->showVersion);
-	CHECK_EQ(result.options->inputPath, std::string("main.c"));
+	CHECK_EQ(result.options->inputPaths.size(), std::size_t(1));
+	CHECK_EQ(result.options->inputPaths.front(), std::string("main.c"));
 }
 
 TEST(options, help_prints_the_usage_text_and_parses_nothing)
@@ -290,4 +292,75 @@ TEST(options, the_usage_text_lists_every_optimization_by_name)
 	ParseResult result = parse({});
 	for (const support::OptimizationFlag& flag : support::optimizationFlags())
 		CHECK(contains(result.output, flag.name));
+}
+
+// ---- several inputs, include paths and defines --------------------------------------------------
+
+TEST(options, several_inputs_are_kept_in_order)
+{
+	ParseResult result = parse({ "io.c", "main.c", "runtime.casm" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->inputPaths.size(), std::size_t(3));
+	CHECK_EQ(result.options->inputPaths[0], std::string("io.c"));
+	CHECK_EQ(result.options->inputPaths[1], std::string("main.c"));
+	CHECK_EQ(result.options->inputPaths[2], std::string("runtime.casm"));
+}
+
+TEST(options, an_input_may_be_a_casm_file)
+{
+	// The driver decides what to do with it by extension - a .casm is assembled and linked, not
+	// compiled - but the command line does not care which is which.
+	ParseResult result = parse({ "runtime.casm" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->inputPaths.size(), std::size_t(1));
+}
+
+TEST(options, include_directories_accept_both_spellings_and_keep_their_order)
+{
+	ParseResult result = parse({ "main.c", "-I", "first", "-Isecond" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->includeDirectories.size(), std::size_t(2));
+	CHECK_EQ(result.options->includeDirectories[0], std::string("first"));
+	CHECK_EQ(result.options->includeDirectories[1], std::string("second"));
+}
+
+TEST(options, a_bare_D_defines_the_macro_as_one)
+{
+	// What every C compiler does, and what makes `-D DEBUG` useful without a value.
+	ParseResult result = parse({ "main.c", "-D", "DEBUG" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->defines.size(), std::size_t(1));
+	CHECK_EQ(result.options->defines[0].first, std::string("DEBUG"));
+	CHECK_EQ(result.options->defines[0].second, std::string("1"));
+}
+
+TEST(options, a_D_with_a_value_splits_at_the_first_equals)
+{
+	ParseResult result = parse({ "main.c", "-DWIDTH=320", "-DTEXT=a=b" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->defines.size(), std::size_t(2));
+	CHECK_EQ(result.options->defines[0].first, std::string("WIDTH"));
+	CHECK_EQ(result.options->defines[0].second, std::string("320"));
+	// Everything after the first '=' is the replacement, including further '=' signs.
+	CHECK_EQ(result.options->defines[1].first, std::string("TEXT"));
+	CHECK_EQ(result.options->defines[1].second, std::string("a=b"));
+}
+
+TEST(options, E_asks_for_the_preprocessed_source)
+{
+	ParseResult result = parse({ "main.c", "-E" });
+	CHECK(result.options.has_value());
+	CHECK(result.options->emitPreprocessed);
+}
+
+TEST(options, an_option_that_needs_a_value_at_the_very_end_is_an_error)
+{
+	for (const char* flag : { "-I", "-D", "--ceres-path" })
+	{
+		std::vector<const char*> argv{ "main.c", flag };
+		std::ostringstream out;
+		std::optional<driver::Options> options = driver::parseOptions(argv, out);
+		CHECK(!options.has_value());
+		CHECK(contains(out.str(), flag));
+	}
 }

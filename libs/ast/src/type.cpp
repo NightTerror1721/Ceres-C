@@ -138,4 +138,60 @@ namespace ceresc::ast
 				return false;
 		}
 	}
+
+	// ---- qualifier changes -----------------------------------------------------------------------
+	//
+	// A scalar maps to one of the statics declared alongside it in type.h, so `const int` is the
+	// same object everywhere and costs no arena at all. A compound type (pointer, array, struct,
+	// enum) carries a payload, so it needs a copy - there is no static to reach for.
+
+	const Type* Type::withConst(support::Arena& arena, const Type* type) noexcept
+	{
+		if (!type || type->isConst())
+			return type;
+		switch (type->kind())
+		{
+			case TypeKind::Void:   return type; // `const void` is not a thing you can have one of
+			case TypeKind::Bool:   return &Type::ConstBool;
+			case TypeKind::Char:   return &Type::ConstChar;
+			case TypeKind::UChar:  return &Type::ConstUChar;
+			case TypeKind::SChar:  return &Type::ConstSChar;
+			case TypeKind::Short:  return &Type::ConstShort;
+			case TypeKind::UShort: return &Type::ConstUShort;
+			case TypeKind::Int:    return &Type::ConstInt;
+			case TypeKind::UInt:   return &Type::ConstUInt;
+			case TypeKind::Long:   return &Type::ConstLong;
+			case TypeKind::ULong:  return &Type::ConstULong;
+			case TypeKind::Float:  return &Type::ConstFloat;
+			case TypeKind::Double: return &Type::ConstDouble;
+			default:
+				break;
+		}
+		return makeCompound(arena, type->kind(), true, type->isVolatile(), type->_payload, type->_arraySize);
+	}
+
+	const Type* Type::withoutQualifiers(support::Arena& arena, const Type* type) noexcept
+	{
+		if (!type || (!type->isConst() && !type->isVolatile()))
+			return type;
+		switch (type->kind())
+		{
+			case TypeKind::Void:   return &Type::Void;
+			case TypeKind::Bool:   return &Type::Bool;
+			case TypeKind::Char:   return &Type::Char;
+			case TypeKind::UChar:  return &Type::UChar;
+			case TypeKind::SChar:  return &Type::SChar;
+			case TypeKind::Short:  return &Type::Short;
+			case TypeKind::UShort: return &Type::UShort;
+			case TypeKind::Int:    return &Type::Int;
+			case TypeKind::UInt:   return &Type::UInt;
+			case TypeKind::Long:   return &Type::Long;
+			case TypeKind::ULong:  return &Type::ULong;
+			case TypeKind::Float:  return &Type::Float;
+			case TypeKind::Double: return &Type::Double;
+			default:
+				break;
+		}
+		return makeCompound(arena, type->kind(), false, false, type->_payload, type->_arraySize);
+	}
 }

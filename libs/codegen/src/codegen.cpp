@@ -45,14 +45,16 @@ namespace ceresc::codegen
 		std::string floatReg(u32 n) { return std::format("f{}", n); }
 		std::string bankReg(u32 n, bool isFloat) { return isFloat ? floatReg(n) : intReg(n); }
 
-		std::string_view loadMnemonicFor(IrMemSize size, bool isFloat)
+		std::string_view loadMnemonicFor(IrMemSize size, bool isFloat, bool isSigned)
 		{
-			// All integer loads are unsigned in this version (§10/§14 of the architecture plan - a
-			// documented v1 simplification, not an oversight): `ldrb`/`ldrh`, never `ldrsb`/`ldrsh`.
-			// `ldr` auto-dispatches to FLDR for a float destination.
+			// The signedness comes from the LOADED TYPE, which only the IR knows - `ldrb`/`ldrh`
+			// zero-extend and `ldrsb`/`ldrsh` sign-extend (05-Instruction-Set.md), and picking the
+			// zero-extending pair unconditionally is what used to make a negative `signed char`
+			// read back as a large positive number. A Word load fills the register, so there is
+			// nothing to extend; `ldr` also auto-dispatches to FLDR for a float destination.
 			if (isFloat) return "ldr";
-			if (size == IrMemSize::Byte) return "ldrb";
-			if (size == IrMemSize::Half) return "ldrh";
+			if (size == IrMemSize::Byte) return isSigned ? "ldrsb" : "ldrb";
+			if (size == IrMemSize::Half) return isSigned ? "ldrsh" : "ldrh";
 			return "ldr";
 		}
 
@@ -72,30 +74,74 @@ namespace ceresc::codegen
 			return "str";
 		}
 
-		// A C identifier is not guaranteed to avoid CASM's own reserved words
-		// (10-Language-Syntax.md: `let`/`const`/`global`/`import`/`macro`/`endmacro`/`alias`/
-		// `struct`/`endstruct`, every type name including `byte`/`half`/`word`, `true`/`false`) - a
-		// Ceres-C function or global variable happening to be named exactly one of those would
-		// otherwise fail to assemble with a confusing syntax error instead of a Ceres-C diagnostic.
-		// Prefixing every user symbol sidesteps the whole collision class outright, without having
-		// to enumerate and track CASM's reserved-word list here. `main` is the one exception: it
-		// must keep its literal spelling, since the linker looks up a symbol named exactly `main`
-		// to set the program's entry point (12-Labels-and-Symbols.md) - the CASM keyword list has no
-		// entry that collides with it anyway.
+		// A C symbol keeps its own name in the generated CASM. That is what makes interoperability
+		// work in both directions without a decoder ring: a routine written in CASM is called from C
+		// under the name it was written with, and a C function is called from CASM under the name it
+		// was written with. See docs/07-CASM-Interop.md.
 		//
-		// Also handles IrModule's own synthesized string-literal labels (".str0", ".str1", ... -
-		// ir_builder.cpp's visit(StringLiteralExpr&)): a leading `.` means a LOCAL label in CASM
-		// (scoped to the nearest preceding global one, 10-Language-Syntax.md), not a file-scope data
-		// symbol, and an identifier cannot start with `.` at all - so `.str0` would fail to parse as
-		// a `let` name verbatim. Both this function and generateStringLiterals()/the GlobalAddr case
-		// below go through this same mangling, so a reference and its declaration always agree.
+		// The cost of that choice is a collision class the assembler has to be protected from: a C
+		// identifier is not guaranteed to avoid CASM's own reserved words. Rather than prefixing
+		// every symbol to dodge the whole class (which is what this used to do, and which made every
+		// interop declaration carry a `cc_` nobody could explain), the exact list is checked and a
+		// collision is a Ceres-C diagnostic - see isReservedCasmWord() and checkSymbolNames(). The
+		// list is small, and every name in it is either already a C keyword or an implausible
+		// identifier, so the error is rare and the message says exactly what to do about it.
+		//
+		// Still a function, and still called from both the definition and every reference, because
+		// of the one name that is NOT the C one: IrModule's synthesized string-literal labels
+		// (".str0", ".str1", ... - ir_builder.cpp's visit(StringLiteralExpr&)). A leading `.` means
+		// a LOCAL label in CASM (scoped to the nearest preceding global one, 10-Language-Syntax.md),
+		// not a file-scope data symbol, and an identifier cannot start with `.` at all - so `.str0`
+		// would fail to parse as a `let` name verbatim.
 		std::string mangledName(std::string_view name)
 		{
-			if (name == "main")
-				return std::string(name);
 			if (!name.empty() && name.front() == '.')
-				return std::format("cc{}", name.substr(1));
-			return std::format("cc_{}", name);
+				return std::format("__ccstr{}", name.substr(4)); // ".str7" -> "__ccstr7"
+			return std::string(name);
+		}
+
+		// Every word the CASM lexer refuses to read as an identifier, so a C symbol named one of
+		// them can be reported here instead of turning into an assembler syntax error nobody can
+		// trace back. Three groups, all verified against the assembler's own tables rather than the
+		// prose: KeywordType (common_defs.h), DataType::fromString() (data_type.h), the two boolean
+		// literals, and the register names the lexer reserves.
+		//
+		// Instruction mnemonics are deliberately NOT here: the assembler resolves a label named
+		// `add` or `print` perfectly well (a mnemonic is only a mnemonic in instruction position),
+		// and forbidding them would rule out a lot of ordinary C names for no reason.
+		bool isReservedCasmWord(std::string_view name)
+		{
+			static constexpr std::string_view kKeywords[] = {
+				"let", "const", "global", "import", "macro", "endmacro", "alias",
+				"struct", "endstruct", "align", "org", "assert", "interrupt",
+			};
+			static constexpr std::string_view kDataTypes[] = {
+				"u8", "u16", "u32", "i8", "i16", "i32", "f32", "ptr", "char", "bool",
+				"string", "port", "irq", "byte", "half", "word",
+			};
+			static constexpr std::string_view kLiterals[] = { "true", "false" };
+			static constexpr std::string_view kRegisterAliases[] = { "sp", "fp", "at", "lr" };
+
+			for (std::string_view reserved : kKeywords)
+				if (name == reserved) return true;
+			for (std::string_view reserved : kDataTypes)
+				if (name == reserved) return true;
+			for (std::string_view reserved : kLiterals)
+				if (name == reserved) return true;
+			for (std::string_view reserved : kRegisterAliases)
+				if (name == reserved) return true;
+
+			// rN / fN, the two register banks. Only with a decimal number attached - `r` and `f1x`
+			// are ordinary identifiers.
+			if (name.size() >= 2 && (name.front() == 'r' || name.front() == 'f'))
+			{
+				bool allDigits = true;
+				for (char c : name.substr(1))
+					allDigits = allDigits && (c >= '0' && c <= '9');
+				if (allDigits)
+					return true;
+			}
+			return false;
 		}
 
 		// Finds the FunctionDecl matching `name` among `unit`'s top-level declarations - IrModule
@@ -668,6 +714,34 @@ namespace ceresc::codegen
 						storeResult(p.result, dest, loc);
 						break;
 					}
+					case IrUnOp::Narrow:
+					{
+						// Sign-extending is one instruction either way (`sxtb`/`sxth`,
+						// 05-Instruction-Set.md); zero-extending is a mask, and `and`'s immediate is
+						// zero-extended to 32 bits, so 0xFFFF reaches the instruction intact rather
+						// than sign-extending to all-ones the way a displacement would.
+						std::string source = valueIn(p.operand, kScratchA, false, loc);
+						std::string dest = defineInto(p.result, kScratchA, false);
+						bool isByte = p.narrowSize == IrMemSize::Byte;
+						if (p.isUnsigned)
+							_emitter.instr(std::format("and {}, {}, {}", dest, source, isByte ? 255 : 65535), comment);
+						else
+							_emitter.instr(std::format("{} {}, {}", isByte ? "sxtb" : "sxth", dest, source), comment);
+						storeResult(p.result, dest, loc);
+						break;
+					}
+					case IrUnOp::ToBool:
+					{
+						// C's int-to-bool rule is "zero stays zero, anything else becomes one", which
+						// unsigned `min` says exactly: min(x, 1) is 0 only when x is 0. One
+						// instruction, and no branch - unlike the comparison-as-a-value synthesis the
+						// missing `setcc` forces everywhere else (§9).
+						std::string source = valueIn(p.operand, kScratchA, false, loc);
+						std::string dest = defineInto(p.result, kScratchA, false);
+						_emitter.instr(std::format("min {}, {}, 1", dest, source), comment);
+						storeResult(p.result, dest, loc);
+						break;
+					}
 					case IrUnOp::IntToFloat:
 					{
 						std::string source = valueIn(p.operand, kScratchA, false, loc);
@@ -753,7 +827,7 @@ namespace ceresc::codegen
 				// load form computes its address before writing rd (05-Instruction-Set.md's LDR/LDRX,
 				// and the VM's own handlers), so `ldr r5, [r4 + r5]` is well defined.
 				std::string dest = defineInto(p.result, kScratchB, p.isFloat);
-				_emitter.instr(std::format("{} {}, {}", loadMnemonicFor(p.size, p.isFloat), dest, address), comment);
+				_emitter.instr(std::format("{} {}, {}", loadMnemonicFor(p.size, p.isFloat, p.isSigned), dest, address), comment);
 				storeResult(p.result, dest, loc);
 				break;
 			}
@@ -994,7 +1068,11 @@ namespace ceresc::codegen
 
 		bool isEntryPoint = decl.name() == "main"; // must be `global` - 12-Labels-and-Symbols.md's "The main entry point"
 		_generatingMain = isEntryPoint;
-		_emitter.label(isEntryPoint ? std::format("global {}", mangledName(decl.name())) : mangledName(decl.name()));
+		// `global` is what publishes a symbol to the linker (12-Labels-and-Symbols.md), so it is
+		// exactly C's external linkage: everything except a `static` function. `main` gets it
+		// regardless - the linker looks that name up to find the entry point.
+		bool exported = isEntryPoint || decl.hasExternalLinkage();
+		_emitter.label(exported ? std::format("global {}", mangledName(decl.name())) : mangledName(decl.name()));
 
 		SourceLocation entryLoc = decl.location();
 		if (_hasFrame)
@@ -1233,10 +1311,13 @@ namespace ceresc::codegen
 		return true;
 	}
 
-	void CodeGen::generateAggregateGlobal(const VarDecl& decl)
+	void CodeGen::generateAggregateGlobal(const VarDecl& decl, std::string_view symbolName, bool exported)
 	{
 		const Type* type = decl.type();
-		std::string name = mangledName(decl.name());
+		// `global let NAME` - the keyword comes first, before `let`, and is what publishes the
+		// symbol to the linker (12-Labels-and-Symbols.md).
+		std::string let = exported ? "global let" : "let";
+		std::string name{ symbolName };
 		std::string typeComment = std::format("{} ({} bytes)", AstPrinter::typeName(type), type->sizeInBytes());
 
 		// An array of scalars keeps its real shape - both because it reads better and because the
@@ -1245,7 +1326,7 @@ namespace ceresc::codegen
 		{
 			if (!decl.initializer())
 			{
-				_emitter.raw(std::format("let {}: {}", name, arrayType));
+				_emitter.raw(std::format("{} {}: {}", let, name, arrayType));
 				return;
 			}
 			std::optional<std::string> values = scalarArrayInitText(type, decl.initializer());
@@ -1254,7 +1335,7 @@ namespace ceresc::codegen
 				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 				return;
 			}
-			_emitter.raw(std::format("let {}: {} = {}", name, arrayType, *values));
+			_emitter.raw(std::format("{} {}: {} = {}", let, name, arrayType, *values));
 			return;
 		}
 
@@ -1265,7 +1346,7 @@ namespace ceresc::codegen
 		u32 words = (type->sizeInBytes() + 3) / 4;
 		if (!decl.initializer())
 		{
-			_emitter.raw(std::format("let {}: u32[{}]   // {}", name, words, typeComment));
+			_emitter.raw(std::format("{} {}: u32[{}]   // {}", let, name, words, typeComment));
 			return;
 		}
 
@@ -1285,25 +1366,28 @@ namespace ceresc::codegen
 				values += ", ";
 			values += std::format("0x{:08X}", value);
 		}
-		_emitter.raw(std::format("let {}: u32[{}] = [{}]   // {}", name, words, values, typeComment));
+		_emitter.raw(std::format("{} {}: u32[{}] = [{}]   // {}", let, name, words, values, typeComment));
 	}
 
-	void CodeGen::generateGlobal(const VarDecl& decl)
+	void CodeGen::generateGlobal(const VarDecl& decl, std::string_view symbolName, bool exported)
 	{
 		const Type* type = decl.type();
 		if (!type)
 			return;
 		if (type->isArray() || type->isStruct())
 		{
-			generateAggregateGlobal(decl);
+			generateAggregateGlobal(decl, symbolName, exported);
 			return;
 		}
 
 		std::string casmType = fieldTypeName(type->sizeInBytes(), type->isFloat());
-		std::string name = mangledName(decl.name());
+		// `global let NAME` - the keyword comes first, before `let`, and is what publishes the
+		// symbol to the linker (12-Labels-and-Symbols.md).
+		std::string let = exported ? "global let" : "let";
+		std::string name{ symbolName };
 		if (!decl.initializer())
 		{
-			_emitter.raw(std::format("let {}: {}", name, casmType));
+			_emitter.raw(std::format("{} {}: {}", let, name, casmType));
 			return;
 		}
 
@@ -1315,7 +1399,7 @@ namespace ceresc::codegen
 				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 				return;
 			}
-			_emitter.raw(std::format("let {}: {} = {}", name, casmType, *value));
+			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));
 		}
 		else
 		{
@@ -1325,7 +1409,7 @@ namespace ceresc::codegen
 				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 				return;
 			}
-			_emitter.raw(std::format("let {}: {} = {}", name, casmType, *value));
+			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));
 		}
 	}
 
@@ -1340,32 +1424,161 @@ namespace ceresc::codegen
 
 	// ---- entry point ------------------------------------------------------------------------------
 
-	std::string CodeGen::generate(const TranslationUnit& unit, const IrModule& module)
+	void CodeGen::checkSymbolNames(const TranslationUnit& unit, const IrModule& module)
 	{
-		std::vector<const VarDecl*> initializedGlobals, uninitializedGlobals;
+		auto check = [&](std::string_view name, support::SourceLocation location, std::string_view what)
+		{
+			if (!isReservedCasmWord(name))
+				return;
+			_diagnostics.error(location,
+				"'{}' cannot be used as the name of a {}: it is a reserved word in CeresASM, and a C symbol "
+				"keeps its own name in the generated assembly (see docs/07-CASM-Interop.md). Rename it.",
+				name, what);
+		};
+
 		for (Decl* decl : unit.decls())
 		{
-			if (auto* varDecl = dynamic_cast<VarDecl*>(decl))
-				(varDecl->initializer() ? initializedGlobals : uninitializedGlobals).push_back(varDecl);
+			if (auto* function = dynamic_cast<FunctionDecl*>(decl))
+				check(function->name(), function->location(), "function");
+			else if (auto* variable = dynamic_cast<VarDecl*>(decl))
+				check(variable->name(), variable->location(), "global variable");
+		}
+		// A `static` local becomes a file-scope CASM symbol too, under a name that already carries
+		// its function's - so it cannot collide by accident, only by the user's own choice of the
+		// part that comes from C.
+		for (const IrStaticLocal& local : module.staticLocals())
+			check(local.decl->name(), local.decl->location(), "static local variable");
+	}
+
+	std::vector<ExternalDeclaration> CodeGen::collectExternalDeclarations(const TranslationUnit& unit) const
+	{
+		std::vector<ExternalDeclaration> declarations;
+		for (Decl* decl : unit.decls())
+		{
+			if (auto* function = dynamic_cast<FunctionDecl*>(decl))
+			{
+				// Prototypes count as much as definitions: a unit that only declares `int f(int);`
+				// still needs every OTHER unit to agree on the name, and whichever one defines it
+				// will contribute the same entry. The driver keeps one copy.
+				if (!function->hasExternalLinkage())
+					continue;
+				declarations.push_back(ExternalDeclaration{ std::string(function->name()), true, "@text", {} });
+				continue;
+			}
+
+			auto* variable = dynamic_cast<VarDecl*>(decl);
+			if (!variable || variable->storageClass() == ast::StorageClass::Static)
+				continue;
+			const Type* type = variable->type();
+			if (!type)
+				continue;
+
+			std::string section = "@bss";
+			if (variable->initializer())
+				section = type->isConst() ? "@rodata" : "@data";
+
+			// The declared SHAPE has to match the definition's, since that is the whole reason the
+			// declaration exists - so it is built by the same two functions that build the real one.
+			std::string typeText;
+			if (type->isArray() || type->isStruct())
+			{
+				typeText = scalarArrayTypeName(type);
+				if (typeText.empty())
+					typeText = std::format("u32[{}]", (type->sizeInBytes() + 3) / 4);
+			}
+			else
+			{
+				typeText = fieldTypeName(type->sizeInBytes(), type->isFloat());
+			}
+			declarations.push_back(ExternalDeclaration{ std::string(variable->name()), false, std::move(section), std::move(typeText) });
+		}
+		return declarations;
+	}
+
+	std::string CodeGen::generate(const TranslationUnit& unit, const IrModule& module)
+	{
+		checkSymbolNames(unit, module);
+
+		// Four buckets, not two. `const` with an initializer goes to @rodata, where the machine
+		// itself enforces the qualifier - a store into it raises MemoryFault instead of quietly
+		// working (02-Memory.md). An `extern` declaration with no initializer defines nothing at
+		// all: the storage belongs to whatever unit or CASM file does define it, and emitting a
+		// second copy here would be a duplicate-symbol error at link time, or worse, two variables.
+		//
+		// One definition per NAME, too. A name may legally be declared several times at file scope -
+		// an `extern` in a header plus the definition in the source that includes it is the ordinary
+		// case, and two bare `int x;` tentative definitions are legal C as well - but it names one
+		// object, and emitting a second `let` for it would be a duplicate symbol. The declaration
+		// with an initializer wins; failing that, the first one seen.
+		std::vector<const VarDecl*> definitions;
+		std::unordered_map<std::string_view, usize> definitionIndex;
+		for (Decl* decl : unit.decls())
+		{
+			auto* varDecl = dynamic_cast<VarDecl*>(decl);
+			if (!varDecl || varDecl->isExternDeclaration())
+				continue;
+			auto [it, inserted] = definitionIndex.try_emplace(varDecl->name(), definitions.size());
+			if (inserted)
+				definitions.push_back(varDecl);
+			else if (varDecl->initializer())
+				definitions[it->second] = varDecl;
 		}
 
-		if (!initializedGlobals.empty())
+		std::vector<const VarDecl*> dataGlobals, bssGlobals, rodataGlobals;
+		for (const VarDecl* varDecl : definitions)
 		{
-			_emitter.raw("@data");
-			for (const VarDecl* g : initializedGlobals)
-				generateGlobal(*g);
-			_emitter.blank();
+			if (!varDecl->initializer())
+				bssGlobals.push_back(varDecl);
+			else if (varDecl->type() && varDecl->type()->isConst())
+				rodataGlobals.push_back(varDecl);
+			else
+				dataGlobals.push_back(varDecl);
 		}
-		if (!uninitializedGlobals.empty())
+		// A `static` local is an ordinary file-scope variable that happens to be spelled inside a
+		// function - same three buckets, never `global`. Its CASM name is not its C name, so the
+		// two are kept side by side for the emission loop below.
+		std::unordered_map<const VarDecl*, std::string_view> staticLocalNames;
+		for (const IrStaticLocal& local : module.staticLocals())
+			staticLocalNames.emplace(local.decl, local.name);
+		for (const IrStaticLocal& local : module.staticLocals())
 		{
-			_emitter.raw("@bss");
-			for (const VarDecl* g : uninitializedGlobals)
-				generateGlobal(*g);
-			_emitter.blank();
+			if (!local.decl->initializer())
+				bssGlobals.push_back(local.decl);
+			else if (local.decl->type() && local.decl->type()->isConst())
+				rodataGlobals.push_back(local.decl);
+			else
+				dataGlobals.push_back(local.decl);
 		}
-		if (!module.stringLiterals().empty())
+
+		auto emitBucket = [&](std::string_view section, const std::vector<const VarDecl*>& bucket)
+		{
+			if (bucket.empty())
+				return;
+			_emitter.raw(section);
+			for (const VarDecl* g : bucket)
+			{
+				auto it = staticLocalNames.find(g);
+				bool isStaticLocal = it != staticLocalNames.end();
+				std::string_view symbolName = isStaticLocal ? it->second : g->name();
+				// A `static` of either kind has internal linkage and is not published.
+				bool exported = !isStaticLocal && g->storageClass() != ast::StorageClass::Static;
+				generateGlobal(*g, symbolName, exported);
+			}
+			_emitter.blank();
+		};
+
+		emitBucket("@data", dataGlobals);
+		emitBucket("@bss", bssGlobals);
+		if (!rodataGlobals.empty() || !module.stringLiterals().empty())
 		{
 			_emitter.raw("@rodata");
+			for (const VarDecl* g : rodataGlobals)
+			{
+				auto it = staticLocalNames.find(g);
+				bool isStaticLocal = it != staticLocalNames.end();
+				generateGlobal(*g, isStaticLocal ? it->second : g->name(),
+					!isStaticLocal && g->storageClass() != ast::StorageClass::Static);
+			}
 			generateStringLiterals(module);
 			_emitter.blank();
 		}

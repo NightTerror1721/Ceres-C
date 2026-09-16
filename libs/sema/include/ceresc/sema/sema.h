@@ -181,6 +181,18 @@ namespace ceresc::sema
 		static bool isCharType(const ast::Type* type) noexcept;
 
 		bool declareSymbol(const Symbol& symbol);
+
+		// The rules a storage-class specifier carries that are not about types: where each one is
+		// allowed to appear, and what it demands of an initializer. `static` is the interesting one -
+		// its initializer becomes bytes in the loaded image, so it has to be computable now.
+		void checkStorageClass(ast::VarDecl& node);
+
+		// True for an expression whose value the compiler can work out without running anything -
+		// what a variable with static storage (a global, or a `static` local) needs its initializer
+		// to be. Deliberately syntactic: it recognizes the shapes that are constant rather than
+		// trying to evaluate them, because the evaluation itself belongs to libs/codegen, which is
+		// where the target's own arithmetic lives.
+		bool isConstantInitializer(const ast::Expr* expr) const;
 		void collectLabels(ast::Stmt* stmt, std::vector<std::string_view>& out);
 
 		static const ast::Type* errorRecoveryType() noexcept;

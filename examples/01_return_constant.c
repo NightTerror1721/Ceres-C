@@ -1,10 +1,13 @@
 // 01 - the smallest program that goes through the whole pipeline.
 //
-// Ceres-C has no standard library and no preprocessor, so there is no <stdio.h> to include and no
-// printf to call. A character reaches the terminal the same way a hand-written CASM program does
-// it: by storing a byte into the TerminalDevice's output register at 0xFF000004 (CeresASM's
-// docs/07-IO-Devices-and-Ports.md). Every example here starts with the same two or three lines,
-// on purpose - nothing is hidden behind a runtime.
+// Ceres-C has no standard library, so there is no <stdio.h> to include and no printf to call. A
+// character reaches the terminal the same way a hand-written CASM program does it: by storing a
+// byte into the TerminalDevice's output register at 0xFF000004 (CeresASM's
+// docs/07-IO-Devices-and-Ports.md). Every example here starts with the same two or three lines, on
+// purpose - nothing is hidden behind a runtime.
+//
+// There IS a preprocessor (#include, #define, #pragma once - see docs/08-Preprocessor.md), but
+// nothing to include yet: examples/interop/ is where headers earn their keep.
 //
 // `main` does not return to anyone: the generated code halts the machine through the
 // SystemControlDevice instead, so `return 0` here only means "stop", never an exit code.

@@ -138,7 +138,7 @@ struct __frame_suma_array
     ...
     slot31: u32
 endstruct
-cc_suma_array:
+global suma_array:
     enter __frame_suma_array // examples/15_suma_array.c:17
     str [sp + __frame_suma_array.slot0], r0 // examples/15_suma_array.c:17
     str [sp + __frame_suma_array.slot1], r1 // examples/15_suma_array.c:17
@@ -188,7 +188,7 @@ ceresc examples/15_suma_array.c -O2 -o suma-opt.casm
 struct __frame_suma_array
     slot0: u32
 endstruct
-cc_suma_array:
+global suma_array:
     enter __frame_suma_array // examples/15_suma_array.c:17
 .L0:
     li r3, 0              // examples/15_suma_array.c:19

@@ -1,0 +1,29 @@
+// The other direction: assembly calling into C.
+//
+// An object cannot name a symbol it has never seen declared - the assembler picks an opcode from
+// the shape of an operand, long before anything has an address (docs/25-Separate-Compilation.md of
+// CeresASM). So this imports the declarations file ceresc generates for the program, which lists
+// every function and global the C units publish. An import contributes no bytes, only names.
+//
+// The file is named after the program's output: `-o hello.cres` produces `hello.decls.casm`.
+
+import "hello.decls.casm"
+
+@rodata
+let bannerText: u8[9] = "[ceres] "
+
+@text
+
+global showBanner:
+    la   r5, bannerText
+.loop:
+    ldrb r0, [r5 + 0]
+    cmp  r0, 0
+    jz   .done
+    push r5             // `put` is a C function: it may clobber r0-r7, so save what we need
+    call put
+    pop  r5
+    add  r5, r5, 1
+    jp   .loop
+.done:
+    ret

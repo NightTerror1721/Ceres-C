@@ -169,7 +169,7 @@ TEST(codegen, arithmetic_at_O0_reloads_every_operand_from_its_own_frame_slot)
 		"    slot5: u32\n"
 		"    slot6: u32\n"
 		"endstruct\n"
-		"cc_add:\n"
+		"global add:\n"
 		"    enter __frame_add     // test.c:1\n"
 		"    str [sp + __frame_add.slot0], r0 // test.c:1\n"
 		"    str [sp + __frame_add.slot1], r1 // test.c:1\n"
@@ -202,7 +202,7 @@ TEST(codegen, arithmetic_at_O2_is_frameless_and_stays_in_registers)
 		"@text\n"
 		"\n"
 		"// add - test.c:1\n"
-		"cc_add:\n"
+		"global add:\n"
 		".L0:\n"
 		"    mov r3, r0            // test.c:1\n"
 		"    mov r2, r1            // test.c:1\n"
@@ -219,7 +219,7 @@ TEST(codegen, comparison_used_as_a_value_still_materializes_at_O2)
 		"@text\n"
 		"\n"
 		"// lessThan - test.c:1\n"
-		"cc_lessThan:\n"
+		"global lessThan:\n"
 		".L0:\n"
 		"    mov r3, r0            // test.c:1\n"
 		"    mov r2, r1            // test.c:1\n"
@@ -241,7 +241,7 @@ TEST(codegen, comparison_used_as_a_condition_fuses_into_one_branch_at_O2)
 		"@text\n"
 		"\n"
 		"// clamp - test.c:1\n"
-		"cc_clamp:\n"
+		"global clamp:\n"
 		".L0:\n"
 		"    mov r3, r0            // test.c:1\n"
 		"    mov r2, r1            // test.c:1\n"
@@ -274,7 +274,7 @@ TEST(codegen, comparison_used_as_a_condition_at_O0_materializes_then_branches)
 		"    slot8: u32\n"
 		"    slot9: u32\n"
 		"endstruct\n"
-		"cc_clamp:\n"
+		"global clamp:\n"
 		"    enter __frame_clamp   // test.c:1\n"
 		"    str [sp + __frame_clamp.slot0], r0 // test.c:1\n"
 		"    str [sp + __frame_clamp.slot1], r1 // test.c:1\n"
@@ -343,7 +343,7 @@ TEST(codegen, recursion_at_O0)
 		"    slot13: u32\n"
 		"    slot14: u32\n"
 		"endstruct\n"
-		"cc_factorial:\n"
+		"global factorial:\n"
 		"    enter __frame_factorial // test.c:1\n"
 		"    str [sp + __frame_factorial.slot0], r0 // test.c:1\n"
 		".L0:\n"
@@ -395,7 +395,7 @@ TEST(codegen, recursion_at_O0)
 		"    str [sp + __frame_factorial.slot12], r4 // test.c:1\n"
 		"    ldr r4, [sp + __frame_factorial.slot12] // test.c:1\n"
 		"    mov r0, r4            // test.c:1\n"
-		"    call cc_factorial     // test.c:1\n"
+		"    call factorial        // test.c:1\n"
 		"    mov r4, r0            // test.c:1\n"
 		"    str [sp + __frame_factorial.slot13], r4 // test.c:1\n"
 		"    ldr r4, [sp + __frame_factorial.slot8] // test.c:1\n"
@@ -423,7 +423,7 @@ TEST(codegen, recursion_at_O2)
 		"    slot0: u32\n"
 		"    slot1: u32\n"
 		"endstruct\n"
-		"cc_factorial:\n"
+		"global factorial:\n"
 		"    enter __frame_factorial // test.c:1\n"
 		"    str [sp + __frame_factorial.slot0], r0 // test.c:1\n"
 		".L0:\n"
@@ -443,7 +443,7 @@ TEST(codegen, recursion_at_O2)
 		"    ldr r7, [r12]         // test.c:1\n"
 		"    sub r6, r7, 1         // test.c:1\n"
 		"    mov r0, r6            // test.c:1\n"
-		"    call cc_factorial     // test.c:1\n"
+		"    call factorial        // test.c:1\n"
 		"    mov r6, r0            // test.c:1\n"
 		"    ldr r4, [sp + __frame_factorial.slot1] // test.c:1\n"
 		"    imul r7, r4, r6       // test.c:1\n"
@@ -461,7 +461,7 @@ TEST(codegen, float_division_and_conversion_at_O2)
 		"@text\n"
 		"\n"
 		"// halveToInt - test.c:1\n"
-		"cc_halveToInt:\n"
+		"global halveToInt:\n"
 		".L0:\n"
 		"    mov f3, f0            // test.c:1\n"
 		"    la r4, 1073741824     // test.c:1\n"
@@ -492,8 +492,9 @@ TEST(codegen, inlining_a_small_function_at_O2)
 {
 	// `add` is spliced in, the arguments fold through it, and the callee then has no remaining
 	// caller at all - so unused-function elimination drops its body entirely. The generated text
-	// has no `cc_add` in it.
-	CHECK_EQ(atO2("int add(int a, int b) { return a + b; } int main() { return add(3, 4); }"),
+	// has no `add` in it. It has to be `static` for that last step: a function with external
+	// linkage is kept whatever this unit does with it, since another object may call it.
+	CHECK_EQ(atO2("static int add(int a, int b) { return a + b; } int main() { return add(3, 4); }"),
 		"@text\n"
 		"\n"
 		"// main - test.c:1\n"
@@ -516,7 +517,7 @@ TEST(codegen, a_loop_at_O2)
 		"@text\n"
 		"\n"
 		"// sum - test.c:1\n"
-		"cc_sum:\n"
+		"global sum:\n"
 		".L0:\n"
 		"    li r3, 0              // test.c:1\n"
 		"    mov r6, r3            // test.c:1\n"
@@ -675,11 +676,11 @@ TEST(codegen, fallthrough_drops_the_jump_to_the_block_emitted_next)
 TEST(codegen, unused_function_elimination_is_what_removes_the_inlined_callees_body)
 {
 	// Inlining alone does not delete the original - it only stops the caller from calling it. Both
-	// halves have to be on for `cc_add` to disappear, and this pins which one does which.
-	std::string_view source = "int add(int a, int b) { return a + b; } int main() { return add(3, 4); }";
+	// halves have to be on for `add` to disappear, and this pins which one does which.
+	std::string_view source = "static int add(int a, int b) { return a + b; } int main() { return add(3, 4); }";
 
-	CHECK(!contains(atO2(source), "cc_add"));
-	CHECK(contains(generateCasm(source, without(&support::OptimizationOptions::unusedFunctionElimination)), "cc_add:"));
+	CHECK(!contains(atO2(source), "add"));
+	CHECK(contains(generateCasm(source, without(&support::OptimizationOptions::unusedFunctionElimination)), "add:"));
 }
 
 TEST(codegen, an_exported_function_is_kept_even_when_nothing_in_this_file_calls_it)
@@ -687,7 +688,7 @@ TEST(codegen, an_exported_function_is_kept_even_when_nothing_in_this_file_calls_
 	// No `main` in this translation unit, so there is no entry point to measure reachability from
 	// and nothing may be dropped - see ir_optimizer.cpp's removeUnusedFunctions().
 	std::string text = atO2("int helper(int a) { return a + 1; }");
-	CHECK(contains(text, "cc_helper:"));
+	CHECK(contains(text, "helper:"));
 }
 
 TEST(codegen, turning_one_flag_on_top_of_O0_changes_only_that_one_thing)
@@ -714,7 +715,7 @@ TEST(codegen, an_array_element_read_uses_the_indexed_load_form)
 		"@text\n"
 		"\n"
 		"// sum - test.c:1\n"
-		"cc_sum:\n"
+		"global sum:\n"
 		".L0:\n"
 		"    mov r3, r0            // test.c:1\n"
 		"    mov r2, r1            // test.c:1\n"
@@ -737,7 +738,7 @@ TEST(codegen, a_struct_field_read_uses_a_constant_displacement_not_a_separate_ad
 		"@text\n"
 		"\n"
 		"// gety - test.c:1\n"
-		"cc_gety:\n"
+		"global gety:\n"
 		".L0:\n"
 		"    mov r3, r0            // test.c:1\n"
 		"    ldr r3, [r3 + 4]      // test.c:1\n"
@@ -795,20 +796,20 @@ TEST(codegen, aggregate_globals_get_a_let_of_their_own_shape)
 		"int board[2][3];\n"
 		"int first() { return primes[0]; }"),
 		"@data\n"
-		"let cc_primes: u32[4] = [2, 3, 5, 7]\n"
-		"let cc_name: u8[8] = \"ada\"\n"
-		"let cc_start: u32[2] = [0x00000001, 0x00000002]   // struct P (8 bytes)\n"
+		"global let primes: u32[4] = [2, 3, 5, 7]\n"
+		"global let name: u8[8] = \"ada\"\n"
+		"global let start: u32[2] = [0x00000001, 0x00000002]   // struct P (8 bytes)\n"
 		"\n"
 		"@bss\n"
-		"let cc_cursor: u32[2]   // struct P (8 bytes)\n"
-		"let cc_board: u32[2][3]\n"
+		"global let cursor: u32[2]   // struct P (8 bytes)\n"
+		"global let board: u32[2][3]\n"
 		"\n"
 		"@text\n"
 		"\n"
 		"// first - test.c:7\n"
-		"cc_first:\n"
+		"global first:\n"
 		".L0:\n"
-		"    la r3, cc_primes      // test.c:7\n"
+		"    la r3, primes         // test.c:7\n"
 		"    ldr r2, [r3]          // test.c:7\n"
 		"    mov r0, r2            // test.c:7\n"
 		"    ret                   // test.c:7\n");
@@ -817,25 +818,25 @@ TEST(codegen, aggregate_globals_get_a_let_of_their_own_shape)
 TEST(codegen, a_nested_global_array_initializer_keeps_its_nesting)
 {
 	std::string text = atO2("int grid[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } }; int first() { return grid[0][0]; }");
-	CHECK(contains(text, "let cc_grid: u32[2][3] = [[1, 2, 3], [4, 5, 6]]"));
+	CHECK(contains(text, "global let grid: u32[2][3] = [[1, 2, 3], [4, 5, 6]]"));
 }
 
 TEST(codegen, a_global_array_accepts_individually_braced_scalar_values)
 {
 	std::string text = atO2("int values[2] = { { 1 }, { 2 } }; int first() { return values[0]; }");
-	CHECK(contains(text, "let cc_values: u32[2] = [1, 2]"));
+	CHECK(contains(text, "global let values: u32[2] = [1, 2]"));
 }
 
 TEST(codegen, a_nested_char_array_global_uses_byte_lists_for_string_rows)
 {
 	std::string text = atO2("char names[2][4] = { \"ab\", \"cd\" }; int first() { return names[1][0]; }");
-	CHECK(contains(text, "let cc_names: u8[2][4] = [\"ab\", \"cd\"]"));
+	CHECK(contains(text, "global let names: u8[2][4] = [\"ab\", \"cd\"]"));
 }
 
 TEST(codegen, a_global_float_array_declares_f32_elements)
 {
 	std::string text = atO2("float scale[2] = { 1.5, 2.5 }; float first() { return scale[0]; }");
-	CHECK(contains(text, "let cc_scale: f32[2] = [1.5, 2.5]"));
+	CHECK(contains(text, "global let scale: f32[2] = [1.5, 2.5]"));
 }
 
 TEST(codegen, a_global_structs_word_image_places_narrow_fields_at_their_real_offsets)
@@ -846,7 +847,7 @@ TEST(codegen, a_global_structs_word_image_places_narrow_fields_at_their_real_off
 		"struct Mixed { char a; int b; short c; };"
 		"struct Mixed m = { 1, 2, 3 };"
 		"int first() { return m.b; }");
-	CHECK(contains(text, "let cc_m: u32[3] = [0x00000001, 0x00000002, 0x00000003]   // struct Mixed (12 bytes)"));
+	CHECK(contains(text, "global let m: u32[3] = [0x00000001, 0x00000002, 0x00000003]   // struct Mixed (12 bytes)"));
 }
 
 TEST(codegen, a_non_constant_global_initializer_is_diagnosed_rather_than_guessed_at)
@@ -880,7 +881,7 @@ TEST(codegen, a_struct_returning_function_takes_a_hidden_destination_pointer_in_
 	std::string text = atO2(
 		"struct P { int x; int y; };"
 		"struct P scaled(int n) { struct P p; p.x = n; p.y = n; return p; }");
-	CHECK(contains(text, "cc_scaled:"));
+	CHECK(contains(text, "scaled:"));
 	CHECK(contains(text, "mov r0, "));  // the destination pointer goes back out in ret0
 	CHECK(contains(text, "r1"));        // n arrived one register along
 }
@@ -928,4 +929,72 @@ TEST(codegen, float_negation_still_uses_the_neg_pseudo)
 	// is left alone - the workaround above is as narrow as the bug it works around.
 	std::string text = atO0("float negate(float x) { return -x; }");
 	CHECK(contains(text, "neg f"));
+}
+
+// ---- integer conversions: width and signedness ------------------------------------------------
+
+TEST(codegen, a_signed_narrow_load_uses_the_sign_extending_instruction)
+{
+	// `ldrb`/`ldrh` zero-extend and `ldrsb`/`ldrsh` sign-extend (05-Instruction-Set.md). Which pair
+	// a load gets comes from the loaded type, and getting it from nowhere at all is what used to
+	// make a negative `signed char` read back as 253.
+	std::string signedByte = atO0("int read(signed char* p) { return *p; }");
+	CHECK(contains(signedByte, "ldrsb "));
+	CHECK(!contains(signedByte, "ldrb "));
+
+	std::string unsignedByte = atO0("int read(unsigned char* p) { return *p; }");
+	CHECK(contains(unsignedByte, "ldrb "));
+	CHECK(!contains(unsignedByte, "ldrsb "));
+
+	std::string signedHalf = atO0("int read(short* p) { return *p; }");
+	CHECK(contains(signedHalf, "ldrsh "));
+
+	std::string unsignedHalf = atO0("int read(unsigned short* p) { return *p; }");
+	CHECK(contains(unsignedHalf, "ldrh "));
+	CHECK(!contains(unsignedHalf, "ldrsh "));
+}
+
+TEST(codegen, a_word_load_never_asks_for_an_extension_it_does_not_need)
+{
+	// `int` is signed, but a word load already fills the register - there is no `ldrs` form and
+	// asking for one by mechanically threading isSigned() through would be a syntax error.
+	std::string text = atO0("int read(int* p) { return *p; }");
+	CHECK(contains(text, "ldr "));
+	CHECK(!contains(text, "ldrs"));
+}
+
+TEST(codegen, narrowing_to_a_signed_type_sign_extends_and_to_an_unsigned_one_masks)
+{
+	// `sxtb`/`sxth` for the signed side; `and` with a zero-extended immediate for the unsigned one
+	// (verified against the assembler: ANDI's imm16 does NOT sign-extend, so 65535 arrives intact).
+	std::string toChar = atO2("int opaque(int v); int f(int n) { return (signed char)opaque(n); }");
+	CHECK(contains(toChar, "sxtb "));
+
+	std::string toShort = atO2("int opaque(int v); int f(int n) { return (short)opaque(n); }");
+	CHECK(contains(toShort, "sxth "));
+
+	std::string toUChar = atO2("int opaque(int v); int f(int n) { return (unsigned char)opaque(n); }");
+	CHECK(contains(toUChar, "and "));
+	CHECK(contains(toUChar, ", 255"));
+
+	std::string toUShort = atO2("int opaque(int v); int f(int n) { return (unsigned short)opaque(n); }");
+	CHECK(contains(toUShort, ", 65535"));
+}
+
+TEST(codegen, converting_to_bool_is_one_unsigned_min_and_no_branch)
+{
+	// C says "zero stays zero, anything else becomes one", which unsigned `min` states exactly.
+	// Doing it as a comparison would cost the four-instruction setcc synthesis instead (§9).
+	std::string text = atO2("int opaque(int v); bool f(int n) { return opaque(n); }");
+	CHECK(contains(text, "min "));
+	CHECK(contains(text, ", 1"));
+}
+
+TEST(codegen, a_narrowing_conversion_of_a_constant_folds_away)
+{
+	// Every `char c = 'a';` goes through a Narrow now. If it survived to the back end, -O1 would
+	// emit an `sxtb` of a literal in front of each one.
+	std::string text = atO2("char letter() { return 'a'; }");
+	CHECK(!contains(text, "sxtb "));
+	CHECK(!contains(text, "and "));
 }

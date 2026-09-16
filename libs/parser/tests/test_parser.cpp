@@ -897,3 +897,56 @@ TEST(parser, struct_typedef_and_switch_work_together_in_one_program)
 	CHECK(!diagnostics.hasErrors());
 	CHECK_EQ(unit->decls().size(), (usize)3);
 }
+
+// ---- declaration specifiers ---------------------------------------------------------------------
+
+TEST(parser, const_qualifies_the_base_type_on_either_side_of_it)
+{
+	// `const int` and `int const` are the same type, and both must qualify the int itself.
+	CHECK_EQ(printDecl("const int x = 1;"), "(var x const int 1)");
+	CHECK_EQ(printDecl("int const x = 1;"), "(var x const int 1)");
+}
+
+TEST(parser, const_before_the_star_qualifies_the_pointee_and_after_it_the_pointer)
+{
+	// The one place a misplaced qualifier silently produces a different, wrong type - which is why
+	// the leading `const` is threaded into the type name rather than applied to the finished type.
+	CHECK_EQ(printDecl("const char* p;"), "(var p const char* <null>)");
+	CHECK_EQ(printDecl("char* const p;"), "(var p const char* <null>)");
+	CHECK_EQ(printDecl("const char* const p;"), "(var p const const char* <null>)");
+}
+
+TEST(parser, a_storage_class_may_come_before_or_after_const)
+{
+	// C allows the specifiers in any order, so neither spelling may be the only one that parses.
+	CHECK_EQ(printDecl("static const int x = 1;"), "(var x const int 1)");
+	CHECK_EQ(printDecl("const static int x = 1;"), "(var x const int 1)");
+}
+
+TEST(parser, a_declaration_may_begin_with_its_storage_class_in_statement_position_too)
+{
+	// A statement that starts with `static` is a declaration, not an expression - reaching the
+	// expression parser with that token in hand is what used to produce "expected expression".
+	CHECK_EQ(printStmt("static int n = 1;"), "(decl-stmt (var n int 1))");
+	CHECK_EQ(printStmt("extern int n;"), "(decl-stmt (var n int <null>))");
+	CHECK_EQ(printStmt("auto int n = 1;"), "(decl-stmt (var n int 1))");
+	CHECK_EQ(printStmt("const int n = 1;"), "(decl-stmt (var n const int 1))");
+}
+
+TEST(parser, a_for_loop_may_declare_its_index_with_a_specifier)
+{
+	CHECK(printStmt("for (const int i = 0; i < 3; ) { }").find("(for") == 0);
+	CHECK(printStmt("for (static int i = 0; i < 3; ) { }").find("(for") == 0);
+}
+
+TEST(parser, a_parameter_may_be_const_qualified)
+{
+	CHECK_EQ(printDecl("int length(const char* text);"),
+		"(func length int (params (const char* text)) <null>)");
+}
+
+TEST(parser, inline_is_accepted_on_a_function_definition)
+{
+	CHECK_EQ(printDecl("inline int twice(int n) { return n * 2; }"),
+		"(func twice int (params (int n)) (block (return (* n 2))))");
+}

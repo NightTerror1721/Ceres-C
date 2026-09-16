@@ -145,7 +145,26 @@ namespace ceresc::ir
 		_continueTargets.clear();
 		_labelBlocks.clear();
 		_caseBlocks.clear();
+		_functionDecls.clear();
+		_staticLocalNames.clear();
 		_nextStringLiteralId = 0;
+
+		// Collected before lowering anything, not as each definition is reached: a call may appear
+		// textually before the function it names (C only requires a declaration to be visible, and
+		// sema has already checked that one is), so a map filled on the way past would be missing
+		// exactly the entries a forward call needs. Declarations count too - a prototype is enough
+		// to know the parameter types, which is all this is for (see convertArgument()).
+		for (ast::Decl* decl : unit.decls())
+		{
+			if (auto* function = dynamic_cast<ast::FunctionDecl*>(decl))
+			{
+				auto [it, inserted] = _functionDecls.try_emplace(function->name(), function);
+				// A definition wins over a prototype for the same name: both carry the parameter
+				// types, but keeping the definition means one less thing that can disagree.
+				if (!inserted && function->isDefinition())
+					it->second = function;
+			}
+		}
 
 		unit.accept(*this);
 		return std::move(_module);
@@ -293,15 +312,24 @@ namespace ceresc::ir
 		emitVoid(loc, payload);
 	}
 
-	IrValue IrBuilder::emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat)
+	IrValue IrBuilder::emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat, bool isSigned)
 	{
 		IrLoadPayload payload;
 		payload.result = _currentFunction->newTemp();
 		payload.size = size;
 		payload.isFloat = isFloat;
+		payload.isSigned = isSigned;
 		payload.address = address;
 		emitVoid(loc, payload);
 		return payload.result;
+	}
+
+	IrValue IrBuilder::loadOfType(support::SourceLocation loc, IrValue address, const Type* type)
+	{
+		// A pointer, an array and a struct are all word-sized addresses here, and Type::isSigned()
+		// says false for them - which is the right answer for a load anyway, since a Word load fills
+		// the whole register and has no extension to choose.
+		return emitLoad(loc, address, memSizeOf(type), type && type->isFloat(), type && type->isSigned());
 	}
 
 	void IrBuilder::emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat)
@@ -352,6 +380,18 @@ namespace ceresc::ir
 		payload.op = op;
 		payload.isFloat = isFloat;
 		payload.isUnsigned = isUnsigned;
+		payload.operand = operand;
+		emitVoid(loc, payload);
+		return payload.result;
+	}
+
+	IrValue IrBuilder::emitNarrow(support::SourceLocation loc, IrValue operand, IrMemSize size, bool isUnsigned)
+	{
+		IrUnOpPayload payload;
+		payload.result = _currentFunction->newTemp();
+		payload.op = IrUnOp::Narrow;
+		payload.isUnsigned = isUnsigned;
+		payload.narrowSize = size;
 		payload.operand = operand;
 		emitVoid(loc, payload);
 		return payload.result;
@@ -644,6 +684,8 @@ namespace ceresc::ir
 			}
 			// Global (or an unresolved symbol - assumed not to happen on sema-checked input, see
 			// the header comment on IrBuilder's contract).
+			if (symbol && !symbol->globalName.empty())
+				return emitGlobalAddr(loc, symbol->globalName);
 			return emitGlobalAddr(loc, name->name());
 		}
 
@@ -726,7 +768,7 @@ namespace ceresc::ir
 		if (type && (type->isArray() || type->isStruct()))
 			return lowerAddress(expr);
 		IrValue addr = lowerAddress(expr);
-		return emitLoad(expr->location(), addr, memSizeOf(type), type && type->isFloat());
+		return loadOfType(expr->location(), addr, type);
 	}
 
 	// ---- condition lowering (jumping code, short-circuit && / ||) --------------------------------
@@ -801,11 +843,36 @@ namespace ceresc::ir
 	{
 		bool fromFloat = fromType && fromType->isFloat();
 		bool toFloat = toType && toType->isFloat();
-		if (fromFloat == toFloat)
-			return value;
+
 		if (toFloat)
-			return emitUnOp(loc, IrUnOp::IntToFloat, value, false, !fromType || !fromType->isSigned());
-		return emitUnOp(loc, IrUnOp::FloatToInt, value, false, !toType || !toType->isSigned());
+			return fromFloat ? value : emitUnOp(loc, IrUnOp::IntToFloat, value, false, !fromType || !fromType->isSigned());
+
+		if (fromFloat)
+		{
+			// Across the bank first, then the integer conversions below apply to the result exactly
+			// as they would to any other int: `(char)1000.0f` truncates twice, once per rule.
+			value = emitUnOp(loc, IrUnOp::FloatToInt, value, false, !toType || !toType->isSigned());
+			fromType = nullptr; // an int of the register's own width now, not the float it started as
+		}
+
+		if (!toType)
+			return value;
+
+		// C converts to bool by asking "is it zero", not by keeping the low bit: (bool)256 is true.
+		if (toType->isBool())
+			return (fromType && fromType->isBool()) ? value : emitUnOp(loc, IrUnOp::ToBool, value);
+
+		// Narrowing to char/short - the only integer types this ABI has that are narrower than a
+		// register (enum, long and every pointer are all word-sized, so nothing is lost moving into
+		// one). Skipped when the source is already exactly that type: the invariant says such a
+		// value is already in range, so a `char` copied into another `char` needs nothing.
+		bool toIsNarrow = toType->isChar() || toType->isSChar() || toType->isUChar() ||
+			toType->isShort() || toType->isUShort();
+		if (!toIsNarrow)
+			return value;
+		if (fromType && fromType->kind() == toType->kind())
+			return value;
+		return emitNarrow(loc, value, memSizeOf(toType), !toType->isSigned());
 	}
 
 	IrValue IrBuilder::lowerArithmetic(support::SourceLocation loc, BinaryOp op, const Type* resultType,
@@ -958,9 +1025,23 @@ namespace ceresc::ir
 			argIsFloat.push_back(false);
 		}
 
+		// The callee's declared parameter types, when the callee is a plain name (which sema
+		// guarantees it is - see the header comment). Empty for anything else, in which case each
+		// argument is passed with the type it was computed as.
+		std::span<const ast::Param> params;
+		if (auto* calleeName = dynamic_cast<ast::NameExpr*>(node.callee()))
+		{
+			auto it = _functionDecls.find(calleeName->name());
+			if (it != _functionDecls.end())
+				params = it->second->params();
+		}
+
+		usize argIndex = 0;
 		for (Expr* arg : node.args())
 		{
 			const Type* argType = arg->type();
+			const Type* paramType = argIndex < params.size() ? params[argIndex].type : nullptr;
+			++argIndex;
 			if (isIndirectStruct(argType))
 			{
 				// By value, without a by-value register class: copy the argument into a slot of the
@@ -982,7 +1063,14 @@ namespace ceresc::ir
 				argIsFloat.push_back(false);
 				continue;
 			}
-			argValues.push_back(lowerExpr(arg));
+			// C converts an argument to the parameter's type as if by assignment, and here that is
+			// not a formality: a narrow parameter whose value never reaches memory (the optimizer
+			// keeps it in the register it arrived in) is narrowed nowhere else. `char f(char c)`
+			// called with 300 has to see 44.
+			IrValue value = lowerExpr(arg);
+			if (paramType)
+				value = convertForStore(loc, value, argType, paramType);
+			argValues.push_back(value);
 			argIsFloat.push_back(argType && argType->isFloat());
 		}
 
@@ -1063,7 +1151,7 @@ namespace ceresc::ir
 				bool isFloat = type && type->isFloat();
 				IrValue addr = lowerAddress(node.operand());
 				IrMemSize size = memSizeOf(type);
-				IrValue oldValue = emitLoad(loc, addr, size, isFloat);
+				IrValue oldValue = loadOfType(loc, addr, type);
 				IrValue stepValue;
 				if (isFloat)
 					stepValue = emitConstFloat(loc, 1.0f);
@@ -1171,7 +1259,7 @@ namespace ceresc::ir
 		// A compound operator reads the target before it writes it, so its address really does have
 		// to come first - `x += y` is `x = x + y` with x evaluated once.
 		IrValue addr = lowerAddress(node.target());
-		IrValue oldValue = emitLoad(loc, addr, size, targetIsFloat);
+		IrValue oldValue = loadOfType(loc, addr, targetType);
 		IrValue rhs = lowerExpr(node.value());
 		BinaryOp binaryOp = binaryOpForCompoundAssign(node.op());
 		// `x op= y` means `x = x op y` by definition, so this must agree with what the equivalent
@@ -1588,6 +1676,42 @@ namespace ceresc::ir
 			return;
 		}
 
+		if (node.storageClass() == ast::StorageClass::Static)
+		{
+			// A `static` local has to outlive the call, so it cannot be a frame slot: it becomes a
+			// file-scope variable under a name carrying its function's, and every reference to it
+			// lowers to a GlobalAddr like any other global. Its initializer runs once, at load time,
+			// which is why codegen reads it from the VarDecl rather than IrBuilder emitting stores -
+			// the same arrangement file-scope variables already use.
+			// `f__count`, not `f.count`: a '.' is not an identifier character in CASM, and a leading
+			// one would make it a local label instead of a file-scope symbol. The counter suffix is
+			// for the case two disjoint blocks of one function each declare `static int count;` -
+			// two different objects that would otherwise want the same name.
+			std::string base = std::format("{}__{}", _currentFunction->name(), node.name());
+			std::string candidate = base;
+			for (u32 suffix = 2; !_staticLocalNames.insert(candidate).second; ++suffix)
+				candidate = std::format("{}_{}", base, suffix);
+			std::string_view uniqueName = internLabel(candidate);
+			_module.addStaticLocal(uniqueName, &node);
+
+			LocalSymbol symbol;
+			symbol.kind = LocalSymbolKind::Global;
+			symbol.globalName = uniqueName;
+			declareSymbol(node.name(), symbol);
+			return;
+		}
+
+		if (node.storageClass() == ast::StorageClass::Extern)
+		{
+			// `extern int x;` inside a block names a file-scope variable defined elsewhere. It
+			// declares nothing of its own, so it maps straight onto the global of the same name.
+			LocalSymbol symbol;
+			symbol.kind = LocalSymbolKind::Global;
+			symbol.globalName = node.name();
+			declareSymbol(node.name(), symbol);
+			return;
+		}
+
 		LocalSymbol symbol;
 		symbol.kind = LocalSymbolKind::Local;
 		symbol.localSlot = newLocalSlotFor(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat());
@@ -1620,6 +1744,10 @@ namespace ceresc::ir
 			return; // a prototype has nothing to lower - see the header comment
 
 		IrFunction& function = _module.addFunction(node.name(), node.returnType());
+		// Two facts the optimizer needs and cannot see in the body: whether another object may call
+		// this (so unused-function elimination must keep it) and whether the program asked for it to
+		// be inlined (so the inliner's size limit gives way).
+		function.setLinkage(node.hasExternalLinkage(), node.isInline());
 		_currentFunction = &function;
 
 		// A struct returned through memory takes a hidden first parameter holding its destination

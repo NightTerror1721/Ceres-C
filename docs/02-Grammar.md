@@ -11,7 +11,8 @@ here is, by definition, a syntax error.
 | Area | What is supported |
 | --- | --- |
 | Types | `void`, `bool`, `char`, `short`, `int`, `long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. |
-| Qualifiers | `const` as a type qualifier *(see the note on what the parser accepts today, below)*. |
+| Qualifiers | `const`, on either side of the type-spec and after a `*`. |
+| Storage classes | `static`, `extern`, `auto` and the `inline` function specifier. |
 | Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `enum`, `typedef`. |
 | Functions | Calls, recursion, up to any number of parameters, struct arguments and returns by value. |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
@@ -29,23 +30,49 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 | `union`, bitfields | Nothing needs them yet, and each is a second layout rule to learn. |
 | `volatile`, `restrict`, `register`, `alignof` | Reserved as keywords by the lexer so they can be rejected with a clear message, but not implemented. |
 | Function pointers, varargs | Viable later — the ISA already has indirect calls. |
-| The preprocessor | `#include`/`#define` would be a text-to-text pass running before the lexer, not a token. |
+| Most of the preprocessor | `#include`, `#define` (object-like), `#undef` and `#pragma once` are implemented; `#if`/`#ifdef` and macros with arguments are not. See [08-Preprocessor.md](08-Preprocessor.md). |
 | `malloc`/`free` | There is no allocator to call. |
 
 The out-of-scope keywords exist as token kinds in the lexer on purpose: hitting one should produce
 "not implemented in this version" rather than a generic syntax error that hides the fact that it is
 a known, deliberate limit.
 
-## What the parser accepts today
+## const
 
-Two constructs are in the grammar below but are **not** accepted by the parser yet:
+`const` is a type **qualifier**, so it travels with the type rather than with the declaration — and
+which side of a `*` it is written on decides what it qualifies:
 
-- `const` as a type qualifier, anywhere (`const int x = 3;`, `void f(const char* s)`).
-- The storage-class specifiers `static`, `extern`, `auto` and `inline`.
+```c
+const int limit = 3;      // and `int const limit = 3;` - the same type
+const char* text;         // a pointer to const char: *text = 'x' is an error
+char* const cursor = buf; // a const pointer to char:  cursor = 0  is an error
+const char* const both;   // neither
+```
 
-Both are listed in the grammar because that is the contract the parser is meant to implement; the
-gap is recorded in [06-Known-Limitations.md](06-Known-Limitations.md) with a reproducer. Nothing in
-`examples/` uses either, so the shipped programs describe the language as it actually is.
+Writing to a const object is an error, and so is a conversion that would forget the qualifier
+(`const int*` to `int*`). Adding it is always fine. A `const` global with an initializer is placed
+in read-only memory, where the machine enforces it too.
+
+## Storage classes
+
+| Written | At file scope | Inside a block |
+| --- | --- | --- |
+| *(nothing)* | external linkage — visible to other objects | automatic storage |
+| `static` | internal linkage — not published to the linker | storage that outlives the call |
+| `extern` | a declaration, not a definition | names a file-scope object defined elsewhere |
+| `auto` | **an error** — there is no automatic storage at file scope | automatic storage, i.e. the default |
+
+`inline` is a function specifier rather than a storage class, so it combines with them
+(`static inline`). Here it is a request the optimizer honours rather than a linkage rule: the
+function is still emitted and still callable, and the inliner's size limit gives way for it whenever
+inlining is on at all.
+
+A `static` local's initializer becomes bytes in the loaded image, so it has to be a compile-time
+constant — `static int n = someVariable;` is an error, `static int n = 1 + 2;` is not.
+
+A name may be declared more than once at file scope as long as the declarations agree and at most
+one has an initializer. That is exactly what a header's `extern` plus the defining source file is,
+and it is why headers work.
 
 ## Grammar
 
@@ -55,12 +82,12 @@ The EBNF `libs/parser` implements. Uppercase names are token kinds from `libs/le
 translation-unit       ::= external-decl*
 external-decl          ::= function-def | declaration ";" | typedef-decl
 
-function-def           ::= storage-class-spec? type-spec declarator
+function-def           ::= decl-specifier* type-name declarator
                             "(" param-list? ")" compound-stmt
 param-list             ::= param ("," param)*
-param                  ::= type-spec declarator
+param                  ::= type-qualifier? type-name declarator
 
-declaration            ::= storage-class-spec? type-qualifier? type-spec init-declarator-list
+declaration            ::= decl-specifier* type-name init-declarator-list
 init-declarator-list   ::= init-declarator ("," init-declarator)*
 init-declarator        ::= declarator ("=" initializer)?
 declarator             ::= "*"* direct-declarator
@@ -69,8 +96,11 @@ initializer            ::= assignment-expr | "{" initializer-list "}"
 initializer-list       ::= initializer ("," initializer)*
 typedef-decl           ::= "typedef" type-spec declarator ";"
 
+decl-specifier         ::= storage-class-spec | type-qualifier   // any order, each at most once
 storage-class-spec     ::= "static" | "extern" | "auto" | "inline"   // inline only on a function-def
 type-qualifier         ::= "const"
+type-name              ::= type-qualifier* type-spec type-qualifier*
+                            ("*" type-qualifier*)*   // `const char*` vs `char* const`
 sign-spec              ::= "signed" | "unsigned"
 integer-type-spec      ::= sign-spec? ("char" | "short" "int"? | "int" | "long" "int"?)
                          | sign-spec "int"?          // signed/unsigned alone means int
@@ -81,7 +111,6 @@ member-decl            ::= type-spec declarator ";"
 enum-spec              ::= "enum" IDENTIFIER ("{" enumerator-list "}")?
 enumerator-list        ::= enumerator ("," enumerator)*
 enumerator             ::= IDENTIFIER ("=" INT_LITERAL)?
-type-name              ::= type-spec "*"*        // for explicit casts and sizeof
 
 statement              ::= compound-stmt | if-stmt | while-stmt | do-stmt | for-stmt
                          | switch-stmt | goto-stmt | label-stmt
@@ -105,9 +134,10 @@ decl-stmt              ::= declaration ";"
 expr-stmt              ::= expression? ";"
 
 expression             ::= assignment-expr
-assignment-expr        ::= logical-or-expr (assign-op assignment-expr)?
+assignment-expr        ::= conditional-expr (assign-op assignment-expr)?
 assign-op              ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
                          | "&=" | "|=" | "^=" | "<<=" | ">>="
+conditional-expr       ::= logical-or-expr ("?" assignment-expr ":" conditional-expr)?
 logical-or-expr        ::= logical-and-expr ("||" logical-and-expr)*
 logical-and-expr       ::= bit-or-expr ("&&" bit-or-expr)*
 bit-or-expr            ::= bit-xor-expr ("|" bit-xor-expr)*
@@ -130,8 +160,9 @@ primary-expr           ::= IDENTIFIER | INT_LITERAL | FLOAT_LITERAL | CHAR_LITER
 arg-list               ::= assignment-expr ("," assignment-expr)*
 ```
 
-There is no conditional operator (`?:`) in the subset — it is absent from the table above on
-purpose, not by oversight.
+`storage-class-spec` and `type-qualifier` may appear in any order and any combination the language
+itself allows, before the type-spec: `static const int`, `const static int` and `int const` all
+parse, and two storage classes on one declaration (`static extern`) is reported as such.
 
 ## Operator precedence
 
@@ -141,6 +172,7 @@ table-driven function rather than ten near-identical ones.
 | Level | Operators | Associativity |
 | --- | --- | --- |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | right |
+| 1½ | `?:` | right — the middle branch is a full assignment-expression, as in C |
 | 2 | `\|\|` | left |
 | 3 | `&&` | left |
 | 4 | `\|` | left |

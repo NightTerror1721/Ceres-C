@@ -136,6 +136,12 @@ namespace ceresc::parser
 		// that now covers (struct/enum/typedef, switch/case/goto).
 		Expr* parseExpression();
 		const Type* parseTypeName();
+		// parseTypeName() for a caller that has already read the declaration's specifiers and so has
+		// consumed a leading `const` of its own. It matters WHERE that const lands: it qualifies the
+		// base type, before any `*`, so `const char* p` is a pointer to const char - applying it to
+		// the finished type instead would silently produce `char* const p`, a const pointer to
+		// ordinary char, which is a different type and the opposite promise.
+		const Type* parseTypeName(bool leadingConst);
 
 		TranslationUnit* parseTranslationUnit();
 		Decl* parseExternalDecl();
@@ -181,9 +187,33 @@ namespace ceresc::parser
 		Stmt* parseExprStatement();
 
 	private:
+		// What a declaration says about itself before its type-spec even starts: `static`, `extern`,
+		// `auto`, `inline` and `const`, in any order, each at most once. Collected into one record
+		// because C allows them in any order and in any combination the language itself permits
+		// (`static inline`, `const static`) - a sequence of ifs at each declaration site could not
+		// say "two storage classes" or "const twice" without repeating itself four times.
+		//
+		// `sawAny` rather than comparing against a default: `auto` is the default at block scope, so
+		// "was `auto` written" and "is this automatic" are different questions, and only the first
+		// one can be an error at file scope.
+		struct DeclSpecifiers
+		{
+			ast::StorageClass storageClass = ast::StorageClass::None;
+			bool isInline = false;
+			bool isConst = false;
+			bool sawAny = false;
+			support::SourceLocation location{};
+		};
+
+		// Consumes every leading storage-class specifier and type qualifier, reporting a duplicate
+		// or a second storage class. Always returns - a declaration with a bad specifier still has a
+		// type and a name worth parsing, same panic-mode philosophy as everywhere else here.
+		DeclSpecifiers parseDeclSpecifiers();
+
 		// Declarations. A variable and a function declaration share the same `type-name identifier`
 		// prefix - parseExternalDecl() parses that prefix once, then branches on whether a '(' follows.
-		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type);
+		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type,
+			const DeclSpecifiers& specifiers);
 
 		// §3's `initializer ::= assignment-expr | "{" initializer-list "}"` - the ONE production
 		// that can produce an InitListExpr (expr.h's own note on why that node lives in the Expr
@@ -196,7 +226,8 @@ namespace ceresc::parser
 		// explicit that it is the contract "ni más ni menos". `{}` is rejected for the same reason -
 		// the production requires at least one element.
 		Expr* parseInitializer();
-		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType);
+		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType,
+			const DeclSpecifiers& specifiers);
 		bool parseParamList(std::vector<Param>& outParams);
 		Decl* parseTypedefDecl();
 
@@ -258,6 +289,25 @@ namespace ceresc::parser
 		// the actual lexeme, not just the TokenKind - so it exists mainly for parseTypeSpec()'s own
 		// switch (which needs a TokenKind to switch over) and as the building block for the
 		// token-aware overload below. Prefer isTypeSpecStart(const Token&) everywhere else.
+		// True for the tokens that can begin a declaration WITHOUT being a type-spec: the storage
+		// classes and `const`. Kept apart from isTypeSpecStart() because they are not types - they
+		// are what comes before one - but a statement that starts with any of them is still a
+		// declaration, and so is a top-level one.
+		static constexpr bool isDeclSpecifierStart(TokenKind kind) noexcept
+		{
+			switch (kind)
+			{
+				case TokenKind::KwConst:
+				case TokenKind::KwStatic:
+				case TokenKind::KwExtern:
+				case TokenKind::KwAuto:
+				case TokenKind::KwInline:
+					return true;
+				default:
+					return false;
+			}
+		}
+
 		static constexpr bool isTypeSpecStart(TokenKind kind) noexcept
 		{
 			switch (kind)

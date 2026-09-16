@@ -6,35 +6,55 @@
 #include <ostream>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
-// Options - command-line options: --emit-ast, --emit-ir, -S, --run, --ceres-path, -Werror (§11 of
-// the architecture plan), plus the optimization controls: -O0/-O1/-O2 and the per-optimization
-// -f<name>/-fno-<name> switches (support/optimization.h owns the list of names).
+// Options - the ceresc command line: what to compile, where to put it, and how hard to try.
+//
+// §11 of the architecture plan fixes the core set (--emit-ast, --emit-ir, -S, --run, --ceres-path,
+// -Werror); the optimization controls (-O0/-O1/-O2 and the per-optimization -f<name>/-fno-<name>
+// switches, whose names live in support/optimization.h) and the preprocessor's own (-I, -D, -E)
+// grew alongside the phases that needed them.
 //
 // Optimizations are ON by default: no -O flag means -O1. -O0 selects the simplified behaviour every
 // optimization has a counterpart for, which is what makes a miscompilation bisectable and what the
 // golden tests pin on both sides - see support/optimization.h's own header comment.
 //
-// Implemented in Fase 6 (--run, the minimum needed to invoke `ceres asm`/`ceres run` for the
-// first end-to-end test) and completed in Fase 8 of the phased plan (§13).
+// Several inputs are allowed, and they need not all be C: a `.casm` file on the command line is
+// assembled and linked alongside the compiled ones, which is how a routine written in assembly
+// becomes callable from C (docs/07-CASM-Interop.md).
 
 namespace ceresc::driver
 {
 	struct Options
 	{
-		std::string inputPath;
-		std::string outputPath;      // -o <path> - empty means "next to the input, same stem, .casm"
+		// Every input, in command-line order. A `.c` file is compiled; a `.casm` file is passed
+		// straight to the assembler. At least one is required (except for --version/--help).
+		std::vector<std::string> inputPaths;
+
+		// -o <path>. With a single C input and no --run, this is the .casm to write. Otherwise it is
+		// the linked program, and each unit's .casm is written next to its own source - one output
+		// name cannot stand for several files, and inventing a directory layout would be worse than
+		// the obvious rule.
+		std::string outputPath;
+
 		bool emitAst = false;        // --emit-ast: dump the annotated AST and stop
 		bool emitIr = false;         // --emit-ir: dump the IR and stop
+		bool emitPreprocessed = false; // -E: dump the preprocessed source and stop
+
 		// --run: also invoke `ceres asm`/`ceres run` as subprocesses. -S is its opposite and the
 		// default, and the two resolve in COMMAND-LINE ORDER, exactly like -O and -f do below: the
 		// last one written wins. §11 introduces -S as the explicit way to say "stop at .casm text"
 		// for the case where a --run is added later out of habit, which only means anything if the
 		// later flag is the one that counts.
 		bool run = false;
+
 		std::string ceresPath;       // --ceres-path <dir> - empty means "look up `ceres` on PATH"
 		bool warningsAsErrors = false; // -Werror
 		bool showVersion = false;    // --version: print the version and stop, before anything else
+
+		std::vector<std::string> includeDirectories;                  // -I <dir>, in order
+		std::vector<std::pair<std::string, std::string>> defines;     // -D NAME[=value], in order
 
 		// -O<n> and the -f switches, already resolved into the individual toggles every stage reads.
 		// A later -f<name>/-fno-<name> overrides what the -O level set, in command-line order, the

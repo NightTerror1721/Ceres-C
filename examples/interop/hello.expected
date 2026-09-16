@@ -1,0 +1,4 @@
+[ceres] hello from C and CASM
+triple(7)     = 21
+square(9)     = 81
+bytes written = 68

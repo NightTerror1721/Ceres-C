@@ -74,13 +74,24 @@ jobs:
           CERESC_CERES_PATH: ${{ github.workspace }}/CeresASM/Ceres/build/gcc/bin/Release
         run: ctest --preset gcc-${{ matrix.preset }}
 
-      # The suites above already compile and run every example through libs/driver. This runs one
-      # through the actual `ceresc` binary as well, which is the only thing that exercises the
-      # command line, the subprocess launcher and --run end to end - and it is the exact command
-      # the plan's exit criterion names.
+      # The suites above already compile and run every example through libs/driver. These two run
+      # through the actual `ceresc` binary, which is the only thing that exercises the command line,
+      # the subprocess launcher and --run end to end - and the first is the exact command the plan's
+      # exit criterion names.
       - name: Run an example through the ceresc binary
         working-directory: Ceres-C
         run: ./build/gcc/bin/${{ matrix.config }}/ceresc examples/07_structs.c --run --ceres-path ../CeresASM/Ceres/build/gcc/bin/Release
+
+      # Several inputs at once, C and hand-written assembly together: the declarations file, one
+      # object per unit and one link. Nothing else in CI drives that path.
+      - name: Build the multi-file, C-plus-assembly example
+        working-directory: Ceres-C
+        run: >
+          ./build/gcc/bin/${{ matrix.config }}/ceresc
+          examples/interop/io.c examples/interop/hello.c
+          examples/interop/triple.casm examples/interop/banner.casm
+          -o examples/interop/hello.cres --run
+          --ceres-path ../CeresASM/Ceres/build/gcc/bin/Release
 
   msvc:
     name: MSVC (${{ matrix.config }})
@@ -137,3 +148,7 @@ jobs:
       - name: Run an example through the ceresc binary
         working-directory: Ceres-C
         run: build\msvc\bin\${{ matrix.config }}\ceresc.exe examples\07_structs.c --run --ceres-path ..\CeresASM\Ceres\build\msvc\bin\Release
+
+      - name: Build the multi-file, C-plus-assembly example
+        working-directory: Ceres-C
+        run: build\msvc\bin\${{ matrix.config }}\ceresc.exe examples\interop\io.c examples\interop\hello.c examples\interop\triple.casm examples\interop\banner.casm -o examples\interop\hello.cres --run --ceres-path ..\CeresASM\Ceres\build\msvc\bin\Release

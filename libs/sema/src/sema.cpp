@@ -159,7 +159,17 @@ namespace ceresc::sema
 		if (isArithmeticType(target) && isArithmeticType(source))
 			return true;
 		if (target->isPointer() && source->isPointer())
+		{
+			// The one thing a pointer conversion may not do: forget that what it points at is
+			// const. `const int*` -> `int*` would hand out a writable alias to a read-only object,
+			// which for a global living in @rodata is not a formality - the store faults. The
+			// other direction is always fine: promising less about an object than you may.
+			const Type* targetPointee = target->arrayElementType();
+			const Type* sourcePointee = source->arrayElementType();
+			if (sourcePointee && sourcePointee->isConst() && targetPointee && !targetPointee->isConst())
+				return false;
 			return true;
+		}
 		if (target->isPointer() && isArithmeticType(source))
 			return true; // permissive: this subset does not track "null pointer constant" specially
 		return false;
@@ -677,6 +687,8 @@ namespace ceresc::sema
 			case UnaryOp::PostDecrement:
 				if (!isLValue(node.operand()))
 					_diagnostics.error(node.location(), "expression is not assignable");
+				else if (operandType && operandType->isConst())
+					_diagnostics.error(node.location(), "cannot modify '{}': it is const", typeName(operandType));
 				if (!isScalarType(operandType))
 					_diagnostics.error(node.location(), "cannot increment/decrement a value of type '{}'", typeName(operandType));
 				resultType = operandType ? operandType : errorRecoveryType();
@@ -785,6 +797,8 @@ namespace ceresc::sema
 
 		if (!isLValue(node.target()))
 			_diagnostics.error(node.location(), "expression is not assignable");
+		else if (targetType && targetType->isConst())
+			_diagnostics.error(node.location(), "cannot assign to '{}': it is const", typeName(targetType));
 		else if (targetType && targetType->isStruct() && node.op() != ast::AssignOp::Assign)
 			_diagnostics.error(node.location(), "compound assignment is not valid for struct type '{}'", typeName(targetType));
 		else if (!isAssignable(targetType, valueType))
@@ -1086,10 +1100,101 @@ namespace ceresc::sema
 
 	// ---- declarations -----------------------------------------------------------------------------
 
+	// ---- storage classes --------------------------------------------------------------------------
+
+	void Sema::checkStorageClass(ast::VarDecl& node)
+	{
+		bool atFileScope = (&currentScope() == _globalScope);
+		ast::StorageClass storageClass = node.storageClass();
+
+		if (storageClass == ast::StorageClass::Auto && atFileScope)
+		{
+			// `auto` means automatic storage, which is what a block gives a variable and a file
+			// scope cannot. It is also the default in a block, so it never says anything new there -
+			// but it is legal C, and rejecting it at file scope is the only rule it carries.
+			_diagnostics.error(node.location(), "'auto' is only allowed on a variable declared inside a block");
+		}
+
+		if (storageClass == ast::StorageClass::Extern && node.initializer() && !atFileScope)
+		{
+			// At file scope `extern int x = 1;` is a definition with external linkage, which is
+			// legal and means exactly what `int x = 1;` means. Inside a block there is nothing for
+			// it to define - the object belongs to whatever unit declares it at file scope.
+			_diagnostics.error(node.location(), "'extern' variable '{}' cannot have an initializer inside a block", node.name());
+		}
+
+		if (storageClass == ast::StorageClass::Static && node.initializer() && !isConstantInitializer(node.initializer()))
+		{
+			// A static's initializer runs once, at load time, so it becomes bytes in the image -
+			// there is no moment at which a run-time expression could be evaluated for it. Reported
+			// here rather than by codegen so the message names the variable and its declaration.
+			_diagnostics.error(node.initializer()->location(),
+				"the initializer of '{}' must be a compile-time constant, because it has static storage", node.name());
+		}
+
+		if (node.type() && node.type()->isConst() && !node.initializer() &&
+			storageClass != ast::StorageClass::Extern)
+		{
+			// Nothing may ever write it, so a const object with no initializer can only ever hold
+			// whatever it was loaded with - zero, in practice. An `extern` one is exempt: the
+			// initializer is somewhere else by definition.
+			_diagnostics.warning(node.location(), "const variable '{}' has no initializer, so it can only ever be zero", node.name());
+		}
+	}
+
+	bool Sema::isConstantInitializer(const ast::Expr* expr) const
+	{
+		if (!expr)
+			return true;
+		if (dynamic_cast<const ast::IntLiteralExpr*>(expr) || dynamic_cast<const ast::FloatLiteralExpr*>(expr) ||
+			dynamic_cast<const ast::CharLiteralExpr*>(expr) || dynamic_cast<const ast::BoolLiteralExpr*>(expr) ||
+			dynamic_cast<const ast::StringLiteralExpr*>(expr))
+		{
+			return true;
+		}
+		if (auto* list = dynamic_cast<const ast::InitListExpr*>(expr))
+		{
+			for (const ast::Expr* element : list->elements())
+			{
+				if (!isConstantInitializer(element))
+					return false;
+			}
+			return true;
+		}
+		if (auto* unary = dynamic_cast<const ast::UnaryExpr*>(expr))
+		{
+			// `-1` and `!0` are constants; `&x` and `*p` are not, and neither is `++x`.
+			switch (unary->op())
+			{
+				case ast::UnaryOp::Negate:
+				case ast::UnaryOp::LogicalNot:
+				case ast::UnaryOp::BitwiseNot:
+					return isConstantInitializer(unary->operand());
+				default:
+					return false;
+			}
+		}
+		if (auto* binary = dynamic_cast<const ast::BinaryExpr*>(expr))
+			return isConstantInitializer(binary->lhs()) && isConstantInitializer(binary->rhs());
+		if (auto* cast = dynamic_cast<const ast::CastExpr*>(expr))
+			return isConstantInitializer(cast->operand());
+		if (dynamic_cast<const ast::SizeofExpr*>(expr))
+			return true;
+		// An enum constant is a compile-time value; any other name is an object read at run time.
+		if (auto* name = dynamic_cast<const ast::NameExpr*>(expr))
+		{
+			const Symbol* symbol = const_cast<Sema*>(this)->currentScope().lookup(name->name());
+			return symbol && symbol->kind == SymbolKind::EnumConstant;
+		}
+		return false;
+	}
+
 	void Sema::visit(ast::VarDecl& node)
 	{
 		if (node.type() && node.type()->isVoid())
 			_diagnostics.error(node.location(), "variable '{}' declared with type 'void'", node.name());
+
+		checkStorageClass(node);
 
 		// Declared before its initializer is checked: in C, a declarator's own scope begins right
 		// after the declarator, before the initializer - so `int x = x;` refers to the new
@@ -1103,7 +1208,37 @@ namespace ceresc::sema
 		symbol.location = node.location();
 		symbol.isGlobal = (&currentScope() == _globalScope);
 		symbol.varDecl = &node;
-		declareSymbol(symbol);
+
+		// At file scope a name may be declared more than once and still mean one object: that is
+		// what an `extern` declaration in a header followed by the definition in a source file IS,
+		// and it is the whole reason headers work. Redeclaring a LOCAL is still an error - a block
+		// has no such notion.
+		Symbol* previous = symbol.isGlobal ? _globalScope->lookupInThisScope(node.name()) : nullptr;
+		if (previous && previous->kind == SymbolKind::Variable)
+		{
+			bool sameType = previous->type && node.type() && *previous->type == *node.type();
+			if (!sameType)
+			{
+				_diagnostics.error(node.location(), "redeclaration of '{}' with a different type ('{}' after '{}')",
+					node.name(), typeName(node.type()), typeName(previous->type));
+			}
+			else if (previous->varDecl && previous->varDecl->initializer() && node.initializer())
+			{
+				// Two initializers is the one case that really is a redefinition: there is no way to
+				// tell which value the object should start with.
+				_diagnostics.error(node.location(), "redefinition of '{}'", node.name());
+			}
+			else if (node.initializer())
+			{
+				// The definition wins the slot, so a later reference resolves to the declaration that
+				// actually has the value - which is what checkStorageClass() and codegen both read.
+				previous->varDecl = &node;
+			}
+		}
+		else
+		{
+			declareSymbol(symbol);
+		}
 
 		if (node.initializer())
 			checkInitializer(node.type(), node.initializer());
