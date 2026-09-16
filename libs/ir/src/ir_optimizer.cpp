@@ -914,17 +914,30 @@ namespace ceresc::ir
 				auto it = byName.find(name);
 				if (it == byName.end())
 					continue;
+				auto reach = [&](std::string_view name)
+				{
+					if (name.empty() || reached[name])
+						return;
+					reached[name] = true;
+					worklist.push_back(name);
+				};
 				for (const auto& block : it->second->blocks())
 				{
 					for (const IrInstr* instr : block->instrs())
 					{
-						if (instr->opcode() != IrOpcode::Call)
-							continue;
-						std::string_view callee = instr->as<IrCallPayload>().callee;
-						if (!reached[callee])
+						// A call by name is the obvious edge. The other one is a GlobalAddr naming a
+						// function: taking a function's address makes it reachable through whatever
+						// that address is later stored in, and nothing in this unit need ever name
+						// it in a Call again. A function pointer is the case that needs it, and an
+						// interrupt handler - reachable only through the vector table - is the same
+						// shape of edge with no instruction at all at the far end of it.
+						if (instr->opcode() == IrOpcode::Call)
+							reach(instr->as<IrCallPayload>().callee);
+						else if (instr->opcode() == IrOpcode::GlobalAddr)
 						{
-							reached[callee] = true;
-							worklist.push_back(callee);
+							std::string_view name = instr->as<IrGlobalAddrPayload>().name;
+							if (byName.contains(name))
+								reach(name);
 						}
 					}
 				}
