@@ -656,6 +656,12 @@ namespace ceresc::sema
 			case UnaryOp::AddressOf:
 				if (!isLValue(node.operand()))
 					_diagnostics.error(node.location(), "cannot take the address of a non-lvalue expression");
+				else if (auto* name = dynamic_cast<ast::NameExpr*>(node.operand()))
+				{
+					Symbol* symbol = currentScope().lookup(name->name());
+					if (symbol && symbol->varDecl && symbol->varDecl->storageClass() == ast::StorageClass::Register)
+						_diagnostics.error(node.location(), "cannot take the address of register variable '{}'", name->name());
+				}
 				resultType = Type::makePointer(_arena, operandType ? operandType : errorRecoveryType());
 				break;
 

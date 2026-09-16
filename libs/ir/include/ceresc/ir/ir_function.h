@@ -80,6 +80,8 @@ namespace ceresc::ir
 	{
 		u32 sizeInBytes = 4;
 		bool isFloat = false;
+		bool isVolatile = false;
+		bool preferRegister = false;
 	};
 
 	class IrFunction
@@ -147,9 +149,9 @@ namespace ceresc::ir
 		// (e.g. two `{ int x; }` blocks that are never live at the same time): this phase does no
 		// stack-slot coalescing, exactly the same "simplest thing that works" call §10 makes for
 		// register allocation.
-		u32 newLocalSlot(u32 sizeInBytes, bool isFloat)
+		u32 newLocalSlot(u32 sizeInBytes, bool isFloat, bool isVolatile = false, bool preferRegister = false)
 		{
-			_localSlots.push_back(IrLocalSlot{ sizeInBytes, isFloat });
+			_localSlots.push_back(IrLocalSlot{ sizeInBytes, isFloat, isVolatile, preferRegister });
 			return static_cast<u32>(_localSlots.size() - 1);
 		}
 

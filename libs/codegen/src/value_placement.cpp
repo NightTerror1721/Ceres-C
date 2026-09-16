@@ -262,7 +262,7 @@ namespace ceresc::codegen
 			{
 				const IrLocalSlot& slot = localSlots[i];
 				bool paramOnStack = i < function.paramCount() && _paramArrival[i].kind == ArgSlotKind::Stack;
-				if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.sizeInBytes != 4 || paramOnStack)
+				if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.isVolatile || slot.sizeInBytes != 4 || paramOnStack)
 					continue;
 
 				// A parameter prefers the register it already arrived in: taking it means the

@@ -81,6 +81,12 @@ TEST(parser, union_and_alignof_are_parsed_as_types_and_constant_expressions)
 		"(unit (union Value (fields (char byte) (int word))) (var x int (alignof union Value)))");
 }
 
+TEST(parser, volatile_restrict_and_register_are_accepted)
+{
+	CHECK_EQ(printUnit("volatile int device; restrict int* data; int main(void) { register int cached; return 0; }"),
+		"(unit (var device volatile int <null>) (var data restrict int* <null>) (func main int (params) (block (decl-stmt (var cached int <null>)) (return 0))))");
+}
+
 // ---- primary expressions -----------------------------------------------------------------------
 
 TEST(parser, literals_and_names)

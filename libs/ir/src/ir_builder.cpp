@@ -192,7 +192,7 @@ namespace ceresc::ir
 		}
 	}
 
-	u32 IrBuilder::newLocalSlotFor(u32 sizeInBytes, bool isFloat)
+	u32 IrBuilder::newLocalSlotFor(u32 sizeInBytes, bool isFloat, bool isVolatile, bool preferRegister)
 	{
 		u32 slot;
 		if (_options.localSlotReuse && !_freeLocalSlots.empty())
@@ -205,7 +205,7 @@ namespace ceresc::ir
 		}
 		else
 		{
-			slot = _currentFunction->newLocalSlot(sizeInBytes, isFloat);
+			slot = _currentFunction->newLocalSlot(sizeInBytes, isFloat, isVolatile, preferRegister);
 		}
 
 		if (!_scopeSlots.empty())
@@ -1732,7 +1732,8 @@ namespace ceresc::ir
 
 		LocalSymbol symbol;
 		symbol.kind = LocalSymbolKind::Local;
-		symbol.localSlot = newLocalSlotFor(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat());
+		symbol.localSlot = newLocalSlotFor(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat(),
+			node.type() && node.type()->isVolatile(), node.storageClass() == ast::StorageClass::Register);
 		declareSymbol(node.name(), symbol);
 
 		if (!node.initializer())

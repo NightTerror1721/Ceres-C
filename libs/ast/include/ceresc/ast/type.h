@@ -68,6 +68,7 @@ namespace ceresc::ast
 		TypeKind _kind = TypeKind::Void;
 		bool _const = false;
 		bool _volatile = false;
+		bool _restrict = false;
 		PayloadType _payload = std::monostate{};
 		u32 _arraySize = 0; // only used for Array kind
 
@@ -83,14 +84,15 @@ namespace ceresc::ast
 		bool operator==(const Type& other) const noexcept;
 
 	private:
-		constexpr explicit Type(TypeKind kind, bool isConst, bool isVolatile, PayloadType payload = std::monostate{}, u32 arraySize = 0) noexcept :
-			_kind(kind), _const(isConst), _volatile(isVolatile), _payload(std::move(payload)), _arraySize(arraySize)
+		constexpr explicit Type(TypeKind kind, bool isConst, bool isVolatile, bool isRestrict = false, PayloadType payload = std::monostate{}, u32 arraySize = 0) noexcept :
+			_kind(kind), _const(isConst), _volatile(isVolatile), _restrict(isRestrict), _payload(std::move(payload)), _arraySize(arraySize)
 		{}
 
 	public:
 		constexpr TypeKind kind() const noexcept { return _kind; }
 		constexpr bool isConst() const noexcept { return _const; }
 		constexpr bool isVolatile() const noexcept { return _volatile; }
+		constexpr bool isRestrict() const noexcept { return _restrict; }
 		constexpr u32 arraySize() const noexcept { return _arraySize; }
 
 		constexpr const Type* arrayElementType() const noexcept { return std::get_if<const Type*>(&_payload) ? std::get<const Type*>(_payload) : nullptr; }
@@ -131,31 +133,31 @@ namespace ceresc::ast
 		bool isSigned() const noexcept;
 
 	private:
-		static forceinline const Type* makeCompound(support::Arena& arena, TypeKind kind, bool isConst, bool isVolatile, PayloadType payload, u32 arraySize = 0) noexcept
+		static forceinline const Type* makeCompound(support::Arena& arena, TypeKind kind, bool isConst, bool isVolatile, bool isRestrict, PayloadType payload, u32 arraySize = 0) noexcept
 		{
-			return arena.create<Type>(std::move(Type(kind, isConst, isVolatile, std::move(payload), arraySize)));
+			return arena.create<Type>(std::move(Type(kind, isConst, isVolatile, isRestrict, std::move(payload), arraySize)));
 		}
 
 	public:
 		static const Type* makePointer(support::Arena& arena, const Type* pointeeType, bool isConst = false, bool isVolatile = false) noexcept
 		{
-			return makeCompound(arena, TypeKind::Pointer, isConst, isVolatile, pointeeType);
+			return makeCompound(arena, TypeKind::Pointer, isConst, isVolatile, false, pointeeType);
 		}
 		static const Type* makeArray(support::Arena& arena, const Type* elementType, u32 arraySize, bool isConst = false, bool isVolatile = false) noexcept
 		{
-			return makeCompound(arena, TypeKind::Array, isConst, isVolatile, elementType, arraySize);
+			return makeCompound(arena, TypeKind::Array, isConst, isVolatile, false, elementType, arraySize);
 		}
 		static const Type* makeStruct(support::Arena& arena, StructDecl* structDecl, bool isConst = false, bool isVolatile = false) noexcept
 		{
-			return makeCompound(arena, TypeKind::Struct, isConst, isVolatile, structDecl);
+			return makeCompound(arena, TypeKind::Struct, isConst, isVolatile, false, structDecl);
 		}
 		static const Type* makeUnion(support::Arena& arena, StructDecl* unionDecl, bool isConst = false, bool isVolatile = false) noexcept
 		{
-			return makeCompound(arena, TypeKind::Union, isConst, isVolatile, unionDecl);
+			return makeCompound(arena, TypeKind::Union, isConst, isVolatile, false, unionDecl);
 		}
 		static const Type* makeEnum(support::Arena& arena, EnumDecl* enumDecl, bool isConst = false, bool isVolatile = false) noexcept
 		{
-			return makeCompound(arena, TypeKind::Enum, isConst, isVolatile, enumDecl);
+			return makeCompound(arena, TypeKind::Enum, isConst, isVolatile, false, enumDecl);
 		}
 
 		// `type` with its const qualifier set, without changing anything else. Returns `type` itself
@@ -165,6 +167,8 @@ namespace ceresc::ast
 		// Implemented in type.cpp rather than inline: the scalar mapping is a switch over every
 		// TypeKind, which is a lot of code to put in a header for something no caller inlines.
 		static const Type* withConst(support::Arena& arena, const Type* type) noexcept;
+		static const Type* withVolatile(support::Arena& arena, const Type* type) noexcept;
+		static const Type* withRestrict(support::Arena& arena, const Type* type) noexcept;
 
 		// The same type with every qualifier dropped - what a comparison that should ignore const
 		// asks for. `int` and `const int` are different types to operator==, which is right for

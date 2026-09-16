@@ -754,6 +754,12 @@ namespace ceresc::ir
 						u32 local = localOf(p.address);
 						if (local != ~0u)
 						{
+							if (localSlots[local].isVolatile)
+							{
+								known.erase(local);
+								rewritten.push_back(instr);
+								continue;
+							}
 							if (p.size == irMemSizeForBytes(localSlots[local].sizeInBytes) &&
 								p.isFloat == localSlots[local].isFloat)
 							{
@@ -782,7 +788,7 @@ namespace ceresc::ir
 						const auto& p = instr->as<IrLoadPayload>();
 						u32 local = localOf(p.address);
 						auto it = (local == ~0u) ? known.end() : known.find(local);
-						if (it != known.end() &&
+						if (local != ~0u && !localSlots[local].isVolatile && it != known.end() &&
 							p.size == irMemSizeForBytes(localSlots[local].sizeInBytes) &&
 							p.isFloat == localSlots[local].isFloat)
 						{
@@ -848,7 +854,7 @@ namespace ceresc::ir
 					{
 						IrValue address = instr->as<IrStorePayload>().address;
 						u32 local = (address.isValid() && address.id < frameAddrLocal.size()) ? frameAddrLocal[address.id] : ~0u;
-						if (local != ~0u && local < nonEscaping.size() && nonEscaping[local] && !everRead[local])
+						if (local != ~0u && local < nonEscaping.size() && !function.localSlots()[local].isVolatile && nonEscaping[local] && !everRead[local])
 						{
 							changed = true;
 							continue;

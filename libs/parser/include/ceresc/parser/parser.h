@@ -202,6 +202,8 @@ namespace ceresc::parser
 			ast::StorageClass storageClass = ast::StorageClass::None;
 			bool isInline = false;
 			bool isConst = false;
+			bool isVolatile = false;
+			bool isRestrict = false;
 			bool sawAny = false;
 			support::SourceLocation location{};
 		};
@@ -299,9 +301,12 @@ namespace ceresc::parser
 			switch (kind)
 			{
 				case TokenKind::KwConst:
+				case TokenKind::KwVolatile:
+				case TokenKind::KwRestrict:
 				case TokenKind::KwStatic:
 				case TokenKind::KwExtern:
 				case TokenKind::KwAuto:
+				case TokenKind::KwRegister:
 				case TokenKind::KwInline:
 					return true;
 				default:

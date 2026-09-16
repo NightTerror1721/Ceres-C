@@ -128,7 +128,7 @@ namespace ceresc::ast
 
 	bool Type::operator==(const Type& other) const noexcept
 	{
-		if (_kind != other._kind || _const != other._const || _volatile != other._volatile || _arraySize != other._arraySize)
+		if (_kind != other._kind || _const != other._const || _volatile != other._volatile || _restrict != other._restrict || _arraySize != other._arraySize)
 			return false;
 		const Type* element = arrayElementType();
 		const Type* otherElement = other.arrayElementType();
@@ -183,7 +183,7 @@ namespace ceresc::ast
 		}
 		if (type->isArray())
 			return makeArray(arena, withConst(arena, type->arrayElementType()), type->arraySize(), false, type->isVolatile());
-		return makeCompound(arena, type->kind(), true, type->isVolatile(), type->_payload, type->_arraySize);
+		return makeCompound(arena, type->kind(), true, type->isVolatile(), type->isRestrict(), type->_payload, type->_arraySize);
 	}
 
 	const Type* Type::withoutQualifiers(support::Arena& arena, const Type* type) noexcept
@@ -208,6 +208,32 @@ namespace ceresc::ast
 			default:
 				break;
 		}
-		return makeCompound(arena, type->kind(), false, false, type->_payload, type->_arraySize);
+		return makeCompound(arena, type->kind(), false, false, false, type->_payload, type->_arraySize);
+	}
+
+	const Type* Type::withVolatile(support::Arena& arena, const Type* type) noexcept
+	{
+		if (!type || type->isVolatile()) return type;
+		switch (type->kind())
+		{
+			case TypeKind::Bool: return type->isConst() ? &Type::ConstVolatileBool : &Type::VolatileBool;
+			case TypeKind::Char: return type->isConst() ? &Type::ConstVolatileChar : &Type::VolatileChar;
+			case TypeKind::UChar: return type->isConst() ? &Type::ConstVolatileUChar : &Type::VolatileUChar;
+			case TypeKind::SChar: return type->isConst() ? &Type::ConstVolatileSChar : &Type::VolatileSChar;
+			case TypeKind::Short: return type->isConst() ? &Type::ConstVolatileShort : &Type::VolatileShort;
+			case TypeKind::UShort: return type->isConst() ? &Type::ConstVolatileUShort : &Type::VolatileUShort;
+			case TypeKind::Int: return type->isConst() ? &Type::ConstVolatileInt : &Type::VolatileInt;
+			case TypeKind::UInt: return type->isConst() ? &Type::ConstVolatileUInt : &Type::VolatileUInt;
+			case TypeKind::Long: return type->isConst() ? &Type::ConstVolatileLong : &Type::VolatileLong;
+			case TypeKind::ULong: return type->isConst() ? &Type::ConstVolatileULong : &Type::VolatileULong;
+			case TypeKind::Float: return type->isConst() ? &Type::ConstVolatileFloat : &Type::VolatileFloat;
+			case TypeKind::Double: return type->isConst() ? &Type::ConstVolatileDouble : &Type::VolatileDouble;
+			default: return makeCompound(arena, type->kind(), type->isConst(), true, type->isRestrict(), type->_payload, type->_arraySize);
+		}
+	}
+
+	const Type* Type::withRestrict(support::Arena& arena, const Type* type) noexcept
+	{
+		return !type || type->isRestrict() ? type : makeCompound(arena, type->kind(), type->isConst(), type->isVolatile(), true, type->_payload, type->_arraySize);
 	}
 }

@@ -211,7 +211,7 @@ namespace ceresc::ir
 		// when options().localSlotReuse allows it, a brand new one otherwise. Either way the slot
 		// is recorded against the innermost open scope, so it returns to the pool when that scope
 		// closes - see _scopeSlots/_freeLocalSlots.
-		u32 newLocalSlotFor(u32 sizeInBytes, bool isFloat);
+		u32 newLocalSlotFor(u32 sizeInBytes, bool isFloat, bool isVolatile = false, bool preferRegister = false);
 
 		void pushScope();
 		void popScope();

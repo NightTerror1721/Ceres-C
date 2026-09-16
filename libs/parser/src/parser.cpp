@@ -474,6 +474,20 @@ namespace ceresc::parser
 					specifiers.isConst = true;
 					specifiers.sawAny = true;
 					continue;
+				case TokenKind::KwVolatile:
+					advance();
+					if (specifiers.isVolatile)
+						_diagnostics.error(here, "duplicate 'volatile'");
+					specifiers.isVolatile = true;
+					specifiers.sawAny = true;
+					continue;
+				case TokenKind::KwRestrict:
+					advance();
+					if (specifiers.isRestrict)
+						_diagnostics.error(here, "duplicate 'restrict'");
+					specifiers.isRestrict = true;
+					specifiers.sawAny = true;
+					continue;
 				case TokenKind::KwInline:
 					advance();
 					if (specifiers.isInline)
@@ -484,6 +498,7 @@ namespace ceresc::parser
 				case TokenKind::KwStatic: storageClass = ast::StorageClass::Static; break;
 				case TokenKind::KwExtern: storageClass = ast::StorageClass::Extern; break;
 				case TokenKind::KwAuto:   storageClass = ast::StorageClass::Auto; break;
+				case TokenKind::KwRegister: storageClass = ast::StorageClass::Register; break;
 				default:
 					return specifiers;
 			}
@@ -525,6 +540,8 @@ namespace ceresc::parser
 			return nullptr;
 
 		bool isConst = leading.isConst || leadingConst;
+		bool isVolatile = leading.isVolatile;
+		bool isRestrict = leading.isRestrict;
 		while (check(TokenKind::KwConst)) // trailing form: `int const`
 		{
 			if (isConst)
@@ -534,6 +551,8 @@ namespace ceresc::parser
 		}
 		if (isConst)
 			base = Type::withConst(_arena, base);
+		if (isVolatile)
+			base = Type::withVolatile(_arena, base);
 
 		while (match(TokenKind::Star))
 		{
@@ -548,6 +567,13 @@ namespace ceresc::parser
 			}
 			if (pointerIsConst)
 				base = Type::withConst(_arena, base);
+		}
+		if (isRestrict)
+		{
+			if (!base->isPointer())
+				_diagnostics.error(leading.location, "'restrict' requires a pointer type");
+			else
+				base = Type::withRestrict(_arena, base);
 		}
 		return base;
 	}
@@ -1072,6 +1098,15 @@ namespace ceresc::parser
 		const Type* type = parseTypeName(specifiers.isConst);
 		if (!type)
 			return nullptr;
+		if (specifiers.isVolatile)
+			type = Type::withVolatile(_arena, type);
+		if (specifiers.isRestrict)
+		{
+			if (!type->isPointer())
+				_diagnostics.error(specifiers.location, "'restrict' requires a pointer type");
+			else
+				type = Type::withRestrict(_arena, type);
+		}
 
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator: parseTypeName()
 		// already registered/completed the tag (see parseStructTypeSpec()/parseEnumTypeSpec()), so
@@ -1152,6 +1187,15 @@ namespace ceresc::parser
 		const Type* type = parseTypeName(specifiers.isConst);
 		if (!type)
 			return nullptr;
+		if (specifiers.isVolatile)
+			type = Type::withVolatile(_arena, type);
+		if (specifiers.isRestrict)
+		{
+			if (!type->isPointer())
+				_diagnostics.error(specifiers.location, "'restrict' requires a pointer type");
+			else
+				type = Type::withRestrict(_arena, type);
+		}
 
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
 		// parseDeclStatement()'s identical check for the local-statement equivalent.

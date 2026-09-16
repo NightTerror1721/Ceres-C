@@ -87,7 +87,8 @@ namespace ceresc::ast
 		None,    // the default: external linkage at file scope, automatic storage in a block
 		Static,  // internal linkage at file scope; at block scope, storage that outlives the call
 		Extern,  // a declaration, not a definition: defined by another translation unit or in CASM
-		Auto     // explicit automatic storage. Legal only in a block, where it is also the default
+		Auto,    // explicit automatic storage. Legal only in a block, where it is also the default
+		Register // request register residency; taking its address is forbidden
 	};
 
 	constexpr std::string_view storageClassName(StorageClass storageClass) noexcept
@@ -97,6 +98,7 @@ namespace ceresc::ast
 			case StorageClass::Static: return "static";
 			case StorageClass::Extern: return "extern";
 			case StorageClass::Auto:   return "auto";
+			case StorageClass::Register: return "register";
 			case StorageClass::None:   break;
 		}
 		return "";

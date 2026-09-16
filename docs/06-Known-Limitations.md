@@ -69,17 +69,23 @@ The VM has no double-precision floating point at all. Supporting `double` would 
 emulation — real front-end and runtime work, not a type mapping. `float` (f32) is fully supported
 and has its own register bank.
 
-### No `union`, bitfields, function pointers or varargs
+### No bitfields, function pointers or varargs
 
 Each is a mechanism with no user yet. Function pointers are the most nearly free of the four: the
 ISA already has indirect calls.
 
-### No `volatile`
+### Qualifiers and storage
 
-Which matters here more than it usually would: a device register read twice really should be read
-twice, and nothing stops the optimizer forwarding the first read to the second. `libs/ir`'s
-optimizer treats a `Load` as impure for exactly this reason, but that is a blunt instrument rather
-than the qualifier.
+`volatile` objects always retain a memory home. They are not promoted to registers, and the IR
+optimizer neither forwards a preceding store into a volatile load nor removes a volatile store.
+This keeps distinct device-register reads and writes observable.
+
+`restrict` is accepted only on pointer types and is recorded in the type system. The current
+optimizer does not yet use no-alias assumptions across arbitrary pointers, so the qualifier is a
+checked contract rather than an unsafe speculative transformation.
+
+`register` requests ordinary register allocation when it is available and may only be used for
+automatic local variables. As in C, taking its address is rejected.
 
 ### No integer literal suffixes
 

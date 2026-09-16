@@ -158,6 +158,10 @@ namespace ceresc::ast
 			return "<null-type>";
 
 		std::string prefix = type->isConst() ? "const " : "";
+		if (type->isVolatile())
+			prefix += "volatile ";
+		if (type->isRestrict())
+			prefix += "restrict ";
 		switch (type->kind())
 		{
 			case TypeKind::Void: return prefix + "void";

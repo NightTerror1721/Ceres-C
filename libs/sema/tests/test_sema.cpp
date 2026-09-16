@@ -918,6 +918,16 @@ TEST(sema, union_members_overlay_and_alignof_is_unsigned)
 	CHECK_EQ(typeOfMainLastExpr("union Value { char byte; int word; }; int main(void) { union Value value; value.word = 7; value.byte + alignof(union Value); }"), "unsigned int");
 }
 
+TEST(sema, restrict_requires_a_pointer_and_register_has_no_address)
+{
+	CheckOutcome restrictOutcome = checkSource("restrict int value;");
+	CHECK(!restrictOutcome.ok);
+	CHECK(containsMessage(restrictOutcome, "requires a pointer"));
+	CheckOutcome registerOutcome = checkSource("int main(void) { register int value; int* p = &value; return 0; }");
+	CHECK(!registerOutcome.ok);
+	CHECK(containsMessage(registerOutcome, "address of register"));
+}
+
 TEST(sema, a_braced_string_literal_initializes_a_char_array)
 {
 	CheckOutcome outcome = checkSource("char s[8] = { \"hola\" };");
