@@ -1172,7 +1172,7 @@ namespace ceresc::codegen
 			dimensions.push_back(element->arraySize());
 			element = element->arrayElementType();
 		}
-		if (!element || element->isStruct() || dimensions.empty())
+		if (!element || element->isAggregate() || dimensions.empty())
 			return {}; // not this shape - the caller falls back to a flat word array
 
 		std::string name = fieldTypeName(element->sizeInBytes(), element->isFloat());
@@ -1276,7 +1276,7 @@ namespace ceresc::codegen
 				}
 				return true;
 			}
-			if (type->isStruct())
+			if (type->isAggregate())
 			{
 				StructDecl* structDecl = type->structDecl();
 				if (!structDecl)
@@ -1381,7 +1381,7 @@ namespace ceresc::codegen
 		const Type* type = decl.type();
 		if (!type)
 			return;
-		if (type->isArray() || type->isStruct())
+		if (type->isArray() || type->isAggregate())
 		{
 			generateAggregateGlobal(decl, symbolName, exported);
 			return;
@@ -1487,7 +1487,7 @@ namespace ceresc::codegen
 			// The declared SHAPE has to match the definition's, since that is the whole reason the
 			// declaration exists - so it is built by the same two functions that build the real one.
 			std::string typeText;
-			if (type->isArray() || type->isStruct())
+			if (type->isArray() || type->isAggregate())
 			{
 				typeText = scalarArrayTypeName(type);
 				if (typeText.empty())

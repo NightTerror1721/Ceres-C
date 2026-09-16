@@ -413,7 +413,7 @@ namespace ceresc::ir
 
 	bool IrBuilder::isStructType(const Type* type) noexcept
 	{
-		return type && type->isStruct();
+		return type && type->isAggregate();
 	}
 
 	bool IrBuilder::isIndirectStruct(const Type* type) noexcept
@@ -765,7 +765,7 @@ namespace ceresc::ir
 		// address is simply how this IR represents it, and whoever consumes it knows to copy from
 		// there rather than treat it as a pointer value.
 		const Type* type = expr->type();
-		if (type && (type->isArray() || type->isStruct()))
+		if (type && (type->isArray() || type->isAggregate()))
 			return lowerAddress(expr);
 		IrValue addr = lowerAddress(expr);
 		return loadOfType(expr->location(), addr, type);
@@ -1327,6 +1327,11 @@ namespace ceresc::ir
 		const Type* argType = node.isTypeArgument() ? node.argumentType()
 			: (node.argumentExpr() ? node.argumentExpr()->type() : nullptr);
 		_lastValue = emitConstInt(node.location(), argType ? static_cast<i64>(argType->sizeInBytes()) : 0);
+	}
+
+	void IrBuilder::visit(ast::AlignofExpr& node)
+	{
+		_lastValue = emitConstInt(node.location(), node.argumentType() ? static_cast<i64>(node.argumentType()->alignment()) : 1);
 	}
 
 	void IrBuilder::visit(ast::TernaryExpr& node)

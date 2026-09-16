@@ -274,7 +274,7 @@ namespace ceresc::sema
 			return;
 		}
 
-		if (type && type->isStruct())
+		if (type && type->isAggregate())
 		{
 			ast::StructDecl* decl = type->structDecl();
 			if (!decl || !decl->isComplete())
@@ -804,7 +804,7 @@ namespace ceresc::sema
 			_diagnostics.error(node.location(), "expression is not assignable");
 		else if (targetType && targetType->isConst())
 			_diagnostics.error(node.location(), "cannot assign to '{}': it is const", typeName(targetType));
-		else if (targetType && targetType->isStruct() && node.op() != ast::AssignOp::Assign)
+		else if (targetType && targetType->isAggregate() && node.op() != ast::AssignOp::Assign)
 			_diagnostics.error(node.location(), "compound assignment is not valid for struct type '{}'", typeName(targetType));
 		else if (!isAssignable(targetType, valueType))
 			_diagnostics.error(node.location(), "assigning to '{}' from incompatible type '{}'", typeName(targetType), typeName(valueType));
@@ -840,14 +840,14 @@ namespace ceresc::sema
 		const Type* structType = nullptr;
 		if (node.isArrow())
 		{
-			if (objectType && objectType->isPointer() && objectType->arrayElementType() && objectType->arrayElementType()->isStruct())
+			if (objectType && objectType->isPointer() && objectType->arrayElementType() && objectType->arrayElementType()->isAggregate())
 				structType = objectType->arrayElementType();
 			else
 				_diagnostics.error(node.location(), "member reference type '{}' is not a pointer to struct", typeName(objectType));
 		}
 		else
 		{
-			if (objectType && objectType->isStruct())
+			if (objectType && objectType->isAggregate())
 				structType = objectType;
 			else
 				_diagnostics.error(node.location(), "member reference base type '{}' is not a struct", typeName(objectType));
@@ -884,8 +884,8 @@ namespace ceresc::sema
 		const Type* operandType = checkExpr(node.operand());
 		const Type* targetType = node.type(); // set by the parser at construction time - see expr.h
 
-		bool operandIsStruct = operandType && operandType->isStruct();
-		bool targetIsStruct = targetType && targetType->isStruct();
+		bool operandIsStruct = operandType && operandType->isAggregate();
+		bool targetIsStruct = targetType && targetType->isAggregate();
 		if (operandIsStruct != targetIsStruct || (operandIsStruct && targetIsStruct && !(*operandType == *targetType)))
 			_diagnostics.error(node.location(), "cannot cast from '{}' to '{}'", typeName(operandType), typeName(targetType));
 
@@ -897,6 +897,12 @@ namespace ceresc::sema
 		if (!node.isTypeArgument())
 			checkExpr(node.argumentExpr()); // non-evaluated context, but still checked for errors, same as real C
 
+		node.setType(&Type::UInt);
+		_lastExprType = &Type::UInt;
+	}
+
+	void Sema::visit(ast::AlignofExpr& node)
+	{
 		node.setType(&Type::UInt);
 		_lastExprType = &Type::UInt;
 	}

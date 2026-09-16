@@ -176,6 +176,7 @@ namespace ceresc::ast
 			case TypeKind::Pointer: return prefix + typeName(type->arrayElementType()) + "*";
 			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + "[" + std::to_string(type->arraySize()) + "]";
 			case TypeKind::Struct: return prefix + "struct " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
+			case TypeKind::Union: return prefix + "union " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Enum: return prefix + "enum " + std::string(type->enumDecl() ? type->enumDecl()->name() : std::string_view("<anonymous>"));
 		}
 		return prefix + "<unknown-type>";
@@ -303,6 +304,13 @@ namespace ceresc::ast
 			appendTypeName(node.argumentType());
 		else
 			printChild(node.argumentExpr());
+		_output += ')';
+	}
+
+	void AstPrinter::visit(AlignofExpr& node)
+	{
+		_output += "(alignof ";
+		appendTypeName(node.argumentType());
 		_output += ')';
 	}
 
@@ -501,7 +509,7 @@ namespace ceresc::ast
 
 	void AstPrinter::visit(StructDecl& node)
 	{
-		_output += "(struct ";
+		_output += node.isUnion() ? "(union " : "(struct ";
 		_output += node.name();
 		if (!node.isComplete())
 		{

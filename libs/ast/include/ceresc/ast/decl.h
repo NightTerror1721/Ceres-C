@@ -145,13 +145,15 @@ namespace ceresc::ast
 		FieldDecl const* _fields = nullptr; // non-owning view over an arena-allocated array - see the header comment above
 		u32 _fieldCount = 0;
 		bool _complete = false; // false until setFields() runs - see the header comment above
+		bool _isUnion = false;
 
 	public:
-		StructDecl(support::SourceLocation location, std::string_view name) noexcept : Decl(location, name) {}
+		StructDecl(support::SourceLocation location, std::string_view name, bool isUnion = false) noexcept : Decl(location, name), _isUnion(isUnion) {}
 
 	public:
 		std::span<const FieldDecl> fields() const noexcept { return { _fields, _fieldCount }; }
 		bool isComplete() const noexcept { return _complete; }
+		bool isUnion() const noexcept { return _isUnion; }
 
 		void setFields(std::span<const FieldDecl> fields) noexcept
 		{

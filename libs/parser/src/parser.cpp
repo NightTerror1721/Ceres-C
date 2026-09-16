@@ -286,6 +286,7 @@ namespace ceresc::parser
 			case TokenKind::PlusPlus: advance(); return wrapUnary(UnaryOp::PreIncrement, location, parseUnary());
 			case TokenKind::MinusMinus: advance(); return wrapUnary(UnaryOp::PreDecrement, location, parseUnary());
 			case TokenKind::KwSizeof: return parseSizeof(location);
+			case TokenKind::KwAlignof: return parseAlignof(location);
 			default: return parsePostfix();
 		}
 	}
@@ -306,6 +307,17 @@ namespace ceresc::parser
 		if (!operand)
 			return nullptr;
 		return _arena.create<ast::SizeofExpr>(location, operand);
+	}
+
+	Expr* Parser::parseAlignof(SourceLocation location)
+	{
+		advance();
+		if (!expect(TokenKind::LParen, "'(' after 'alignof'"))
+			return nullptr;
+		const Type* argumentType = parseTypeName();
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		return argumentType ? _arena.create<ast::AlignofExpr>(location, argumentType) : nullptr;
 	}
 
 	Expr* Parser::parsePostfix()
@@ -586,6 +598,7 @@ namespace ceresc::parser
 				return isUnsigned ? &Type::UInt : &Type::Int;
 			}
 			case TokenKind::KwStruct: return parseStructTypeSpec();
+			case TokenKind::KwUnion: return parseStructTypeSpec(true);
 			case TokenKind::KwEnum: return parseEnumTypeSpec();
 			default:
 				_diagnostics.error(location, "expected type name but found '{}'",
@@ -600,14 +613,14 @@ namespace ceresc::parser
 	// -> here exactly like any other type-spec, then just check whether a ';' immediately follows to
 	// tell "just declaring the tag" apart from "declaring a tag and a variable") -------------------
 
-	const Type* Parser::parseStructTypeSpec()
+	const Type* Parser::parseStructTypeSpec(bool isUnion)
 	{
 		SourceLocation location = _current.location();
-		advance(); // 'struct'
+		advance(); // 'struct' or 'union'
 
 		if (!check(TokenKind::Identifier))
 		{
-			_diagnostics.error(_current.location(), "expected a struct tag name after 'struct'");
+			_diagnostics.error(_current.location(), "expected a {} tag name", isUnion ? "union" : "struct");
 			advance();
 			return nullptr;
 		}
@@ -622,14 +635,14 @@ namespace ceresc::parser
 			// refers back to this same tag (always through a pointer, e.g. `struct Node* next;`)
 			// resolves to this exact StructDecl instance. See decl.h's note on StructDecl's two-step
 			// construction.
-			decl = _arena.create<StructDecl>(location, tagName);
+			decl = _arena.create<StructDecl>(location, tagName, isUnion);
 			_structTable[tagName] = decl;
 		}
 
 		if (match(TokenKind::LBrace))
 		{
 			if (decl->isComplete())
-				_diagnostics.error(location, "redefinition of 'struct {}'", tagName);
+				_diagnostics.error(location, "redefinition of '{} {}'", isUnion ? "union" : "struct", tagName);
 
 			std::vector<FieldDecl> fields;
 			while (!check(TokenKind::RBrace) && !isAtEnd())
@@ -662,7 +675,7 @@ namespace ceresc::parser
 			decl->setFields(copyFieldsToArena(fields));
 		}
 
-		return Type::makeStruct(_arena, decl);
+		return isUnion ? Type::makeUnion(_arena, decl) : Type::makeStruct(_arena, decl);
 	}
 
 	const Type* Parser::parseEnumTypeSpec()
@@ -1063,10 +1076,10 @@ namespace ceresc::parser
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator: parseTypeName()
 		// already registered/completed the tag (see parseStructTypeSpec()/parseEnumTypeSpec()), so
 		// there is nothing left to declare - just wrap the tag itself in the DeclStmt.
-		if (check(TokenKind::Semicolon) && (type->isStruct() || type->isEnum()))
+		if (check(TokenKind::Semicolon) && (type->isAggregate() || type->isEnum()))
 		{
 			advance();
-			Decl* tagDecl = type->isStruct() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
+			Decl* tagDecl = type->isAggregate() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
 			return _arena.create<ast::DeclStmt>(location, tagDecl);
 		}
 
@@ -1142,10 +1155,10 @@ namespace ceresc::parser
 
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
 		// parseDeclStatement()'s identical check for the local-statement equivalent.
-		if (check(TokenKind::Semicolon) && (type->isStruct() || type->isEnum()))
+		if (check(TokenKind::Semicolon) && (type->isAggregate() || type->isEnum()))
 		{
 			advance();
-			return type->isStruct() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
+			return type->isAggregate() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
 		}
 
 		if (!check(TokenKind::Identifier))

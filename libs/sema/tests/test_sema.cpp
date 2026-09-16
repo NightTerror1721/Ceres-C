@@ -912,6 +912,12 @@ TEST(sema, a_string_literal_fills_one_row_of_a_two_dimensional_char_array)
 	CHECK(outcome.ok);
 }
 
+TEST(sema, union_members_overlay_and_alignof_is_unsigned)
+{
+	CHECK(checkSource("union Value { char byte; int word; }; int main(void) { union Value value; value.word = 7; return value.byte + alignof(union Value); }").ok);
+	CHECK_EQ(typeOfMainLastExpr("union Value { char byte; int word; }; int main(void) { union Value value; value.word = 7; value.byte + alignof(union Value); }"), "unsigned int");
+}
+
 TEST(sema, a_braced_string_literal_initializes_a_char_array)
 {
 	CheckOutcome outcome = checkSource("char s[8] = { \"hola\" };");

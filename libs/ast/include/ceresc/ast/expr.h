@@ -9,7 +9,7 @@
 
 // Expr hierarchy: IntLiteralExpr, FloatLiteralExpr, CharLiteralExpr, BoolLiteralExpr,
 // StringLiteralExpr, NameExpr, CallExpr, UnaryExpr, BinaryExpr, AssignExpr, IndexExpr, MemberExpr,
-// CastExpr, SizeofExpr, TernaryExpr, InitListExpr.
+// CastExpr, SizeofExpr, AlignofExpr, TernaryExpr, InitListExpr.
 //
 // InitListExpr is the odd one out: `{ 1, 2, 3 }` is an *initializer*, not an expression the
 // grammar accepts anywhere an expression goes (§3: `initializer ::= assignment-expr | "{"
@@ -345,6 +345,20 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<SizeofExpr>, "SizeofExpr must be trivially destructible (Arena-allocated)");
+
+	class AlignofExpr final : public Expr
+	{
+	private:
+		const Type* _argumentType;
+
+	public:
+		AlignofExpr(support::SourceLocation location, const Type* argumentType) noexcept : Expr(location), _argumentType(argumentType) {}
+
+	public:
+		const Type* argumentType() const noexcept { return _argumentType; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<AlignofExpr>, "AlignofExpr must be trivially destructible (Arena-allocated)");
 
 	class TernaryExpr final : public Expr
 	{

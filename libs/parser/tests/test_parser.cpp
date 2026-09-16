@@ -75,6 +75,12 @@ TEST(parser, array_typedef_parameter_decays_to_pointer)
 	CHECK_EQ(printUnit("typedef int A[3]; void f(A a);"), "(unit (typedef A int[3]) (func f void (params (int* a)) <null>))");
 }
 
+TEST(parser, union_and_alignof_are_parsed_as_types_and_constant_expressions)
+{
+	CHECK_EQ(printUnit("union Value { char byte; int word; }; int x = alignof(union Value);"),
+		"(unit (union Value (fields (char byte) (int word))) (var x int (alignof union Value)))");
+}
+
 // ---- primary expressions -----------------------------------------------------------------------
 
 TEST(parser, literals_and_names)

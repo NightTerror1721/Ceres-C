@@ -62,6 +62,7 @@ namespace ceresc::ast
 				}
 				case TypeKind::Enum: return 4;
 				case TypeKind::Struct:
+				case TypeKind::Union:
 				{
 					StructDecl* decl = type->structDecl();
 					if (!decl || !decl->isComplete())
@@ -74,7 +75,8 @@ namespace ceresc::ast
 						if (!field.type)
 							continue;
 						u32 fieldAlign = alignmentOf(field.type, depth + 1);
-						size = alignUp(size, fieldAlign) + sizeOf(field.type, depth + 1);
+						size = decl->isUnion() ? std::max(size, sizeOf(field.type, depth + 1))
+							: alignUp(size, fieldAlign) + sizeOf(field.type, depth + 1);
 						maxAlign = fieldAlign > maxAlign ? fieldAlign : maxAlign;
 					}
 					return alignUp(size, maxAlign);
@@ -100,6 +102,7 @@ namespace ceresc::ast
 				case TypeKind::Array: return alignmentOf(type->arrayElementType(), depth + 1);
 				case TypeKind::Enum: return 4;
 				case TypeKind::Struct:
+				case TypeKind::Union:
 				{
 					StructDecl* decl = type->structDecl();
 					if (!decl || !decl->isComplete())

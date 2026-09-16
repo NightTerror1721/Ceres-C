@@ -78,6 +78,8 @@ namespace ceresc::sema
 
 	u32 fieldOffset(const ast::StructDecl& decl, u32 fieldIndex) noexcept
 	{
+		if (decl.isUnion())
+			return 0;
 		u32 offset = 0;
 		u32 index = 0;
 		for (const ast::FieldDecl& field : decl.fields())

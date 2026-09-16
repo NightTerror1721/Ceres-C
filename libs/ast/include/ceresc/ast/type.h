@@ -55,6 +55,7 @@ namespace ceresc::ast
 		Pointer,
 		Array,
 		Struct,
+		Union,
 		Enum
 	};
 
@@ -113,6 +114,8 @@ namespace ceresc::ast
 		constexpr bool isPointer() const noexcept { return _kind == TypeKind::Pointer; }
 		constexpr bool isArray() const noexcept { return _kind == TypeKind::Array; }
 		constexpr bool isStruct() const noexcept { return _kind == TypeKind::Struct; }
+		constexpr bool isUnion() const noexcept { return _kind == TypeKind::Union; }
+		constexpr bool isAggregate() const noexcept { return isStruct() || isUnion(); }
 		constexpr bool isEnum() const noexcept { return _kind == TypeKind::Enum; }
 
 		// Not constexpr: the Struct case walks StructDecl::fields(), which needs the complete
@@ -145,6 +148,10 @@ namespace ceresc::ast
 		static const Type* makeStruct(support::Arena& arena, StructDecl* structDecl, bool isConst = false, bool isVolatile = false) noexcept
 		{
 			return makeCompound(arena, TypeKind::Struct, isConst, isVolatile, structDecl);
+		}
+		static const Type* makeUnion(support::Arena& arena, StructDecl* unionDecl, bool isConst = false, bool isVolatile = false) noexcept
+		{
+			return makeCompound(arena, TypeKind::Union, isConst, isVolatile, unionDecl);
 		}
 		static const Type* makeEnum(support::Arena& arena, EnumDecl* enumDecl, bool isConst = false, bool isVolatile = false) noexcept
 		{

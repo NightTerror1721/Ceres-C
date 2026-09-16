@@ -161,6 +161,7 @@ namespace ceresc::parser
 		Expr* parseCast();
 		Expr* parseUnary();
 		Expr* parseSizeof(support::SourceLocation location);
+		Expr* parseAlignof(support::SourceLocation location);
 		Expr* parsePostfix();
 		Expr* parsePrimary();
 
@@ -257,7 +258,7 @@ namespace ceresc::parser
 
 		// struct/enum are parsed as part of the type-spec grammar, not as their own top-level
 		// productions - see the header comment above.
-		const Type* parseStructTypeSpec();
+		const Type* parseStructTypeSpec(bool isUnion = false);
 		const Type* parseEnumTypeSpec();
 
 	private:
@@ -322,6 +323,7 @@ namespace ceresc::parser
 				case TokenKind::KwSigned:
 				case TokenKind::KwUnsigned:
 				case TokenKind::KwStruct:
+				case TokenKind::KwUnion:
 				case TokenKind::KwEnum:
 					return true;
 				default:
