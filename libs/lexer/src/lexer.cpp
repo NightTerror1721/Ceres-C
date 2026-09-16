@@ -336,7 +336,12 @@ namespace ceresc::lexer
 			case ':': return Token::makeColon(loc);
 			case '?': return Token::makeQuestion(loc);
 			case '~': return Token::makeTilde(loc);
-			case '.': return Token::makeDot(loc);
+			// Maximal munch again, but for a three-character token: `...` is one token, and `.` is
+			// only Dot when it is NOT the start of one. `..` is not a token in C at all, so a lone
+			// pair falls through to Dot and lets the parser complain about the second one.
+			case '.':
+				if (_cursor.match("..")) return Token::makeEllipsis(loc);
+				return Token::makeDot(loc);
 
 			// Maximal munch: test the suffix after consuming the shared prefix.
 			case '-':

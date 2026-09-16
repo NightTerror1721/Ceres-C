@@ -834,3 +834,98 @@ TEST(e2e, a_const_global_lives_in_rodata_and_is_still_readable)
 		"}",
 		"ok5");
 }
+
+TEST(e2e, a_variadic_function_sums_its_argument_tail)
+{
+	runsTheSameAtEveryLevel("variadic_sum",
+		"int sum(int count, ...) {"
+		"    va_list ap;"
+		"    int total = 0;"
+		"    int i;"
+		"    va_start(ap, count);"
+		"    for (i = 0; i < count; i = i + 1) total = total + va_arg(ap, int);"
+		"    va_end(ap);"
+		"    return total;"
+		"}"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + sum(4, 1, 2, 0, 3);" // single digit (6) keeps the raw-MMIO print simple
+		"    return 0;"
+		"}",
+		"6");
+}
+
+TEST(e2e, a_variadic_function_finds_its_tail_past_stack_passed_fixed_parameters)
+{
+	// Six fixed parameters, so two of them arrive on the stack before the tail even begins - the
+	// case where the tail's starting offset is not simply [fp + 8].
+	runsTheSameAtEveryLevel("variadic_spilled_fixed",
+		"int pick(int a, int b, int c, int d, int e, int f, ...) {"
+		"    va_list ap;"
+		"    int v = 0;"
+		"    int i;"
+		"    va_start(ap, f);"
+		"    for (i = 0; i < 3; i = i + 1) v = v + va_arg(ap, int);"
+		"    va_end(ap);"
+		"    return v + a + b + c + d + e + f;"
+		"}"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + pick(1, 1, 1, 1, 1, 1, 1, 1, 0);" // 6 fixed + 2 variadic = 8
+		"    return 0;"
+		"}",
+		"8");
+}
+
+TEST(e2e, a_float_travels_through_the_tail_and_va_copy_rereads_it)
+{
+	// `float` is passed as the f32 it already is - the machine has no f64 for C's own float-to-
+	// double promotion to target (docs/09-Variadic-Convention.md).
+	runsTheSameAtEveryLevel("variadic_float_and_copy",
+		"int check(int n, ...) {"
+		"    va_list ap;"
+		"    va_list copy;"
+		"    float f;"
+		"    int i;"
+		"    va_start(ap, n);"
+		"    f = va_arg(ap, float);"
+		"    i = va_arg(ap, int);"
+		"    va_copy(copy, ap);"
+		"    int total = (int)f + i + va_arg(copy, int);"
+		"    va_end(copy);"
+		"    va_end(ap);"
+		"    return total + n;"
+		"}"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + check(0, 2.0, 3, 4);" // 2 + 3 + 4 = 9
+		"    return 0;"
+		"}",
+		"9");
+}
+
+TEST(e2e, a_va_list_can_be_handed_to_another_function)
+{
+	// The vprintf pattern: the worker is not variadic itself, it just consumes a cursor it was
+	// given - which works because a va_list is an ordinary pointer.
+	runsTheSameAtEveryLevel("variadic_forwarded_list",
+		"int vsum(int count, va_list ap) {"
+		"    int total = 0;"
+		"    int i;"
+		"    for (i = 0; i < count; i = i + 1) total = total + va_arg(ap, int);"
+		"    return total;"
+		"}"
+		"int sum(int count, ...) {"
+		"    va_list ap;"
+		"    va_start(ap, count);"
+		"    int r = vsum(count, ap);"
+		"    va_end(ap);"
+		"    return r;"
+		"}"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + sum(3, 2, 2, 1);" // 5
+		"    return 0;"
+		"}",
+		"5");
+}

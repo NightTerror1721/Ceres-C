@@ -101,6 +101,11 @@ namespace ceresc::ir
 		//                     applies, so the request means something rather than being decoration.
 		bool _externalLinkage = true;
 		bool _inlineHint = false;
+		// The declaration ended in `...`. Two passes need it and neither can see the AST: the
+		// inliner (a variadic callee has arguments its parameter list does not describe, so there is
+		// nothing to bind them to) and codegen (a variadic function reads its tail out of the
+		// caller's frame, which means it always needs a frame pointer of its own).
+		bool _isVariadic = false;
 
 	public:
 		IrFunction(std::string_view name, const ast::Type* returnType) noexcept :
@@ -122,7 +127,9 @@ namespace ceresc::ir
 		std::span<const std::unique_ptr<BasicBlock>> blocks() const noexcept { return _blocks; }
 		bool hasExternalLinkage() const noexcept { return _externalLinkage; }
 		bool isInlineHint() const noexcept { return _inlineHint; }
+		bool isVariadic() const noexcept { return _isVariadic; }
 		void setLinkage(bool external, bool inlineHint) noexcept { _externalLinkage = external; _inlineHint = inlineHint; }
+		void setVariadic(bool variadic) noexcept { _isVariadic = variadic; }
 
 		BasicBlock& createBlock()
 		{

@@ -9,7 +9,61 @@ namespace ceresc::parser
 
 	Parser::Parser(lexer::Lexer& lexer, support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept :
 		_lexer(lexer), _arena(arena), _diagnostics(diagnostics), _current(lexer.next()), _next(lexer.next())
-	{}
+	{
+		// `va_list` is a builtin type name rather than something a header declares: this compiler
+		// has no system include directory to find a <stdarg.h> in, so the type and the four
+		// operations on it are known to the compiler itself (docs/09-Variadic-Convention.md).
+		// It is a `char*` because that is exactly what it holds - a cursor into the caller's frame,
+		// advanced a byte count at a time by va_arg - and spelling it as an ordinary pointer means
+		// assignment, copying and parameter passing all already work on it.
+		_typedefTable.emplace("va_list", Type::makePointer(_arena, &Type::Char));
+	}
+
+	std::optional<ast::VaOp> Parser::vaBuiltinFor(std::string_view name) noexcept
+	{
+		if (name == "va_start") return ast::VaOp::Start;
+		if (name == "va_arg")   return ast::VaOp::Arg;
+		if (name == "va_end")   return ast::VaOp::End;
+		if (name == "va_copy")  return ast::VaOp::Copy;
+		return std::nullopt;
+	}
+
+	Expr* Parser::parseVaBuiltin(SourceLocation location, ast::VaOp op)
+	{
+		advance(); // the builtin's name
+		if (!expect(TokenKind::LParen, "'(' after a variadic builtin"))
+			return nullptr;
+
+		Expr* list = parseAssignment();
+		if (!list)
+			return nullptr;
+
+		Expr* second = nullptr;
+		const Type* argumentType = nullptr;
+		if (op != ast::VaOp::End)
+		{
+			if (!expect(TokenKind::Comma, "','"))
+				return nullptr;
+			if (op == ast::VaOp::Arg)
+			{
+				// The one operand in this grammar that is a type rather than an expression, which
+				// is the whole reason va_arg cannot be an ordinary function.
+				argumentType = parseTypeName();
+				if (!argumentType)
+					return nullptr;
+			}
+			else
+			{
+				second = parseAssignment();
+				if (!second)
+					return nullptr;
+			}
+		}
+
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		return _arena.create<ast::VaExpr>(location, op, list, second, argumentType);
+	}
 
 	Token Parser::advance() noexcept
 	{
@@ -403,6 +457,12 @@ namespace ceresc::parser
 			case TokenKind::Identifier:
 			{
 				std::string_view name = _current.lexeme();
+				// The variadic builtins are syntax, not calls - va_arg's second operand is a type,
+				// and all four write through the va_list the caller named. Only treated as such in
+				// call position, so a program that uses one of these names for something else of
+				// its own keeps working.
+				if (std::optional<ast::VaOp> op = vaBuiltinFor(name); op && _next.is(TokenKind::LParen))
+					return parseVaBuiltin(location, *op);
 				advance();
 				return _arena.create<ast::NameExpr>(location, name);
 			}
@@ -1317,7 +1377,8 @@ namespace ceresc::parser
 		advance(); // '('
 
 		std::vector<Param> params;
-		if (!parseParamList(params))
+		bool isVariadic = false;
+		if (!parseParamList(params, isVariadic))
 			return nullptr;
 		if (!expect(TokenKind::RParen, "')'"))
 			return nullptr;
@@ -1346,11 +1407,13 @@ namespace ceresc::parser
 
 		return _arena.create<ast::FunctionDecl>(location, name, returnType, copyParamsToArena(params), body,
 			specifiers.storageClass == ast::StorageClass::Auto ? ast::StorageClass::None : specifiers.storageClass,
-			specifiers.isInline);
+			specifiers.isInline, isVariadic);
 	}
 
-	bool Parser::parseParamList(std::vector<Param>& outParams)
+	bool Parser::parseParamList(std::vector<Param>& outParams, bool& outIsVariadic)
 	{
+		outIsVariadic = false;
+
 		if (check(TokenKind::RParen))
 			return true; // foo()
 
@@ -1360,8 +1423,33 @@ namespace ceresc::parser
 			return true;
 		}
 
+		if (check(TokenKind::Ellipsis))
+		{
+			// `f(...)` with no fixed parameter before it. Real C89 rejects it too, and here the
+			// reason is not merely conformance: va_start() names the last fixed parameter to find
+			// where the variadic arguments begin (docs/09-Variadic-Convention.md), so a list with
+			// no fixed parameter has nothing such a call could ever name.
+			_diagnostics.error(_current.location(), "'...' requires at least one named parameter before it");
+			return false;
+		}
+
 		do
 		{
+			if (check(TokenKind::Ellipsis))
+			{
+				// Only ever valid as the whole of the last entry: `f(int x, ...)`. Everything else
+				// the loop could reach here - `f(int x, ..., int y)`, `f(int x, ...,)` - is caught
+				// by the RParen check below, since the ellipsis consumes no declarator of its own.
+				advance(); // '...'
+				outIsVariadic = true;
+				if (!check(TokenKind::RParen))
+				{
+					_diagnostics.error(_current.location(), "'...' must be the last entry in a parameter list");
+					return false;
+				}
+				return true;
+			}
+
 			SourceLocation location = _current.location();
 			const Type* type = parseTypeName();
 			if (!type)

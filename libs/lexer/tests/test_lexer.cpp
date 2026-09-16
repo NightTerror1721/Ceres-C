@@ -524,3 +524,48 @@ TEST(lexer, empty_source_is_immediately_end_of_file)
 
 	CHECK(lexer.next().is(TokenKind::EndOfFile));
 }
+
+// ---- the variadic ellipsis -------------------------------------------------------------------
+
+TEST(lexer, three_dots_are_one_ellipsis_token)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("(int, ...)", testSourceId(), diagnostics, pool);
+
+	CHECK(lexer.next().isLParen());
+	CHECK(lexer.next().isKwInt());
+	CHECK(lexer.next().isComma());
+	Token ellipsis = lexer.next();
+	CHECK(ellipsis.is(TokenKind::Ellipsis));
+	CHECK_EQ(ellipsis.lexeme(), std::string_view("..."));
+	CHECK(lexer.next().isRParen());
+	CHECK(!diagnostics.hasErrors());
+}
+
+TEST(lexer, fewer_than_three_dots_stay_dots)
+{
+	// `..` is not a token in C at all, so maximal munch must not swallow a lone pair into an
+	// Ellipsis - each dot comes back on its own for the parser to reject in its own position.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("a..b.c", testSourceId(), diagnostics, pool);
+
+	CHECK(lexer.next().isIdentifier());
+	CHECK(lexer.next().isDot());
+	CHECK(lexer.next().isDot());
+	CHECK(lexer.next().isIdentifier());
+	CHECK(lexer.next().isDot());
+	CHECK(lexer.next().isIdentifier());
+}
+
+TEST(lexer, four_dots_are_an_ellipsis_followed_by_a_dot)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("....", testSourceId(), diagnostics, pool);
+
+	CHECK(lexer.next().is(TokenKind::Ellipsis));
+	CHECK(lexer.next().isDot());
+	CHECK(lexer.next().is(TokenKind::EndOfFile));
+}

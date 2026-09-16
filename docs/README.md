@@ -14,6 +14,7 @@ line of C it came from, which is the whole reason this compiler emits text inste
 | [06-Known-Limitations.md](06-Known-Limitations.md) | What this version leaves out, and why. |
 | [07-CASM-Interop.md](07-CASM-Interop.md) | Building one program out of C and hand-written assembly, in both directions. |
 | [08-Preprocessor.md](08-Preprocessor.md) | `#include`, `#define`, headers, and what is missing. |
+| [09-Variadic-Convention.md](09-Variadic-Convention.md) | `...`, `va_list` and the four builtins: where a variadic argument is passed and how the callee finds it. |
 
 ## The pipeline
 
@@ -35,7 +36,7 @@ the link — see [07-CASM-Interop.md](07-CASM-Interop.md).
 
 ## The shipped examples
 
-Sixteen single-file programs under [`examples/`](../examples), each with a `.expected` file holding
+Seventeen single-file programs under [`examples/`](../examples), each with a `.expected` file holding
 the exact output it must produce, plus [`examples/interop/`](../examples/interop) — one program built
 from two C files, a header and two hand-written `.casm` files. Every one of them is compiled,
 assembled and run at `-O0`, `-O1` and `-O2` on every build (`tests/examples`), and all three levels

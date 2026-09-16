@@ -3,6 +3,7 @@
 #include <ceresc/lexer/lexer.h>
 #include <ceresc/ast/ast_visitor.h>
 #include <ceresc/support/arena.h>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <utility>
@@ -231,8 +232,19 @@ namespace ceresc::parser
 		Expr* parseInitializer();
 		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType,
 			const DeclSpecifiers& specifiers);
-		bool parseParamList(std::vector<Param>& outParams);
+		// Reads the parameter list between an already-consumed '(' and its ')'. `outIsVariadic` is
+		// set when the list ended in `...`, which is never itself a Param: the ellipsis says that
+		// arguments MAY follow the ones named here, so outParams keeps describing exactly the fixed
+		// parameters and nothing else (ast::FunctionDecl::isVariadic()).
+		bool parseParamList(std::vector<Param>& outParams, bool& outIsVariadic);
 		Decl* parseTypedefDecl();
+
+		// The variadic builtins (va_start/va_arg/va_end/va_copy), recognized by name in call
+		// position rather than declared by a header - this compiler has no system include directory
+		// to find a <stdarg.h> in, and va_arg's second operand is a type-name, which no ordinary
+		// call could express. See docs/09-Variadic-Convention.md.
+		static std::optional<ast::VaOp> vaBuiltinFor(std::string_view name) noexcept;
+		Expr* parseVaBuiltin(support::SourceLocation location, ast::VaOp op);
 
 		// direct-declarator's "[" INT_LITERAL? "]")* suffix (§7's grammar) - called after an
 		// identifier at every declarator site (local/global VarDecl, struct field, typedef, param)

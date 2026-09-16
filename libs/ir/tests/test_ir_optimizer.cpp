@@ -540,3 +540,14 @@ TEST(ir_optimizer, a_reused_slot_grows_to_the_widest_local_that_lived_in_it)
 		CHECK_EQ(function->localSlots()[0].sizeInBytes, u32(4));
 	}
 }
+
+TEST(ir_optimizer, inlining_leaves_a_variadic_function_alone)
+{
+	// Its arguments are not described by its parameter list, and its body reads them out of the
+	// caller's frame - neither of which survives being spliced into a different frame.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.inlining = true;
+
+	std::string text = optimizedIr("int one(int a, ...) { return a; } int main() { return one(5, 9); }", options);
+	CHECK(contains(text, "call"));
+}

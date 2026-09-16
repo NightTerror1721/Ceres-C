@@ -1,0 +1,5 @@
+sum:        60 and 15 and 0
+largest:    of 12 99 7 40 -> 99
+format:     42 items, A grade, all present, 100%
+mixed:      int 7 then float 2 then int 9
+spilled:    81 (21 fixed + 60 variadic)

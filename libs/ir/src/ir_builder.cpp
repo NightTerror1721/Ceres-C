@@ -1041,11 +1041,19 @@ namespace ceresc::ir
 		// guarantees it is - see the header comment). Empty for anything else, in which case each
 		// argument is passed with the type it was computed as.
 		std::span<const ast::Param> params;
+		// Where this callee's variadic tail starts, counted in the same argValues indices the Param
+		// instructions below are emitted from - so the hidden struct-return pointer, which is an
+		// argument here but not in the source, is already accounted for. ~0u means "no tail".
+		u32 fixedArgCount = ~0u;
 		if (auto* calleeName = dynamic_cast<ast::NameExpr*>(node.callee()))
 		{
 			auto it = _functionDecls.find(calleeName->name());
 			if (it != _functionDecls.end())
+			{
 				params = it->second->params();
+				if (it->second->isVariadic())
+					fixedArgCount = static_cast<u32>(params.size()) + (returnsStructIndirect ? 1u : 0u);
+			}
 		}
 
 		usize argIndex = 0;
@@ -1087,7 +1095,7 @@ namespace ceresc::ir
 		}
 
 		for (usize i = 0; i < argValues.size(); ++i)
-			emitVoid(loc, IrParamPayload{ argValues[i], argIsFloat[i] });
+			emitVoid(loc, IrParamPayload{ argValues[i], argIsFloat[i], i >= fixedArgCount });
 
 		auto* callee = dynamic_cast<ast::NameExpr*>(node.callee());
 		std::string_view calleeName = callee ? callee->name() : std::string_view{}; // sema guarantees this - see the header comment
@@ -1332,6 +1340,60 @@ namespace ceresc::ir
 	void IrBuilder::visit(ast::AlignofExpr& node)
 	{
 		_lastValue = emitConstInt(node.location(), node.argumentType() ? static_cast<i64>(node.argumentType()->alignment()) : 1);
+	}
+
+	void IrBuilder::visit(ast::VaExpr& node)
+	{
+		using ast::VaOp;
+		support::SourceLocation loc = node.location();
+
+		// A va_list is an ordinary `char*` lvalue (see the parser), so its ADDRESS is what every
+		// form below reads and writes through - the cursor has to survive the call that advanced it.
+		IrValue listAddr = lowerAddress(node.list());
+
+		switch (node.op())
+		{
+			case VaOp::Start:
+			{
+				// The one step the back end has to resolve: where this function's own tail begins.
+				IrValue start = _currentFunction->newTemp();
+				emitVoid(loc, IrVaStartPayload{ start });
+				emitStore(loc, listAddr, IrMemSize::Word, start);
+				_lastValue = IrValue{};
+				return;
+			}
+
+			case VaOp::Arg:
+			{
+				// Read through the cursor, then advance it one word - every variadic argument
+				// occupies exactly one outgoing stack word (docs/09-Variadic-Convention.md), which
+				// is what sema's "must be a 4-byte scalar" check on the type guarantees.
+				const Type* argumentType = node.argumentType();
+				bool isFloat = argumentType && argumentType->isFloat();
+				IrValue cursor = emitLoad(loc, listAddr, IrMemSize::Word);
+				IrValue value = emitLoad(loc, cursor, IrMemSize::Word, isFloat);
+				IrValue step = emitConstInt(loc, 4);
+				IrValue advanced = emitBinOp(loc, IrBinOp::Add, cursor, step, false, false);
+				emitStore(loc, listAddr, IrMemSize::Word, advanced);
+				_lastValue = value;
+				return;
+			}
+
+			case VaOp::Copy:
+			{
+				// Both cursors are plain words; copying one is copying the other's current position.
+				IrValue source = lowerExpr(node.second());
+				emitStore(loc, listAddr, IrMemSize::Word, source);
+				_lastValue = IrValue{};
+				return;
+			}
+
+			case VaOp::End:
+				// Nothing to release: a va_list owns no resource, it is a cursor into a frame that
+				// the caller is going to reclaim anyway.
+				_lastValue = IrValue{};
+				return;
+		}
 	}
 
 	void IrBuilder::visit(ast::TernaryExpr& node)
@@ -1767,6 +1829,9 @@ namespace ceresc::ir
 		// this (so unused-function elimination must keep it) and whether the program asked for it to
 		// be inlined (so the inliner's size limit gives way).
 		function.setLinkage(node.hasExternalLinkage(), node.isInline());
+		// A third such fact: the inliner must not splice a variadic body into another frame, and
+		// codegen must give one a frame pointer to read its argument tail through.
+		function.setVariadic(node.isVariadic());
 		_currentFunction = &function;
 
 		// A struct returned through memory takes a hidden first parameter holding its destination

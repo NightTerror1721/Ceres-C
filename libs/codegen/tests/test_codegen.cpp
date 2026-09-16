@@ -1005,3 +1005,59 @@ TEST(codegen, a_narrowing_conversion_of_a_constant_folds_away)
 	CHECK(!contains(text, "sxtb "));
 	CHECK(!contains(text, "and "));
 }
+
+// ---- the variadic calling convention ---------------------------------------------------------
+// docs/09-Variadic-Convention.md is the contract these pin: fixed arguments follow the ordinary
+// rule, and everything past them goes to the outgoing stack area whatever bank it belongs to.
+
+TEST(codegen, a_variadic_calls_tail_goes_to_the_stack_even_with_argument_registers_free)
+{
+	// `f` declares one fixed parameter, so only `1` may use r0 - the other three arguments are the
+	// tail and take outgoing words 0, 1 and 2, although r1-r3 are untouched.
+	std::string casm = atO0("int f(int a, ...); int main() { return f(1, 2, 3, 4); }");
+	CHECK(contains(casm, "mov r0, "));
+	CHECK(contains(casm, "str [sp + 0],"));
+	CHECK(contains(casm, "str [sp + 4],"));
+	CHECK(contains(casm, "str [sp + 8],"));
+	CHECK(!contains(casm, "mov r1, "));
+}
+
+TEST(codegen, a_float_in_the_tail_goes_to_the_stack_rather_than_to_a_float_register)
+{
+	std::string casm = atO0("int f(int a, ...); int main() { return f(1, 2.5); }");
+	CHECK(contains(casm, "str [sp + 0],"));
+	CHECK(!contains(casm, "mov f0, "));
+}
+
+TEST(codegen, an_ordinary_call_still_uses_both_banks_of_argument_registers)
+{
+	// The same shape without the ellipsis, so the contrast above is about the ellipsis and not
+	// about how these arguments happen to be written.
+	std::string casm = atO0("int f(int a, float b); int main() { return f(1, 2.5); }");
+	CHECK(contains(casm, "mov f0, "));
+	CHECK(!contains(casm, "str [sp + 0],"));
+}
+
+TEST(codegen, a_variadic_function_reads_its_tail_past_its_own_stack_parameters)
+{
+	// One fixed parameter, which arrives in r0 and takes no incoming stack word, so the tail
+	// starts at the first one: [fp + 8].
+	std::string casm = atO0("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }");
+	CHECK(contains(casm, "la r"));
+	CHECK(contains(casm, ", [fp + 8]"));
+
+	// Six fixed parameters: r0-r3 hold four of them and the last two arrive on the stack at
+	// [fp + 8] and [fp + 12], so the tail can only begin at [fp + 16].
+	std::string spilled = atO0(
+		"int g(int a, int b, int c, int d, int e, int h, ...)"
+		"{ va_list ap; va_start(ap, h); return va_arg(ap, int); }");
+	CHECK(contains(spilled, ", [fp + 16]"));
+}
+
+TEST(codegen, a_variadic_function_always_gets_a_frame)
+{
+	// Nothing else in this function needs one, but it cannot address [fp + N] without an `enter`.
+	std::string casm = atO2("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }");
+	CHECK(contains(casm, "enter"));
+	CHECK(contains(casm, "leave"));
+}

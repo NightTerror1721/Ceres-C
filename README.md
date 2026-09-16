@@ -86,11 +86,15 @@ Pointers, fixed-size arrays, `struct`, `enum`, `typedef`. Every statement form i
 assignment, `++`/`--` in both positions, `sizeof`, casts, `?:`, and `.` and `->` as genuinely
 distinct operators.
 
-Headers work: `#include`, `#define` for object-like macros, `#undef` and `#pragma once`. Conditional
-compilation and macros with arguments do not — see
-[docs/08-Preprocessor.md](docs/08-Preprocessor.md).
+Headers work: `#include`, `#define` for object-like, function-like and variadic macros, `#undef`,
+`#pragma once`, conditional compilation (`#if`/`#elif`/`#else`/`#ifdef`/`#ifndef`/`defined`) and
+`#error`/`#warning` — see [docs/08-Preprocessor.md](docs/08-Preprocessor.md).
 
-No `double` (the VM has no f64 at all), no `union`, no bitfields, no function pointers, no varargs.
+`union` and `alignof` are supported, and so are the `volatile`, `restrict` and `register`
+qualifiers. Variadic functions work too, with `va_list` and the four builtins — see
+[docs/09-Variadic-Convention.md](docs/09-Variadic-Convention.md).
+
+No `double` (the VM has no f64 at all), no bitfields, no function pointers.
 [docs/02-Grammar.md](docs/02-Grammar.md) is the contract;
 [docs/06-Known-Limitations.md](docs/06-Known-Limitations.md) is the honest list of what this version
 leaves out.
@@ -106,11 +110,12 @@ leaves out.
 | [Command line](docs/05-CLI.md) | Every option, including the optimization switches. |
 | [Known limitations](docs/06-Known-Limitations.md) | What this version leaves out, and why. |
 | [C and CASM together](docs/07-CASM-Interop.md) | One program out of C and hand-written assembly. |
-| [The preprocessor](docs/08-Preprocessor.md) | `#include`, `#define`, headers. |
+| [The preprocessor](docs/08-Preprocessor.md) | `#include`, `#define`, headers, conditionals. |
+| [Variadic functions](docs/09-Variadic-Convention.md) | `...`, `va_list`, and where a variadic argument is passed. |
 
 ## Examples
 
-Sixteen programs in [`examples/`](examples), meant to be read in order — each one introduces one
+Seventeen programs in [`examples/`](examples), meant to be read in order — each one introduces one
 part of the language and prints something you can check.
 
 | | | | |
@@ -119,6 +124,7 @@ part of the language and prints something you can check.
 | `02_arithmetic` | `06_pointers` | `10_types` | `14_bitwise` |
 | `03_control_flow` | `07_structs` | `11_floats` | `15_suma_array` |
 | `04_functions` | `08_strings` | `12_globals_and_enums` | `16_typedef_stack` |
+| | | | `17_variadic` |
 
 Plus [`examples/interop/`](examples/interop): one program built from two C files, a header and two
 hand-written `.casm` files, which is the whole multi-file and assembly-interop story in one place.

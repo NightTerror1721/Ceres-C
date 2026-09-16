@@ -7,7 +7,7 @@
 #include <variant>
 
 // IrInstr - the three-address-code opcode set: Const, BinOp, UnOp, Cmp, Copy, FrameAddr,
-// GlobalAddr, Load, Store, Param, Call, Jump, CondJump, Return.
+// GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, Return.
 //
 // Deliberately not SSA and with no dominator tree - a BasicBlock (ir_function.h) is a flat, linear
 // list of these, terminated by a jump or a return. There is no setcc-equivalent in the CASM ISA: a
@@ -54,7 +54,7 @@ namespace ceresc::ir
 
 	enum class IrOpcode : u8
 	{
-		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, Jump, CondJump, Return
+		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, Return
 	};
 
 	// Binary arithmetic/bitwise ops. Shr and Sar are two distinct opcodes - not one "Shr" opcode
@@ -210,6 +210,15 @@ namespace ceresc::ir
 		                       // so - unlike a plain assignment or initializer - a call passing a
 		                       // literal of the "wrong" arithmetic family to a scalar parameter is not
 		                       // converted here; write the matching literal/variable type at the call site.
+
+		// This argument sits in the callee's variadic tail (past its last declared parameter), so
+		// it is passed on the stack no matter which bank `isFloat` names and no matter how many
+		// argument registers are still free. That is the whole of the variadic convention on the
+		// caller's side, and it is what lets the callee find these arguments at all: it knows how
+		// many stack words its own FIXED parameters consumed, so the next word is where the
+		// variadic ones begin - which a register-passed argument could never be.
+		// See docs/09-Variadic-Convention.md.
+		bool isVariadicArg = false;
 	};
 
 	struct IrCallPayload
@@ -219,6 +228,18 @@ namespace ceresc::ir
 		bool isFloat = false; // meaningful only when hasResult: the result comes back in f0/ret0 (§10)
 		std::string_view callee;
 		u32 argCount = 0; // number of Params queued since the previous Call - see §9
+	};
+
+	// The address of the first argument in THIS function's variadic tail - the one thing a variadic
+	// body cannot compute for itself, because it lives in the caller's frame rather than in any
+	// local slot. Codegen resolves it from the function's own signature (how many stack words its
+	// fixed parameters consumed), so the instruction carries no operand at all.
+	//
+	// Everything else va_list does is ordinary pointer work on the value this produces: va_arg is a
+	// Load plus an Add, va_copy is a Copy, va_end is nothing. Only this one step needs the back end.
+	struct IrVaStartPayload
+	{
+		IrValue result;
 	};
 
 	struct IrJumpPayload
@@ -248,14 +269,14 @@ namespace ceresc::ir
 	using IrInstrPayload = std::variant<
 		IrConstPayload, IrBinOpPayload, IrUnOpPayload, IrCmpPayload, IrCopyPayload,
 		IrFrameAddrPayload, IrGlobalAddrPayload, IrLoadPayload, IrStorePayload, IrParamPayload,
-		IrCallPayload, IrJumpPayload, IrCondJumpPayload, IrReturnPayload>;
+		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrReturnPayload>;
 	// Declaration order here must match IrOpcode's own order exactly - opcode() below derives the
 	// opcode from the variant's index() instead of storing a second, redundant tag. The size check
 	// alone only pins the *count*: swapping two payload types (e.g. Load/Store), or adding an
 	// IrOpcode enumerator without a matching payload, would keep the count at 14 while silently
 	// remapping opcode() and every switch in ir_printer.cpp/ir_function.cpp to the wrong payload -
 	// so each alternative's *position* is pinned individually too, not just the total.
-	static_assert(std::variant_size_v<IrInstrPayload> == 14, "IrInstrPayload must have exactly one alternative per IrOpcode");
+	static_assert(std::variant_size_v<IrInstrPayload> == 15, "IrInstrPayload must have exactly one alternative per IrOpcode");
 	template <IrOpcode Op, typename Payload>
 	concept OpcodeMapsToPayload = std::is_same_v<std::variant_alternative_t<static_cast<usize>(Op), IrInstrPayload>, Payload>;
 	static_assert(OpcodeMapsToPayload<IrOpcode::Const, IrConstPayload>);
@@ -269,6 +290,7 @@ namespace ceresc::ir
 	static_assert(OpcodeMapsToPayload<IrOpcode::Store, IrStorePayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Param, IrParamPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Call, IrCallPayload>);
+	static_assert(OpcodeMapsToPayload<IrOpcode::VaStart, IrVaStartPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Jump, IrJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::CondJump, IrCondJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Return, IrReturnPayload>);
@@ -330,6 +352,7 @@ namespace ceresc::ir
 			case IrOpcode::FrameAddr:  return instr.as<IrFrameAddrPayload>().result;
 			case IrOpcode::GlobalAddr: return instr.as<IrGlobalAddrPayload>().result;
 			case IrOpcode::Load:       return instr.as<IrLoadPayload>().result;
+			case IrOpcode::VaStart:    return instr.as<IrVaStartPayload>().result;
 			case IrOpcode::Call:
 			{
 				const IrCallPayload& payload = instr.as<IrCallPayload>();

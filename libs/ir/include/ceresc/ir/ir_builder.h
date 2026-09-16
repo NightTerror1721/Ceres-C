@@ -112,6 +112,7 @@ namespace ceresc::ir
 		void visit(ast::CastExpr& node) override;
 		void visit(ast::SizeofExpr& node) override;
 		void visit(ast::AlignofExpr& node) override;
+		void visit(ast::VaExpr& node) override;
 		void visit(ast::TernaryExpr& node) override;
 		void visit(ast::InitListExpr& node) override;
 

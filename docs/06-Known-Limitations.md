@@ -69,10 +69,16 @@ The VM has no double-precision floating point at all. Supporting `double` would 
 emulation — real front-end and runtime work, not a type mapping. `float` (f32) is fully supported
 and has its own register bank.
 
-### No bitfields, function pointers or varargs
+### No bitfields or function pointers
 
-Each is a mechanism with no user yet. Function pointers are the most nearly free of the four: the
-ISA already has indirect calls.
+Each is a mechanism with no user yet. Function pointers are the nearer of the two: the ISA already
+has indirect calls.
+
+Variadic functions are no longer on this list — `...`, `va_list`, `va_start`, `va_arg`, `va_end`
+and `va_copy` all work. What they do not come with is a `<stdarg.h>` (the names are builtin, since
+there is no system include directory to find a header in) or a `printf` to use them for, and a
+variadic `float` is not promoted to `double`, because there is no `double`. See
+[09-Variadic-Convention.md](09-Variadic-Convention.md).
 
 ### Qualifiers and storage
 
@@ -86,6 +92,11 @@ checked contract rather than an unsafe speculative transformation.
 
 `register` requests ordinary register allocation when it is available and may only be used for
 automatic local variables. As in C, taking its address is rejected.
+
+None of the three changes which values a correct program computes — `volatile` only removes
+optimizations, and `restrict` and `register` are checked contracts that the back end is free to
+ignore. That is deliberate: a qualifier that silently licensed a wrong answer would be worse than
+one that is merely not yet exploited.
 
 ### No integer literal suffixes
 

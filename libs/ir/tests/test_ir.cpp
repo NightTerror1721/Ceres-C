@@ -1128,3 +1128,52 @@ TEST(ir, a_word_sized_byte_aligned_struct_goes_through_memory)
 	CHECK(text.find("load.byte") != std::string::npos);
 	CHECK(text.find("call total, 1") != std::string::npos);
 }
+
+// ---- variadic functions ----------------------------------------------------------------------
+
+namespace
+{
+	bool contains(std::string_view haystack, std::string_view needle)
+	{
+		return haystack.find(needle) != std::string_view::npos;
+	}
+
+	usize countOccurrences(std::string_view haystack, std::string_view needle)
+	{
+		usize count = 0;
+		for (usize at = haystack.find(needle); at != std::string_view::npos; at = haystack.find(needle, at + needle.size()))
+			++count;
+		return count;
+	}
+}
+
+TEST(ir, a_variadic_function_is_marked_as_one_and_va_start_lowers_to_its_own_opcode)
+{
+	std::string text = functionIr("int f(int a, ...) { va_list ap; va_start(ap, a); return 0; }", "f");
+	CHECK(contains(text, "function f(params=1, ..., locals=2)"));
+	CHECK(contains(text, "= va_start"));
+}
+
+TEST(ir, va_arg_lowers_to_a_load_through_the_cursor_and_a_four_byte_advance)
+{
+	std::string text = functionIr("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }", "f");
+	CHECK(contains(text, "= va_start"));
+	CHECK(contains(text, "const 4"));
+	CHECK(contains(text, "add"));
+}
+
+TEST(ir, a_calls_variadic_arguments_are_marked_and_its_fixed_ones_are_not)
+{
+	// Only the arguments past the callee's declared arity carry the marker - that is what tells
+	// codegen to put them on the stack rather than in an argument register.
+	std::string text = functionIr("int f(int a, int b, ...); int main() { return f(1, 2, 3, 4); }");
+	CHECK_EQ(countOccurrences(text, "param.var "), usize(2));
+	CHECK_EQ(countOccurrences(text, "param "), usize(2));
+}
+
+TEST(ir, an_ordinary_call_marks_nothing_as_variadic)
+{
+	std::string text = functionIr("int f(int a, int b); int main() { return f(1, 2); }");
+	CHECK_EQ(countOccurrences(text, "param.var "), usize(0));
+	CHECK_EQ(countOccurrences(text, "param "), usize(2));
+}

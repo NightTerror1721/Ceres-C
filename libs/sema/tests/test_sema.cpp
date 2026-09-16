@@ -1186,3 +1186,89 @@ TEST(sema, a_local_is_still_not_redeclarable)
 	CHECK(!outcome.ok);
 	CHECK(containsMessage(outcome, "redefinition"));
 }
+
+// ---- variadic functions ----------------------------------------------------------------------
+
+TEST(sema, a_variadic_call_needs_its_fixed_arguments_and_accepts_any_number_beyond_them)
+{
+	CHECK(checkSource("int f(int a, int b, ...); int main(void) { return f(1, 2) + f(1, 2, 3) + f(1, 2, 3, 4); }").ok);
+
+	CheckOutcome tooFew = checkSource("int f(int a, int b, ...); int main(void) { return f(1); }");
+	CHECK(!tooFew.ok);
+	CHECK(containsMessage(tooFew, "expects at least 2 argument"));
+}
+
+TEST(sema, the_fixed_parameters_of_a_variadic_call_are_still_type_checked)
+{
+	CheckOutcome outcome = checkSource(
+		"struct S { int x; };"
+		"int f(int a, ...);"
+		"int main(void) { struct S s; return f(s, 1); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+}
+
+TEST(sema, an_aggregate_cannot_travel_through_an_ellipsis)
+{
+	// It would be passed as a hidden pointer to a caller-owned copy, and nothing tells the callee
+	// how big that copy is - so va_arg could never read it back.
+	CheckOutcome outcome = checkSource(
+		"struct S { int x; int y; };"
+		"int f(int a, ...);"
+		"int main(void) { struct S s; return f(1, s); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "no variadic representation"));
+}
+
+TEST(sema, va_start_is_only_allowed_in_a_variadic_function_and_must_name_the_last_parameter)
+{
+	CHECK(checkSource("int f(int a, ...) { va_list ap; va_start(ap, a); va_end(ap); return 0; }").ok);
+
+	CheckOutcome notVariadic = checkSource("int f(int a) { va_list ap; va_start(ap, a); return 0; }");
+	CHECK(!notVariadic.ok);
+	CHECK(containsMessage(notVariadic, "only allowed inside a function declared with"));
+
+	CheckOutcome wrongParam = checkSource("int f(int a, int b, ...) { va_list ap; va_start(ap, a); return 0; }");
+	CHECK(!wrongParam.ok);
+	CHECK(containsMessage(wrongParam, "must name the last named parameter"));
+}
+
+TEST(sema, va_arg_reads_only_a_four_byte_scalar)
+{
+	CHECK(checkSource("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }").ok);
+
+	// A `char` was never passed: the default argument promotions mean an `int` was, so reading one
+	// back as `char` would decode a word that does not hold what was asked for.
+	CheckOutcome narrow = checkSource("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, char); }");
+	CHECK(!narrow.ok);
+	CHECK(containsMessage(narrow, "promoted to a 4-byte type"));
+
+	CheckOutcome aggregate = checkSource(
+		"struct S { int x; int y; };"
+		"int f(int a, ...) { va_list ap; va_start(ap, a); struct S s; s = va_arg(ap, struct S); return s.x; }");
+	CHECK(!aggregate.ok);
+	CHECK(containsMessage(aggregate, "only scalar types are passed through"));
+}
+
+TEST(sema, a_va_list_operand_must_actually_be_a_va_list)
+{
+	CheckOutcome outcome = checkSource("int f(int a, ...) { int ap; va_start(ap, a); return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "must have type 'va_list'"));
+}
+
+TEST(sema, a_prototype_and_a_definition_must_agree_about_the_ellipsis)
+{
+	CheckOutcome outcome = checkSource("int f(int a); int f(int a, ...) { return a; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "conflicting types"));
+}
+
+TEST(sema, a_va_list_may_be_passed_to_another_function)
+{
+	// The vprintf pattern: the worker is not itself variadic, it just consumes a cursor it was
+	// handed - which works because va_list is an ordinary pointer.
+	CHECK(checkSource(
+		"int worker(va_list ap) { return va_arg(ap, int); }"
+		"int f(int a, ...) { va_list ap; va_start(ap, a); int r = worker(ap); va_end(ap); return r; }").ok);
+}

@@ -874,6 +874,20 @@ namespace ceresc::codegen
 				break;
 			}
 
+			case IrOpcode::VaStart:
+			{
+				const auto& p = instr.as<IrVaStartPayload>();
+				// Incoming stack arguments start at [fp + 8] (24-Calling-Convention.md: saved fp at
+				// [fp + 0], return address at [fp + 4]). The fixed parameters that were passed on
+				// the stack occupy the first words of that area, so the variadic tail begins right
+				// after them - and every variadic argument is on the stack by construction
+				// (docs/09-Variadic-Convention.md), so from here on it is just consecutive words.
+				std::string dest = defineInto(p.result, kScratchA, false);
+				_emitter.instr(std::format("la {}, [fp + {}]", dest, 8 + _fixedStackArgWords * 4), comment);
+				storeResult(p.result, dest, loc);
+				break;
+			}
+
 			case IrOpcode::Param:
 				break; // handled when its Call is reached, below - see generateInstr()'s header comment
 
@@ -906,7 +920,8 @@ namespace ceresc::codegen
 				// never handed to a value in a function that makes a call at all
 				// (value_placement.cpp's allocatable pools), so no source below can be one of the
 				// destinations being written here.
-				std::vector<ArgSlot> slots = assignArgSlots(argIsFloat);
+				std::vector<ArgSlot> slots = assignArgSlots(argIsFloat,
+					fixedArgCountOf(instrs.subspan(index - argCount, argCount)));
 				for (u32 k = 0; k < argCount; ++k)
 				{
 					const ArgSlot& slot = slots[k];
@@ -1090,6 +1105,11 @@ namespace ceresc::codegen
 		// different one, a store when it lives in a frame field. A parameter that arrived on the
 		// stack is read from the CALLER's frame at [fp + 8], [fp + 12], ... (24-Calling-Convention.md).
 		std::span<const ArgSlot> arrivals = placement.paramArrival();
+		_fixedStackArgWords = 0;
+		for (const ArgSlot& arrival : arrivals)
+			if (arrival.kind == ArgSlotKind::Stack)
+				++_fixedStackArgWords;
+
 		for (u32 i = 0; i < function.paramCount(); ++i)
 		{
 			const ArgSlot& arrival = arrivals[i];

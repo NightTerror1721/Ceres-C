@@ -318,6 +318,25 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(VaExpr& node)
+	{
+		_output += '(';
+		_output += vaOpName(node.op());
+		_output += ' ';
+		printChild(node.list());
+		if (node.op() == VaOp::Arg)
+		{
+			_output += ' ';
+			appendTypeName(node.argumentType());
+		}
+		else if (node.second())
+		{
+			_output += ' ';
+			printChild(node.second());
+		}
+		_output += ')';
+	}
+
 	void AstPrinter::visit(TernaryExpr& node)
 	{
 		_output += "(?: ";
@@ -506,6 +525,8 @@ namespace ceresc::ast
 			_output += param.name;
 			_output += ')';
 		}
+		if (node.isVariadic())
+			_output += " ...";
 		_output += ") ";
 		printChild(node.body());
 		_output += ')';

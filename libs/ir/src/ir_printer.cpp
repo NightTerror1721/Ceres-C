@@ -85,7 +85,8 @@ namespace ceresc::ir
 
 	void IrPrinter::printFunction(const IrFunction& function)
 	{
-		_output += std::format("function {}(params={}, locals={}) {{\n", function.name(), function.paramCount(), function.localCount());
+		_output += std::format("function {}(params={}{}, locals={}) {{\n", function.name(), function.paramCount(),
+			function.isVariadic() ? ", ..." : "", function.localCount());
 		for (const auto& block : function.blocks())
 			printBlock(*block);
 		_output += "}\n";
@@ -178,7 +179,8 @@ namespace ceresc::ir
 			case IrOpcode::Param:
 			{
 				const auto& payload = instr.as<IrParamPayload>();
-				_output += std::format("param{} {}\n", payload.isFloat ? ".f" : "", valueName(payload.value));
+				_output += std::format("param{}{} {}\n", payload.isFloat ? ".f" : "",
+					payload.isVariadicArg ? ".var" : "", valueName(payload.value));
 				break;
 			}
 			case IrOpcode::Call:
@@ -190,6 +192,12 @@ namespace ceresc::ir
 						: std::format("{} = call {}, {}\n", valueName(payload.result), payload.callee, payload.argCount);
 				else
 					_output += std::format("call {}, {}\n", payload.callee, payload.argCount);
+				break;
+			}
+			case IrOpcode::VaStart:
+			{
+				const auto& payload = instr.as<IrVaStartPayload>();
+				_output += std::format("{} = va_start\n", valueName(payload.result));
 				break;
 			}
 			case IrOpcode::Jump:

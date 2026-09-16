@@ -492,7 +492,11 @@ namespace ceresc::codegen
 		_needsFrame = !options.framelessLeaf
 			|| !_slots.empty()
 			|| _outgoingSlotCount > 0
-			|| anyParamOnStack;
+			|| anyParamOnStack
+			// A variadic function addresses its argument tail as [fp + N] (IrOpcode::VaStart), and
+			// a frameless leaf has no fp of its own to measure that from - so the frameless rule
+			// simply does not apply to one, however little else it would have put in a frame.
+			|| function.isVariadic();
 	}
 
 	Placement ValuePlacement::temp(IrValue value) const

@@ -340,6 +340,34 @@ namespace ceresc::sema
 			checkInitializer(type, element);
 	}
 
+	void Sema::checkVariadicArgument(ast::Expr* arg, bool calleeIsVariadic)
+	{
+		const Type* argType = decayArray(checkExpr(arg));
+		if (!calleeIsVariadic || !argType)
+			return; // a surplus argument to a non-variadic callee is already diagnosed as an arity error
+
+		// A struct or union argument travels as a hidden pointer to a caller-owned copy
+		// (ir_builder.h's struct convention). Nothing in that convention tells the callee how big
+		// the copy is, and va_arg() has no way to ask - so rather than pass one and let the callee
+		// read whatever it guesses, this is refused outright.
+		if (argType->isAggregate())
+		{
+			_diagnostics.error(arg->location(),
+				"cannot pass '{}' through '...': struct and union arguments have no variadic representation",
+				typeName(argType));
+			return;
+		}
+		if (argType->isVoid())
+			_diagnostics.error(arg->location(), "cannot pass a void value through '...'");
+
+		// The default argument promotions are not applied by rewriting the type here: a narrow
+		// value is ALREADY in its promoted representation by the time it becomes a value at all
+		// (ir_instr.h's IrUnOp::Narrow invariant), so the word the caller stores is exactly the
+		// `int` a matching va_arg(ap, int) reads back. `float` is the one place this deviates from
+		// C on purpose: C promotes it to `double`, the machine has no f64 at all, so a float
+		// travels as the f32 it already is - see docs/09-Variadic-Convention.md.
+	}
+
 	const Type* Sema::decayArray(const Type* type) noexcept
 	{
 		if (!type || !type->isArray())
@@ -609,7 +637,16 @@ namespace ceresc::sema
 		if (funcDecl)
 		{
 			std::span<const Param> params = funcDecl->params();
-			if (args.size() != params.size())
+			// A `...` turns the declared arity into a MINIMUM: the fixed parameters must all be
+			// there and are type-checked as usual, and anything past them is the variadic tail,
+			// which by construction has no declared type to check against.
+			if (funcDecl->isVariadic())
+			{
+				if (args.size() < params.size())
+					_diagnostics.error(node.location(), "'{}' expects at least {} argument(s), got {}",
+						funcDecl->name(), params.size(), args.size());
+			}
+			else if (args.size() != params.size())
 			{
 				_diagnostics.error(node.location(), "'{}' expects {} argument(s), got {}",
 					funcDecl->name(), params.size(), args.size());
@@ -631,7 +668,7 @@ namespace ceresc::sema
 				}
 			}
 			for (usize i = checkCount; i < args.size(); ++i)
-				checkExpr(args[i]);
+				checkVariadicArgument(args[i], funcDecl->isVariadic());
 
 			resultType = funcDecl->returnType();
 		}
@@ -911,6 +948,87 @@ namespace ceresc::sema
 	{
 		node.setType(&Type::UInt);
 		_lastExprType = &Type::UInt;
+	}
+
+	void Sema::visit(ast::VaExpr& node)
+	{
+		using ast::VaOp;
+
+		// Every form writes through its first operand except va_end, and C requires an lvalue there
+		// in all four cases anyway.
+		const Type* listType = checkExpr(node.list());
+		const Type* vaListType = Type::makePointer(_arena, &Type::Char); // what `va_list` is - see the parser
+		if (!isLValue(node.list()))
+			_diagnostics.error(node.list()->location(), "the first argument to '{}' must be an lvalue of type 'va_list'", ast::vaOpName(node.op()));
+		else if (!listType || !(*listType == *vaListType))
+			_diagnostics.error(node.list()->location(), "the first argument to '{}' must have type 'va_list', not '{}'",
+				ast::vaOpName(node.op()), typeName(listType));
+
+		const Type* resultType = &Type::Void;
+		switch (node.op())
+		{
+			case VaOp::Start:
+			{
+				std::span<const Param> params = _currentFunction ? _currentFunction->params() : std::span<const Param>{};
+				if (!_currentFunction || !_currentFunction->isVariadic())
+				{
+					_diagnostics.error(node.location(), "'va_start' is only allowed inside a function declared with '...'");
+					break;
+				}
+				// The second operand must name the LAST fixed parameter. That is not a formality
+				// here: the tail begins at the first incoming stack word the fixed parameters did
+				// not take (docs/09-Variadic-Convention.md), so naming any other parameter would
+				// describe a different starting point than the one va_start actually produces.
+				auto* name = dynamic_cast<ast::NameExpr*>(node.second());
+				if (!name)
+					_diagnostics.error(node.second() ? node.second()->location() : node.location(),
+						"the second argument to 'va_start' must name the last named parameter");
+				else if (params.empty() || name->name() != params.back().name)
+					_diagnostics.error(name->location(),
+						"'va_start' must name the last named parameter ('{}'), not '{}'",
+						params.empty() ? std::string_view("<none>") : params.back().name, name->name());
+				if (node.second())
+					checkExpr(node.second());
+				break;
+			}
+
+			case VaOp::Arg:
+			{
+				const Type* argumentType = node.argumentType();
+				// One incoming word per variadic argument, so the type read back has to be exactly
+				// one word wide and scalar. A narrower type is C's own undefined behaviour (the
+				// default argument promotions mean no `char` was ever passed - an `int` was), and
+				// an aggregate has no variadic representation at all, so both are refused here
+				// rather than decoded out of a word that does not hold what was asked for.
+				if (!argumentType)
+					break;
+				if (!isScalarType(argumentType) || argumentType->isVoid())
+					_diagnostics.error(node.location(), "'va_arg' cannot read type '{}': only scalar types are passed through '...'",
+						typeName(argumentType));
+				else if (argumentType->sizeInBytes() != 4)
+					_diagnostics.error(node.location(),
+						"'va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
+						typeName(argumentType));
+				else
+					resultType = argumentType;
+				break;
+			}
+
+			case VaOp::Copy:
+			{
+				const Type* sourceType = node.second() ? checkExpr(node.second()) : nullptr;
+				if (node.second() && (!sourceType || !(*sourceType == *vaListType)))
+					_diagnostics.error(node.second()->location(), "the second argument to 'va_copy' must have type 'va_list', not '{}'",
+						typeName(sourceType));
+				break;
+			}
+
+			case VaOp::End:
+				break;
+		}
+
+		node.setType(resultType);
+		_lastExprType = resultType;
 	}
 
 	void Sema::visit(ast::TernaryExpr& node)
@@ -1264,9 +1382,13 @@ namespace ceresc::sema
 		if (existing && !kindConflict)
 		{
 			ast::FunctionDecl* previous = existing->funcDecl;
+			// `...` is part of the signature, not a detail of one declaration: a prototype and a
+			// definition that disagree about it disagree about the calling convention every call
+			// site was already compiled against (docs/09-Variadic-Convention.md).
 			bool signatureMatches = previous && previous->returnType() && node.returnType() &&
 				*previous->returnType() == *node.returnType() &&
-				previous->params().size() == node.params().size();
+				previous->params().size() == node.params().size() &&
+				previous->isVariadic() == node.isVariadic();
 			if (signatureMatches)
 			{
 				for (usize i = 0; signatureMatches && i < previous->params().size(); ++i)
@@ -1320,6 +1442,8 @@ namespace ceresc::sema
 		}
 
 		const Type* previousReturnType = _currentFunctionReturnType;
+		const ast::FunctionDecl* previousFunction = _currentFunction;
+		_currentFunction = &node;
 		u32 previousLoopDepth = _loopDepth;
 		std::vector<SwitchContext> previousSwitchStack = std::move(_switchStack);
 		std::vector<std::string_view> previousLabels = std::move(_currentFunctionLabels);
@@ -1339,6 +1463,7 @@ namespace ceresc::sema
 			checkStmt(stmt);
 
 		_currentFunctionReturnType = previousReturnType;
+		_currentFunction = previousFunction;
 		_loopDepth = previousLoopDepth;
 		_switchStack = std::move(previousSwitchStack);
 		_currentFunctionLabels = std::move(previousLabels);

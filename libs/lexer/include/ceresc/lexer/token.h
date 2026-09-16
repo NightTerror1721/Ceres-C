@@ -101,6 +101,7 @@ namespace ceresc::lexer
 		Question,			// ?
 		Dot,				// .
 		Arrow,				// ->
+		Ellipsis,			// ... (the variadic parameter marker - only ever valid last in a parameter list)
 		Plus,				// +
 		Minus,				// -
 		Star,				// *
@@ -347,6 +348,7 @@ namespace ceresc::lexer
 		constexpr bool isQuestion() const noexcept { return _kind == TokenKind::Question; }
 		constexpr bool isDot() const noexcept { return _kind == TokenKind::Dot; }
 		constexpr bool isArrow() const noexcept { return _kind == TokenKind::Arrow; }
+		constexpr bool isEllipsis() const noexcept { return _kind == TokenKind::Ellipsis; }
 		constexpr bool isPlus() const noexcept { return _kind == TokenKind::Plus; }
 		constexpr bool isMinus() const noexcept { return _kind == TokenKind::Minus; }
 		constexpr bool isStar() const noexcept { return _kind == TokenKind::Star; }
@@ -445,6 +447,7 @@ namespace ceresc::lexer
 		static forceinline constexpr Token makeQuestion(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Question, "?", location); }
 		static forceinline constexpr Token makeDot(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Dot, ".", location); }
 		static forceinline constexpr Token makeArrow(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Arrow, "->", location); }
+		static forceinline constexpr Token makeEllipsis(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Ellipsis, "...", location); }
 		static forceinline constexpr Token makePlus(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Plus, "+", location); }
 		static forceinline constexpr Token makeMinus(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Minus, "-", location); }
 		static forceinline constexpr Token makeStar(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Star, "*", location); }

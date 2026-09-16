@@ -11,12 +11,12 @@ here is, by definition, a syntax error.
 | Area | What is supported |
 | --- | --- |
 | Types | `void`, `bool`, `char`, `short`, `int`, `long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. |
-| Qualifiers | `const`, on either side of the type-spec and after a `*`. |
-| Storage classes | `static`, `extern`, `auto` and the `inline` function specifier. |
-| Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `enum`, `typedef`. |
-| Functions | Calls, recursion, up to any number of parameters, struct arguments and returns by value. |
+| Qualifiers | `const`, `volatile` and `restrict`, on either side of the type-spec and after a `*`. |
+| Storage classes | `static`, `extern`, `auto`, `register` and the `inline` function specifier. |
+| Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `union`, `enum`, `typedef`. |
+| Functions | Calls, recursion, up to any number of parameters, struct arguments and returns by value, and variadic `...` with `va_list`/`va_start`/`va_arg`/`va_end`/`va_copy`. |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
-| Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, explicit casts. |
+| Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, `alignof`, explicit casts. |
 | Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. |
 
 `.` and `->` are genuinely different operators, not two spellings of one: the parser records which
@@ -26,16 +26,15 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 
 | Left out | Why |
 | --- | --- |
-| `double` (f64) | The VM has no double-precision support at all. Supporting it would mean software emulation, not a type mapping. |
-| `union`, bitfields | Nothing needs them yet, and each is a second layout rule to learn. |
-| `volatile`, `restrict`, `register`, `alignof` | Reserved as keywords by the lexer so they can be rejected with a clear message, but not implemented. |
-| Function pointers, varargs | Viable later — the ISA already has indirect calls. |
-| Most of the preprocessor | `#include`, `#define` (object-like), `#undef` and `#pragma once` are implemented; `#if`/`#ifdef` and macros with arguments are not. See [08-Preprocessor.md](08-Preprocessor.md). |
+| `double` (f64) | The VM has no double-precision support at all. Supporting it would mean software emulation, not a type mapping. It is also why a variadic `float` is not promoted to `double` — see [09-Variadic-Convention.md](09-Variadic-Convention.md). |
+| Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
+| Function pointers | Viable later — the ISA already has indirect calls. |
+| Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef` and macros with arguments. See [08-Preprocessor.md](08-Preprocessor.md). |
 | `malloc`/`free` | There is no allocator to call. |
 
-The out-of-scope keywords exist as token kinds in the lexer on purpose: hitting one should produce
-"not implemented in this version" rather than a generic syntax error that hides the fact that it is
-a known, deliberate limit.
+`double` still exists as a token kind in the lexer on purpose: hitting it produces "not implemented
+in this version" rather than a generic syntax error that would hide the fact that it is a known,
+deliberate limit.
 
 ## const
 
@@ -84,7 +83,8 @@ external-decl          ::= function-def | declaration ";" | typedef-decl
 
 function-def           ::= decl-specifier* type-name declarator
                             "(" param-list? ")" compound-stmt
-param-list             ::= param ("," param)*
+param-list             ::= param ("," param)* ("," "...")?   // "..." only after a named parameter
+                         | "void"                            // an explicitly empty list
 param                  ::= type-qualifier? type-name declarator
 
 declaration            ::= decl-specifier* type-name init-declarator-list
@@ -97,16 +97,20 @@ initializer-list       ::= initializer ("," initializer)*
 typedef-decl           ::= "typedef" type-spec declarator ";"
 
 decl-specifier         ::= storage-class-spec | type-qualifier   // any order, each at most once
-storage-class-spec     ::= "static" | "extern" | "auto" | "inline"   // inline only on a function-def
-type-qualifier         ::= "const"
+storage-class-spec     ::= "static" | "extern" | "auto" | "register" | "inline"
+                                                     // inline only on a function-def,
+                                                     // register only on a local or a parameter
+type-qualifier         ::= "const" | "volatile" | "restrict"   // restrict only on a pointer
 type-name              ::= type-qualifier* type-spec type-qualifier*
                             ("*" type-qualifier*)*   // `const char*` vs `char* const`
 sign-spec              ::= "signed" | "unsigned"
 integer-type-spec      ::= sign-spec? ("char" | "short" "int"? | "int" | "long" "int"?)
                          | sign-spec "int"?          // signed/unsigned alone means int
 type-spec              ::= "void" | "bool" | "float" | integer-type-spec
-                         | struct-spec | enum-spec | IDENTIFIER   // IDENTIFIER: a typedef name
+                         | struct-spec | union-spec | enum-spec | IDENTIFIER
+                                                     // IDENTIFIER: a typedef name, or `va_list`
 struct-spec            ::= "struct" IDENTIFIER ("{" member-decl+ "}")?
+union-spec             ::= "union" IDENTIFIER ("{" member-decl+ "}")?
 member-decl            ::= type-spec declarator ";"
 enum-spec              ::= "enum" IDENTIFIER ("{" enumerator-list "}")?
 enumerator-list        ::= enumerator ("," enumerator)*
@@ -151,13 +155,23 @@ multiplicative-expr    ::= cast-expr (("*" | "/" | "%") cast-expr)*
 cast-expr              ::= "(" type-name ")" cast-expr | unary-expr
 unary-expr             ::= ("&" | "*" | "-" | "!" | "~" | "++" | "--") unary-expr
                          | "sizeof" ("(" type-name ")" | unary-expr)
+                         | "alignof" "(" type-name ")"
                          | postfix-expr
 postfix-expr           ::= primary-expr postfix-op*
 postfix-op             ::= "[" expression "]" | "(" arg-list? ")"
                          | "." IDENTIFIER | "->" IDENTIFIER | "++" | "--"
 primary-expr           ::= IDENTIFIER | INT_LITERAL | FLOAT_LITERAL | CHAR_LITERAL
                          | STRING_LITERAL | BOOL_LITERAL | "(" expression ")"
+                         | va-builtin
 arg-list               ::= assignment-expr ("," assignment-expr)*
+
+// Syntax rather than calls: va_arg's second operand is a type-name, and all four write through
+// the va_list the caller named. Only recognized when directly followed by "(" - see
+// 09-Variadic-Convention.md.
+va-builtin             ::= "va_start" "(" assignment-expr "," IDENTIFIER ")"
+                         | "va_arg"   "(" assignment-expr "," type-name ")"
+                         | "va_end"   "(" assignment-expr ")"
+                         | "va_copy"  "(" assignment-expr "," assignment-expr ")"
 ```
 
 `storage-class-spec` and `type-qualifier` may appear in any order and any combination the language

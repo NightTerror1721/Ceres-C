@@ -41,6 +41,7 @@ namespace ceresc::ir
 				case IrOpcode::Copy:
 				case IrOpcode::FrameAddr:
 				case IrOpcode::GlobalAddr:
+				case IrOpcode::VaStart:
 					return true;
 				default:
 					return false;
@@ -1090,6 +1091,13 @@ namespace ceresc::ir
 		bool isInlinable(const IrFunction& function)
 		{
 			if (function.name() == "main")
+				return false;
+			// A variadic callee is handed arguments its parameter list does not describe, so there is
+			// nothing for inlineCall() to bind them to - and its body reads them out of the caller's
+			// frame (IrOpcode::VaStart), which stops meaning anything once the body is spliced into a
+			// different frame entirely. Ruled out here rather than left to inlineCall()'s arity guard,
+			// which would already decline every such call but only by accident of the argument count.
+			if (function.isVariadic())
 				return false;
 			if (function.blocks().size() != 1)
 				return false;

@@ -9,7 +9,7 @@
 
 // Expr hierarchy: IntLiteralExpr, FloatLiteralExpr, CharLiteralExpr, BoolLiteralExpr,
 // StringLiteralExpr, NameExpr, CallExpr, UnaryExpr, BinaryExpr, AssignExpr, IndexExpr, MemberExpr,
-// CastExpr, SizeofExpr, AlignofExpr, TernaryExpr, InitListExpr.
+// CastExpr, SizeofExpr, AlignofExpr, VaExpr, TernaryExpr, InitListExpr.
 //
 // InitListExpr is the odd one out: `{ 1, 2, 3 }` is an *initializer*, not an expression the
 // grammar accepts anywhere an expression goes (§3: `initializer ::= assignment-expr | "{"
@@ -359,6 +359,61 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<AlignofExpr>, "AlignofExpr must be trivially destructible (Arena-allocated)");
+
+	// Which of the four <stdarg.h> operations a VaExpr is. They are one node kind rather than four
+	// because they differ only in which of the same two operands they use, and every consumer
+	// (sema, IrBuilder, the printer) has to switch over them together anyway.
+	enum class VaOp : u8
+	{
+		Start, // va_start(ap, last)  - `last` names the final fixed parameter; the result is void
+		Arg,   // va_arg(ap, T)       - reads the next argument and advances ap; the result is T
+		End,   // va_end(ap)          - the result is void, and there is nothing to undo
+		Copy   // va_copy(dst, src)   - the result is void
+	};
+
+	constexpr std::string_view vaOpName(VaOp op) noexcept
+	{
+		switch (op)
+		{
+			case VaOp::Start: return "va_start";
+			case VaOp::Arg:   return "va_arg";
+			case VaOp::End:   return "va_end";
+			case VaOp::Copy:  return "va_copy";
+		}
+		return "";
+	}
+
+	// One of the four variadic-access builtins. They cannot be ordinary functions - va_arg takes a
+	// TYPE as its second operand, and all four have to modify the va_list the caller named rather
+	// than a copy of it - so the parser recognizes their names directly and builds this instead of a
+	// CallExpr, the same way it treats sizeof/alignof as syntax rather than as calls.
+	//
+	// `list` is the va_list operand, always an lvalue (C requires it, and va_start/va_arg/va_copy
+	// all write through it). `second` is the other operand where there is one: the last fixed
+	// parameter's NameExpr for Start, the source va_list for Copy, null for Arg and End - Arg carries
+	// a type in `argumentType` instead. See docs/09-Variadic-Convention.md.
+	class VaExpr final : public Expr
+	{
+	private:
+		VaOp _op;
+		Expr* _list;
+		Expr* _second;            // nullable - see the header comment above
+		const Type* _argumentType; // VaOp::Arg only
+
+	public:
+		VaExpr(support::SourceLocation location, VaOp op, Expr* list, Expr* second = nullptr,
+			const Type* argumentType = nullptr) noexcept :
+			Expr(location), _op(op), _list(list), _second(second), _argumentType(argumentType)
+		{}
+
+	public:
+		VaOp op() const noexcept { return _op; }
+		Expr* list() const noexcept { return _list; }
+		Expr* second() const noexcept { return _second; }
+		const Type* argumentType() const noexcept { return _argumentType; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<VaExpr>, "VaExpr must be trivially destructible (Arena-allocated)");
 
 	class TernaryExpr final : public Expr
 	{

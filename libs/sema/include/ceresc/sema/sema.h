@@ -75,6 +75,7 @@ namespace ceresc::sema
 		void visit(ast::CastExpr& node) override;
 		void visit(ast::SizeofExpr& node) override;
 		void visit(ast::AlignofExpr& node) override;
+		void visit(ast::VaExpr& node) override;
 		void visit(ast::TernaryExpr& node) override;
 		void visit(ast::InitListExpr& node) override;
 
@@ -122,6 +123,10 @@ namespace ceresc::sema
 		Scope* _globalScope = nullptr;
 
 		const ast::Type* _currentFunctionReturnType = nullptr;
+		// The function whose body is being checked, or null at file scope. Only va_start needs it:
+		// it has to name that function's last fixed parameter, and only a variadic function has a
+		// tail for it to start on.
+		const ast::FunctionDecl* _currentFunction = nullptr;
 		std::vector<std::string_view> _currentFunctionLabels; // collected once per function, see collectLabels()
 		u32 _loopDepth = 0;
 
@@ -213,6 +218,12 @@ namespace ceresc::sema
 		// going through isAssignable()/a BinaryExpr's operand types, so neither calls this. Not
 		// static (unlike isAssignable() itself): building the decayed Pointer type needs the same
 		// Arena every other compound Type in this file is allocated from.
+		// Type-checks one argument sitting in a call's variadic tail. There is no declared
+		// parameter to check it against, so what is checked instead is that the type can travel
+		// through the variadic half of the calling convention at all - see
+		// docs/09-Variadic-Convention.md, and Sema's own note on the default argument promotions.
+		void checkVariadicArgument(ast::Expr* arg, bool calleeIsVariadic);
+
 		const ast::Type* decayArray(const ast::Type* type) noexcept;
 		static const ast::Type* integerPromote(const ast::Type* type) noexcept;
 		static const ast::Type* commonArithmeticType(const ast::Type* lhs, const ast::Type* rhs) noexcept;

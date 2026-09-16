@@ -25,8 +25,9 @@ straight run of instructions ending in a jump or a return.
 | `GlobalAddr` | `%t = &global "name"` | The address of a global, or of a string literal. |
 | `Load` | `%t = load.<size>[.s] [%addr]` | `size` ∈ {byte, half, word}; `.s` means the loaded type is signed. |
 | `Store` | `store.<size> [%addr], %v` | |
-| `Param` | `param %v` | Queues one outgoing argument. |
+| `Param` | `param %v`, or `param.var %v` | Queues one outgoing argument. `.var` marks one in the callee's variadic tail, which is always passed on the stack. |
 | `Call` | `%t = call f, N` | `N` is how many `Param`s were queued. |
+| `VaStart` | `%t = va_start` | The address of this function's own variadic tail. No operand: the back end resolves it from the signature. |
 | `Jump` | `jmp L` | |
 | `CondJump` | `br.<pred> %a, %b, Ltrue, Lfalse` | One of the six predicates, signed or unsigned. |
 | `Return` | `ret %v?` | |
@@ -55,7 +56,8 @@ Verified against CeresASM's `docs/05-Instruction-Set.md` and `docs/06-Pseudo-Ins
 | `Store` byte/half/word | `strb` / `strh` / `str` | Same two addressing forms. |
 | `FrameAddr` | `la rd, [sp + Frame.slotN]`, or nothing at all if the local lives in a register | |
 | `GlobalAddr` | `la rd, symbol` | String literals become `@rodata` entries (`let __ccstr0: u8[15] = "ceres compiler"`). |
-| `Param` / `Call` | first four of each bank in `arg0`–`arg3`/`f0`–`f3`, the rest in the outgoing area, then `call f` | |
+| `Param` / `Call` | first four of each bank in `arg0`–`arg3`/`f0`–`f3`, the rest in the outgoing area, then `call f` | A `param.var` skips the register half of that rule entirely. |
+| `VaStart` | `la rd, [fp + 8 + 4*S]` | `S` is how many incoming stack words this function's own fixed parameters took. |
 | `Jump` / `CondJump` | `jp` / the `ifXX` above | |
 | `Return` | `mov ret0, %v` then `leave`/`ret` | `main` halts the machine instead — see below. |
 
@@ -147,6 +149,18 @@ memory, nothing held across a call — skips `enter`/`leave` entirely and just r
 shorthand: the real condition is "needs nothing from a frame", which a function that makes a call
 can still satisfy, because `call`/`ret` put the return address on the hardware stack rather than in
 the frame.
+
+### Variadic functions always have a frame
+
+A variadic function reads its argument tail out of the **caller's** frame, at `[fp + 8]` and upward,
+so it needs an `fp` of its own to measure from — which means a real `enter`, even when it is a leaf
+that would otherwise have qualified for the frameless-leaf rule above.
+
+The tail is passed entirely in the outgoing stack area, never in `r0`–`r3` or `f0`–`f3`, which is
+what makes a statically known `[fp + N]` the right answer at all: the callee does not know the types
+of its tail, so it could not tell which bank an argument had been put in. `VaStart` produces that one
+address, and everything else — `va_arg`, `va_copy`, `va_end` — is ordinary pointer work on top of it.
+[09-Variadic-Convention.md](09-Variadic-Convention.md) is the full contract.
 
 ### Names and linkage
 

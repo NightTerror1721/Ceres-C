@@ -240,12 +240,14 @@ namespace ceresc::ast
 		CompoundStmt* _body; // nullable - see the header comment above
 		StorageClass _storageClass = StorageClass::None;
 		bool _isInline = false;
+		bool _isVariadic = false;
 
 	public:
 		FunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType, std::span<const Param> params,
-			CompoundStmt* body = nullptr, StorageClass storageClass = StorageClass::None, bool isInline = false) noexcept :
+			CompoundStmt* body = nullptr, StorageClass storageClass = StorageClass::None, bool isInline = false,
+			bool isVariadic = false) noexcept :
 			Decl(location, name), _returnType(returnType), _params(params.data()), _paramCount(static_cast<u32>(params.size())),
-			_body(body), _storageClass(storageClass), _isInline(isInline)
+			_body(body), _storageClass(storageClass), _isInline(isInline), _isVariadic(isVariadic)
 		{}
 
 	public:
@@ -259,6 +261,13 @@ namespace ceresc::ast
 		// linkage rule: the function is still emitted, and the inliner treats it as worth inlining
 		// regardless of its size whenever inlining is on at all (libs/ir/ir_optimizer.cpp).
 		bool isInline() const noexcept { return _isInline; }
+
+		// A `...` closed the parameter list: this function accepts arguments beyond params(), and
+		// those extra arguments follow the variadic half of the calling convention rather than the
+		// ordinary one (docs/09-Variadic-Convention.md). params() still describes exactly the FIXED
+		// parameters, so every arity/type rule that reads it keeps meaning what it always meant -
+		// what changes is only that `args.size() == params().size()` stops being the whole story.
+		bool isVariadic() const noexcept { return _isVariadic; }
 
 		// True when the function has external linkage - i.e. `global` in the generated CASM, and
 		// therefore visible to another object at link time. `static` is the only thing that takes

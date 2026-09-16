@@ -1,6 +1,8 @@
 #pragma once
 
 #include <ceresc/ir/ir_function.h>
+#include <ceresc/ir/ir_instr.h>
+#include <span>
 #include <vector>
 
 // FrameLayout - decides how many outgoing-argument stack words one IrFunction needs, and
@@ -51,7 +53,19 @@ namespace ceresc::codegen
 	// Call site's own outgoing arguments and by a function's own incoming parameters, since the
 	// rule is identical on both ends of the same call. Takes `const vector<bool>&`, not a span:
 	// vector<bool>'s bit-packed specialization has no contiguous `bool*` to span over.
-	std::vector<ArgSlot> assignArgSlots(const std::vector<bool>& isFloatArg);
+	//
+	// `fixedArgCount` is where the callee's declared parameter list ends. Arguments at or past it
+	// are the variadic tail and go to the outgoing stack area unconditionally - never to an
+	// argument register, however many are still free (docs/09-Variadic-Convention.md). That is what
+	// makes the tail findable from the callee's side: the callee knows how many stack words its own
+	// fixed parameters consumed, so the next word is where the tail begins, whereas a register-
+	// passed argument would be indistinguishable from a fixed one. The default means "no tail at
+	// all", which is every ordinary call and every function's own incoming parameter list.
+	std::vector<ArgSlot> assignArgSlots(const std::vector<bool>& isFloatArg, u32 fixedArgCount = ~0u);
+
+	// Where the variadic tail begins in one call's run of Param instructions, or ~0u when that
+	// call has none - the `fixedArgCount` to hand assignArgSlots() for those same arguments.
+	u32 fixedArgCountOf(std::span<ir::IrInstr* const> params);
 
 	class FrameLayout
 	{

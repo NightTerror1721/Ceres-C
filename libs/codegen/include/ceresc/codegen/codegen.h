@@ -276,6 +276,10 @@ namespace ceresc::codegen
 		std::optional<ValuePlacement> _placement;
 		std::string _frameName;       // "__frame_<function>", empty when this function has no frame fields
 		bool _hasFrame = false;       // whether enter/leave bracket the body at all
+		// How many stack words this function's own FIXED parameters arrived in. Only a variadic
+		// function reads it (IrOpcode::VaStart): its argument tail starts at the first incoming stack
+		// word the fixed parameters did not already take.
+		u32 _fixedStackArgWords = 0;
 		u32 _nextComparisonLabel = 0; // uniquely names each materialized comparison's .cmpN_true/.cmpN_end pair
 		// How often each temporary is read and written across the whole function - what the
 		// peepholes consult before consuming an instruction (a Cmp may only be folded into the
