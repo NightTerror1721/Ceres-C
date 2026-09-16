@@ -646,7 +646,7 @@ TEST(sema, array_of_self_by_value_is_caught_through_the_array_element_type)
 	// Builds the StructDecl/Type directly rather than through source text, to exercise
 	// validateStructLayout() in isolation from the parser/array-declarator plumbing this same shape
 	// could now also reach through `struct Node { struct Node children[2]; };` (see parser.cpp's
-	// parseArrayDeclaratorSuffix()): it is exactly as illegal as the by-value (non-array) case,
+	// applyDeclarator()): it is exactly as illegal as the by-value (non-array) case,
 	// since an array stores its elements inline, same as a plain by-value field.
 	support::Arena arena;
 	support::DiagnosticEngine diagnostics;
@@ -744,7 +744,7 @@ TEST(sema, struct_field_that_is_an_array_is_indexable_through_the_real_parser)
 {
 	// Same shape as array_of_self_by_value_is_caught_through_the_array_element_type above, but built
 	// through ordinary source text now that the parser has array-declarator support (parser.cpp's
-	// parseArrayDeclaratorSuffix()) instead of constructing the StructDecl/Type by hand.
+	// applyDeclarator()) instead of constructing the StructDecl/Type by hand.
 	CheckOutcome outcome = checkSource(
 		"struct S { int coords[3]; }; int main() { struct S s; s.coords[0] = 1; return s.coords[0]; }");
 	CHECK(outcome.ok);

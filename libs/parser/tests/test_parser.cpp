@@ -490,7 +490,7 @@ TEST(parser, function_with_empty_parameter_list)
 //
 // direct-declarator's `("[" INT_LITERAL? "]")*` suffix (§7's grammar), wired into every declarator
 // site: local/global VarDecl, struct field, typedef, and function parameter (which additionally
-// decays its outermost dimension to a pointer, real C's own rule - see parseArrayDeclaratorSuffix()'s
+// decays its outermost dimension to a pointer, real C's own rule - see applyDeclarator()'s
 // header comment in parser.h).
 
 TEST(parser, local_array_declaration)
