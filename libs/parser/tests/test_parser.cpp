@@ -1103,3 +1103,70 @@ TEST(parser, the_machine_builtins_are_syntax_rather_than_calls)
 	CHECK_EQ(printUnit("int __builtin_sti; int main(void) { return __builtin_sti; }"),
 		"(unit (var __builtin_sti int <null>) (func main int (params) (block (return __builtin_sti))))");
 }
+
+// ---- declarators -------------------------------------------------------------------------------
+
+TEST(parser, a_declarator_binds_suffixes_tighter_than_the_leading_star)
+{
+	// The whole reason a declarator is parsed into a tree and applied afterwards. These two differ
+	// by one pair of parentheses and mean opposite things, and nothing walking the tokens left to
+	// right can tell them apart on its own.
+	CHECK_EQ(printDecl("int *f(int x);"), "(func f int* (params (int x)) <null>)");
+	CHECK_EQ(printDecl("int (*f)(int x);"), "(var f int (*)(int) <null>)");
+}
+
+TEST(parser, whether_a_declarator_declares_a_function_is_decided_by_the_declarator)
+{
+	// `int f(int)` is a function; `int (*f)(int)` is a variable whose type happens to be a pointer
+	// to one. The parser makes that call by asking whether the derived type is a function type,
+	// which is C's own rule rather than a lookahead heuristic.
+	CHECK_EQ(printDecl("int f(int x);"), "(func f int (params (int x)) <null>)");
+	CHECK_EQ(printDecl("int (*f)(int x);"), "(var f int (*)(int) <null>)");
+	CHECK_EQ(printDecl("int (*table[3])(int x);"), "(var table int (*)(int)[3] <null>)");
+}
+
+TEST(parser, a_typedef_can_name_a_function_type_or_a_pointer_to_one)
+{
+	// Modelling the function type separately from the pointer is what makes these two spellings the
+	// same type by construction: `Handler*` IS `int (*)(int)`.
+	CHECK_EQ(printDecl("typedef int Handler(int x);"), "(typedef Handler int (int))");
+	CHECK_EQ(printDecl("typedef int (*HandlerPtr)(int x);"), "(typedef HandlerPtr int (*)(int))");
+}
+
+TEST(parser, a_function_typed_parameter_decays_to_a_pointer_however_it_is_spelled)
+{
+	// Three ways of writing one parameter, all of which C says mean a pointer to a function -
+	// there is nothing else a function could be passed as.
+	CHECK_EQ(printUnit("void f(int (*g)(int y));"),
+		"(unit (func f void (params (int (*)(int) g)) <null>))");
+	CHECK_EQ(printUnit("void f(int g(int y));"),
+		"(unit (func f void (params (int (*)(int) g)) <null>))");
+	CHECK_EQ(printUnit("typedef int H(int y); void f(H* g);"),
+		"(unit (typedef H int (int)) (func f void (params (int (*)(int) g)) <null>))");
+}
+
+TEST(parser, a_pointer_to_an_array_is_not_an_array_of_pointers)
+{
+	CHECK_EQ(printDecl("int (*p)[3];"), "(var p int[3]* <null>)");
+	CHECK_EQ(printDecl("int *p[3];"), "(var p int*[3] <null>)");
+}
+
+TEST(parser, an_abstract_declarator_names_a_function_pointer_type)
+{
+	// A type-name is a declarator with the name left out, which is what a cast needs.
+	CHECK_EQ(printExpr("(int (*)(int))p"), "(cast int (*)(int) p)");
+	CHECK_EQ(printExpr("sizeof(int (*)(int))"), "(sizeof int (*)(int))");
+}
+
+TEST(parser, a_function_may_not_return_a_function_or_an_array)
+{
+	CHECK(parseFails("int f(int x)(int y);"));
+	CHECK(parseFails("int f(int x)[3];"));
+}
+
+TEST(parser, a_struct_field_may_be_a_function_pointer_but_not_a_function)
+{
+	CHECK_EQ(printDecl("struct Ops { int (*run)(int x); };"),
+		"(struct Ops (fields (int (*)(int) run)))");
+	CHECK(parseFails("struct Ops { int run(int x); };"));
+}

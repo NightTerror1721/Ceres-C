@@ -2,6 +2,7 @@
 
 #include <ceresc/support/types.h>
 #include <ceresc/support/arena.h>
+#include <span>
 #include <variant>
 
 // Type - the C subset's type system: Void, Char, Short, Int, UInt, Float, Bool, Pointer, Array,
@@ -36,6 +37,7 @@ namespace ceresc::ast
 {
 	class StructDecl;
 	class EnumDecl;
+	class Type; // declared below - FunctionTypeInfo names it before the class itself exists
 
 	enum class TypeKind : u8
 	{
@@ -56,13 +58,38 @@ namespace ceresc::ast
 		Array,
 		Struct,
 		Union,
-		Enum
+		Enum,
+		Function // see FunctionTypeInfo below - not an object type, so only ever pointed AT
 	};
+
+	// A function type's signature: everything a CALL needs to know and nothing else. This is what
+	// `int(int, float)` is, and a function pointer is an ordinary Pointer to one of these.
+	//
+	// Modelled the way C models it, with the function type and the pointer to it as two separate
+	// things, rather than as a single `FunctionPointer` kind. That costs a type which is not an
+	// OBJECT type - it has no size, nothing can hold one, and `sizeof` on it is an error - and buys
+	// exactly what C buys with it: `typedef int Handler(int);` names the signature itself, so
+	// `Handler*` and `int (*)(int)` are the same type by construction rather than by coincidence.
+	//
+	// The parameter list is a non-owning view over arena-allocated storage, same as every other
+	// list in this library (decl.h's own note on FunctionDecl::_params). It holds TYPES, not Params:
+	// a parameter's name belongs to the declaration that introduced it, never to the type, so
+	// `int f(int a)` and `int f(int b)` declare the same function twice rather than two functions.
+	struct FunctionTypeInfo
+	{
+		const Type* returnType = nullptr;
+		const Type* const* paramTypes = nullptr;
+		u32 paramCount = 0;
+		bool isVariadic = false;
+
+		std::span<const Type* const> params() const noexcept { return { paramTypes, paramCount }; }
+	};
+	static_assert(TriviallyDestructible<FunctionTypeInfo>, "FunctionTypeInfo must be trivially destructible (Arena-allocated)");
 
 	class Type
 	{
 	public:
-		using PayloadType = std::variant<std::monostate, const Type*, StructDecl*, EnumDecl*>;
+		using PayloadType = std::variant<std::monostate, const Type*, StructDecl*, EnumDecl*, const FunctionTypeInfo*>;
 
 	private:
 		TypeKind _kind = TypeKind::Void;
@@ -98,6 +125,7 @@ namespace ceresc::ast
 		constexpr const Type* arrayElementType() const noexcept { return std::get_if<const Type*>(&_payload) ? std::get<const Type*>(_payload) : nullptr; }
 		constexpr StructDecl* structDecl() const noexcept { return std::get_if<StructDecl*>(&_payload) ? std::get<StructDecl*>(_payload) : nullptr; }
 		constexpr EnumDecl* enumDecl() const noexcept { return std::get_if<EnumDecl*>(&_payload) ? std::get<EnumDecl*>(_payload) : nullptr; }
+		constexpr const FunctionTypeInfo* functionInfo() const noexcept { return std::get_if<const FunctionTypeInfo*>(&_payload) ? std::get<const FunctionTypeInfo*>(_payload) : nullptr; }
 
 		constexpr bool isVoid() const noexcept { return _kind == TypeKind::Void; }
 		constexpr bool isBool() const noexcept { return _kind == TypeKind::Bool; }
@@ -119,6 +147,25 @@ namespace ceresc::ast
 		constexpr bool isUnion() const noexcept { return _kind == TypeKind::Union; }
 		constexpr bool isAggregate() const noexcept { return isStruct() || isUnion(); }
 		constexpr bool isEnum() const noexcept { return _kind == TypeKind::Enum; }
+		constexpr bool isFunction() const noexcept { return _kind == TypeKind::Function; }
+
+		// A pointer to a function - the thing a program actually declares, since a function type
+		// itself has no storage to live in.
+		constexpr bool isFunctionPointer() const noexcept
+		{
+			const Type* pointee = isPointer() ? arrayElementType() : nullptr;
+			return pointee && pointee->isFunction();
+		}
+
+		// The signature behind either spelling, so a caller that accepts both does not have to peel
+		// the pointer itself. Null for anything else.
+		constexpr const FunctionTypeInfo* calleeSignature() const noexcept
+		{
+			if (isFunction())
+				return functionInfo();
+			const Type* pointee = isPointer() ? arrayElementType() : nullptr;
+			return pointee && pointee->isFunction() ? pointee->functionInfo() : nullptr;
+		}
 
 		// Not constexpr: the Struct case walks StructDecl::fields(), which needs the complete
 		// class (only forward-declared here - see the header comment above), so these three are
@@ -159,6 +206,12 @@ namespace ceresc::ast
 		{
 			return makeCompound(arena, TypeKind::Enum, isConst, isVolatile, false, enumDecl);
 		}
+
+		// A function type. Never qualified: C says a qualifier on a function type is undefined, and
+		// there is nothing for one to mean when the type names no object. `paramTypes` is copied into
+		// the arena here, so the caller may hand over a temporary vector.
+		static const Type* makeFunction(support::Arena& arena, const Type* returnType,
+			std::span<const Type* const> paramTypes, bool isVariadic) noexcept;
 
 		// `type` with its const qualifier set, without changing anything else. Returns `type` itself
 		// when it is already const, and one of the ConstXxx statics above for a scalar, so the common

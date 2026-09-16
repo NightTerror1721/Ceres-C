@@ -175,7 +175,7 @@ namespace ceresc::parser
 		return std::span<Decl* const>(stored, decls.size());
 	}
 
-	std::span<const Param> Parser::copyParamsToArena(const std::vector<Param>& params) noexcept
+	std::span<const Param> Parser::copyParamsToArena(std::span<const Param> params) noexcept
 	{
 		if (params.empty())
 			return {};
@@ -640,24 +640,23 @@ namespace ceresc::parser
 		}
 	}
 
-	const Type* Parser::parseTypeName()
+	const Type* Parser::parseBaseType(bool leadingConst, bool leadingVolatile, bool& outLeadingRestrict,
+		support::SourceLocation& outSpecifierLocation)
 	{
-		return parseTypeName(false, false);
-	}
-
-	const Type* Parser::parseTypeName(bool leadingConst, bool leadingVolatile)
-	{
+		// The type-SPEC and its qualifiers, and nothing past them: every `*` belongs to the
+		// declarator that follows, not to this, because which side of a star a qualifier sits on is
+		// what decides whether it qualifies the pointer or the pointee (see parseDeclarator()).
+		//
 		// A qualifier may sit on either side of the type-spec - `const int` and `int const` are the
-		// same type in C - and again after every `*`, where it means something different: `const
-		// char* p` is a pointer to const, `char* const p` is a const pointer. Those are two distinct
-		// types and the difference is exactly which side of the star the word is on, which is why
-		// this cannot be collapsed into one leading flag.
+		// same type in C, and so are `volatile int` and `int volatile`.
 		DeclSpecifiers leading = parseDeclSpecifiers();
 		if (leading.storageClass != ast::StorageClass::None || leading.isInline || leading.isInterrupt)
 		{
 			_diagnostics.error(leading.location,
 				"a storage-class specifier is not allowed here - it belongs to a declaration, not to a type name");
 		}
+		outLeadingRestrict = leading.isRestrict;
+		outSpecifierLocation = leading.location;
 
 		const Type* base = parseTypeSpec();
 		if (!base)
@@ -665,32 +664,48 @@ namespace ceresc::parser
 
 		bool isConst = leading.isConst || leadingConst;
 		bool isVolatile = leading.isVolatile || leadingVolatile;
-		bool isRestrict = leading.isRestrict;
 		parseQualifierRun(isConst, isVolatile); // trailing form: `int const`, `int volatile`
 		if (isConst)
 			base = Type::withConst(_arena, base);
 		if (isVolatile)
 			base = Type::withVolatile(_arena, base);
-
-		while (match(TokenKind::Star))
-		{
-			base = Type::makePointer(_arena, base);
-			bool pointerIsConst = false;
-			bool pointerIsVolatile = false;
-			parseQualifierRun(pointerIsConst, pointerIsVolatile);
-			if (pointerIsConst)
-				base = Type::withConst(_arena, base);
-			if (pointerIsVolatile)
-				base = Type::withVolatile(_arena, base);
-		}
-		if (isRestrict)
-		{
-			if (!base->isPointer())
-				_diagnostics.error(leading.location, "'restrict' requires a pointer type");
-			else
-				base = Type::withRestrict(_arena, base);
-		}
 		return base;
+	}
+
+	const Type* Parser::parseTypeName()
+	{
+		return parseTypeName(false, false);
+	}
+
+	const Type* Parser::parseTypeName(bool leadingConst, bool leadingVolatile)
+	{
+		bool leadingRestrict = false;
+		support::SourceLocation specifierLocation{};
+		const Type* base = parseBaseType(leadingConst, leadingVolatile, leadingRestrict, specifierLocation);
+		if (!base)
+			return nullptr;
+
+		// A type-name is a declarator with the name left out: `int (*)(int)` in a cast is exactly
+		// `int (*f)(int)` without the `f`. Parsing both through one function is what keeps the two
+		// spellings of one type from drifting apart.
+		Declarator declarator = parseDeclarator(/*allowAbstract=*/true);
+		if (!declarator.ok)
+			return nullptr;
+		if (!declarator.name.empty())
+		{
+			_diagnostics.error(declarator.nameLocation,
+				"'{}' names something here, but this position takes a type rather than a declaration", declarator.name);
+		}
+
+		const Type* type = applyDeclarator(base, declarator, /*isParameter=*/false);
+		if (type && leadingRestrict)
+		{
+			if (!type->isPointer())
+				_diagnostics.error(specifierLocation, "'restrict' requires a pointer type");
+			else
+				type = Type::withRestrict(_arena, type);
+		}
+		return type;
 	}
 
 	const Type* Parser::parseTypeSpec()
@@ -789,28 +804,50 @@ namespace ceresc::parser
 			while (!check(TokenKind::RBrace) && !isAtEnd())
 			{
 				SourceLocation fieldLoc = _current.location();
-				const Type* fieldType = parseTypeName();
-				if (!fieldType)
+				bool fieldLeadingRestrict = false;
+				SourceLocation fieldSpecifierLocation{};
+				const Type* fieldBase = parseBaseType(false, false, fieldLeadingRestrict, fieldSpecifierLocation);
+				if (!fieldBase)
 				{
 					synchronizeStatement(); // reuses the statement-level recovery: skip to ';' or '}'
 					continue;
 				}
-				if (!check(TokenKind::Identifier))
+				// An ordinary declarator, so a field may be a function pointer - `int (*handler)(int);`
+				// inside a struct is how a program builds a dispatch table.
+				Declarator fieldDeclarator = parseDeclarator(/*allowAbstract=*/false);
+				if (!fieldDeclarator.ok)
 				{
-					_diagnostics.error(_current.location(), "expected a field name");
 					synchronizeStatement();
 					continue;
 				}
-				std::string_view fieldName = _current.lexeme();
-				advance();
-				if (check(TokenKind::LBracket))
-					fieldType = parseArrayDeclaratorSuffix(fieldType, /*isParameter=*/false);
+				const Type* fieldType = applyDeclarator(fieldBase, fieldDeclarator, /*isParameter=*/false);
+				if (!fieldType)
+				{
+					synchronizeStatement();
+					continue;
+				}
+				if (fieldType->isFunction())
+				{
+					// A struct holds objects, and a function is not one. The pointer is what a
+					// program means here, and saying so is more useful than "has no size".
+					_diagnostics.error(fieldLoc,
+						"a field cannot have function type - did you mean a pointer to one?");
+					synchronizeStatement();
+					continue;
+				}
+				if (fieldLeadingRestrict)
+				{
+					if (!fieldType->isPointer())
+						_diagnostics.error(fieldSpecifierLocation, "'restrict' requires a pointer type");
+					else
+						fieldType = Type::withRestrict(_arena, fieldType);
+				}
 				if (!expect(TokenKind::Semicolon, "';'"))
 				{
 					synchronizeStatement();
 					continue;
 				}
-				fields.push_back(FieldDecl{ fieldType, fieldName, fieldLoc });
+				fields.push_back(FieldDecl{ fieldType, fieldDeclarator.name, fieldLoc });
 			}
 			expect(TokenKind::RBrace, "'}'");
 			decl->setFields(copyFieldsToArena(fields));
@@ -1210,39 +1247,23 @@ namespace ceresc::parser
 		// `const` to the type. A local may say `static`, `extern`, `auto` or nothing at all; which
 		// of those make sense in a block is sema's call, not this one's.
 		DeclSpecifiers specifiers = parseDeclSpecifiers();
-		const Type* type = parseTypeName(specifiers.isConst, specifiers.isVolatile);
-		if (!type)
+		bool leadingRestrict = false;
+		SourceLocation specifierLocation{};
+		const Type* base = parseBaseType(specifiers.isConst, specifiers.isVolatile, leadingRestrict, specifierLocation);
+		if (!base)
 			return nullptr;
-		if (specifiers.isRestrict)
-		{
-			if (!type->isPointer())
-				_diagnostics.error(specifiers.location, "'restrict' requires a pointer type");
-			else
-				type = Type::withRestrict(_arena, type);
-		}
 
-		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator: parseTypeName()
+		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator: parseBaseType()
 		// already registered/completed the tag (see parseStructTypeSpec()/parseEnumTypeSpec()), so
 		// there is nothing left to declare - just wrap the tag itself in the DeclStmt.
-		if (check(TokenKind::Semicolon) && (type->isAggregate() || type->isEnum()))
+		if (check(TokenKind::Semicolon) && (base->isAggregate() || base->isEnum()))
 		{
 			advance();
-			Decl* tagDecl = type->isAggregate() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
+			Decl* tagDecl = base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl());
 			return _arena.create<ast::DeclStmt>(location, tagDecl);
 		}
 
-		if (!check(TokenKind::Identifier))
-		{
-			_diagnostics.error(_current.location(), "expected an identifier in declaration");
-			return nullptr;
-		}
-		std::string_view name = _current.lexeme();
-		advance();
-
-		if (check(TokenKind::LBracket))
-			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
-
-		Decl* decl = finishVarDecl(location, name, type, specifiers);
+		Decl* decl = finishDeclarator(location, base, specifiers, leadingRestrict, specifierLocation);
 		if (!decl)
 			return nullptr;
 		return _arena.create<ast::DeclStmt>(location, decl);
@@ -1300,39 +1321,58 @@ namespace ceresc::parser
 			return nullptr;
 		}
 
-		const Type* type = parseTypeName(specifiers.isConst, specifiers.isVolatile);
+		bool leadingRestrict = false;
+		SourceLocation specifierLocation{};
+		const Type* base = parseBaseType(specifiers.isConst, specifiers.isVolatile, leadingRestrict, specifierLocation);
+		if (!base)
+			return nullptr;
+
+		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
+		// parseDeclStatement()'s identical check for the local-statement equivalent.
+		if (check(TokenKind::Semicolon) && (base->isAggregate() || base->isEnum()))
+		{
+			advance();
+			return base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl());
+		}
+
+		return finishDeclarator(location, base, specifiers, leadingRestrict, specifierLocation);
+	}
+
+	// One declarator plus whatever follows it, shared by the file-scope and block-scope forms - they
+	// differ only in which storage classes make sense, which is sema's call, not this one's.
+	//
+	// Whether this is a function declaration is decided by the DECLARATOR, exactly as in C: it is
+	// one when the derived type is a function type. That is the whole disambiguation between
+	// `int f(int)` and `int (*f)(int)`, and it falls out of applying the declarator rather than
+	// needing a rule of its own.
+	Decl* Parser::finishDeclarator(SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
+		bool leadingRestrict, SourceLocation specifierLocation)
+	{
+		Declarator declarator = parseDeclarator(/*allowAbstract=*/false);
+		if (!declarator.ok)
+			return nullptr;
+
+		const Type* type = applyDeclarator(base, declarator, /*isParameter=*/false);
 		if (!type)
 			return nullptr;
-		if (specifiers.isRestrict)
+
+		if (specifiers.isRestrict || leadingRestrict)
 		{
+			SourceLocation where = specifiers.isRestrict ? specifiers.location : specifierLocation;
 			if (!type->isPointer())
-				_diagnostics.error(specifiers.location, "'restrict' requires a pointer type");
+				_diagnostics.error(where, "'restrict' requires a pointer type");
 			else
 				type = Type::withRestrict(_arena, type);
 		}
 
-		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
-		// parseDeclStatement()'s identical check for the local-statement equivalent.
-		if (check(TokenKind::Semicolon) && (type->isAggregate() || type->isEnum()))
+		if (type->isFunction())
 		{
-			advance();
-			return type->isAggregate() ? static_cast<Decl*>(type->structDecl()) : static_cast<Decl*>(type->enumDecl());
+			// The outermost suffix is the one that made it a function, and the one whose parameter
+			// NAMES the declaration keeps - the type itself holds only their types (type.h).
+			const DeclaratorSuffix& signature = declarator.suffixes.front();
+			return finishFunctionDecl(location, declarator.name, type, signature.params, signature.isVariadic, specifiers);
 		}
-
-		if (!check(TokenKind::Identifier))
-		{
-			_diagnostics.error(_current.location(), "expected an identifier in declaration");
-			return nullptr;
-		}
-		std::string_view name = _current.lexeme();
-		advance();
-
-		if (check(TokenKind::LParen))
-			return finishFunctionDecl(location, name, type, specifiers);
-
-		if (check(TokenKind::LBracket))
-			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
-		return finishVarDecl(location, name, type, specifiers);
+		return finishVarDecl(location, declarator.name, type, specifiers);
 	}
 
 	Decl* Parser::parseInterruptVectorDecl()
@@ -1374,20 +1414,29 @@ namespace ceresc::parser
 		SourceLocation location = _current.location();
 		advance(); // 'typedef'
 
-		const Type* underlyingType = parseTypeName();
+		bool leadingRestrict = false;
+		SourceLocation specifierLocation{};
+		const Type* base = parseBaseType(false, false, leadingRestrict, specifierLocation);
+		if (!base)
+			return nullptr;
+
+		// A typedef is an ordinary declarator that names a TYPE instead of an object, which is what
+		// makes `typedef int Handler(int);` name a function type and `typedef int (*Fn)(int);` name
+		// a pointer to one - the same two declarators that would declare a function and a variable.
+		Declarator declarator = parseDeclarator(/*allowAbstract=*/false);
+		if (!declarator.ok)
+			return nullptr;
+		const Type* underlyingType = applyDeclarator(base, declarator, /*isParameter=*/false);
 		if (!underlyingType)
 			return nullptr;
-
-		if (!check(TokenKind::Identifier))
+		if (leadingRestrict)
 		{
-			_diagnostics.error(_current.location(), "expected a name after 'typedef'");
-			return nullptr;
+			if (!underlyingType->isPointer())
+				_diagnostics.error(specifierLocation, "'restrict' requires a pointer type");
+			else
+				underlyingType = Type::withRestrict(_arena, underlyingType);
 		}
-		std::string_view name = _current.lexeme();
-		advance();
-
-		if (check(TokenKind::LBracket))
-			underlyingType = parseArrayDeclaratorSuffix(underlyingType, /*isParameter=*/false);
+		std::string_view name = declarator.name;
 
 		if (!expect(TokenKind::Semicolon, "';'"))
 			return nullptr;
@@ -1465,17 +1514,14 @@ namespace ceresc::parser
 		return _arena.create<ast::VarDecl>(location, name, type, initializer, specifiers.storageClass);
 	}
 
-	Decl* Parser::finishFunctionDecl(SourceLocation location, std::string_view name, const Type* returnType,
-		const DeclSpecifiers& specifiers)
+	Decl* Parser::finishFunctionDecl(SourceLocation location, std::string_view name, const Type* functionType,
+		std::span<const Param> params, bool isVariadic, const DeclSpecifiers& specifiers)
 	{
-		advance(); // '('
-
-		std::vector<Param> params;
-		bool isVariadic = false;
-		if (!parseParamList(params, isVariadic))
-			return nullptr;
-		if (!expect(TokenKind::RParen, "')'"))
-			return nullptr;
+		// The parameter list has already been read, as part of the declarator that made this a
+		// function declaration in the first place - `int f(int)` and `int (*f)(int)` differ only in
+		// the declarator, and only it can tell them apart. What is left is the body or the `;`.
+		const ast::FunctionTypeInfo* info = functionType ? functionType->functionInfo() : nullptr;
+		const Type* returnType = info ? info->returnType : nullptr;
 
 		CompoundStmt* body = nullptr;
 		if (check(TokenKind::LBrace))
@@ -1562,24 +1608,35 @@ namespace ceresc::parser
 			}
 
 			SourceLocation location = _current.location();
-			const Type* type = parseTypeName();
+			bool leadingRestrict = false;
+			SourceLocation specifierLocation{};
+			const Type* base = parseBaseType(false, false, leadingRestrict, specifierLocation);
+			if (!base)
+				return false;
+
+			// A parameter's declarator is an ordinary one, so `void apply(int (*f)(int))` works for
+			// the same reason `int (*f)(int);` does. `isParameter` is what applies C's decay rules:
+			// an array parameter is a pointer to its first element and a function parameter is a
+			// pointer to the function, because there is nothing else either could be passed as.
+			//
+			// Abstract is allowed here because a prototype may leave a parameter unnamed, and a
+			// type-name must: the `(int)` in `int (*)(int)` has nowhere to put a name. sema is what
+			// requires one in a DEFINITION, where the body would have no way to refer to it.
+			Declarator declarator = parseDeclarator(/*allowAbstract=*/true);
+			if (!declarator.ok)
+				return false;
+			const Type* type = applyDeclarator(base, declarator, /*isParameter=*/true);
 			if (!type)
 				return false;
-
-			if (!check(TokenKind::Identifier))
+			if (leadingRestrict)
 			{
-				_diagnostics.error(_current.location(), "expected a parameter name");
-				return false;
+				if (!type->isPointer())
+					_diagnostics.error(specifierLocation, "'restrict' requires a pointer type");
+				else
+					type = Type::withRestrict(_arena, type);
 			}
-			std::string_view name = _current.lexeme();
-			advance();
 
-			if (check(TokenKind::LBracket))
-				type = parseArrayDeclaratorSuffix(type, /*isParameter=*/true);
-			else if (type->isArray())
-				type = Type::makePointer(_arena, type->arrayElementType());
-
-			outParams.push_back(Param{ type, name, location });
+			outParams.push_back(Param{ type, declarator.name, location });
 		} while (match(TokenKind::Comma));
 
 		return true;
@@ -1587,6 +1644,231 @@ namespace ceresc::parser
 
 	// ---- array declarator suffix (see parser.h's header comment on this method for the parameter-
 	// decay rule and why every dimension outside a parameter declarator must be an INT_LITERAL) ------
+
+	// ---- declarators ------------------------------------------------------------------------------
+
+	bool Parser::nestedDeclaratorFollows() const noexcept
+	{
+		// Called with `_current` on the '('. What follows decides:
+		//   `(` `*` ...      a pointer declarator - `int (*f)(void)`
+		//   `(` `(` ...      another group - `int ((*f))(void)`
+		//   `(` IDENT ...    a name, unless that identifier is a typedef - `int (f)(void)`
+		//   `(` `)` ...      an EMPTY PARAMETER LIST - `int f()`
+		//   `(` type ...     a parameter list - `int f(int)`
+		// The identifier case is why this consults the typedef table rather than the token alone:
+		// `int (T)` is a function taking a T, while `int (f)` declares f.
+		if (_next.is(TokenKind::Star) || _next.is(TokenKind::LParen))
+			return true;
+		if (_next.is(TokenKind::Identifier))
+			return !_typedefTable.contains(_next.lexeme());
+		return false;
+	}
+
+	void Parser::parseDeclaratorSuffixes(Declarator& declarator)
+	{
+		for (;;)
+		{
+			if (check(TokenKind::LBracket))
+			{
+				DeclaratorSuffix suffix;
+				suffix.location = _current.location();
+				advance(); // '['
+				if (check(TokenKind::RBracket))
+				{
+					// Left unsized. Legal only as a parameter's outermost dimension, which decays to
+					// a pointer anyway - applyDeclarator() is what knows whether this is one.
+					suffix.hasArraySize = false;
+				}
+				else if (!check(TokenKind::LiteralInt))
+				{
+					_diagnostics.error(_current.location(), "expected an integer constant for the array size but found '{}'",
+						_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
+					// Resync on the ']' so one bad dimension does not cost the declarator the rest.
+					while (!check(TokenKind::RBracket) && !check(TokenKind::Semicolon) && !check(TokenKind::Comma) && !isAtEnd())
+						advance();
+				}
+				else
+				{
+					SourceLocation sizeLocation = _current.location();
+					u64 rawSize = _current.integralValue();
+					advance();
+					if (rawSize == 0 || rawSize > 0xFFFFFFFFull)
+						_diagnostics.error(sizeLocation, "array size must be a positive integer that fits in 32 bits");
+					else
+					{
+						suffix.arraySize = static_cast<u32>(rawSize);
+						suffix.hasArraySize = true;
+					}
+				}
+				expect(TokenKind::RBracket, "']'");
+				declarator.suffixes.push_back(std::move(suffix));
+				continue;
+			}
+
+			if (check(TokenKind::LParen))
+			{
+				DeclaratorSuffix suffix;
+				suffix.isFunction = true;
+				suffix.location = _current.location();
+				advance(); // '('
+				if (!parseParamList(suffix.params, suffix.isVariadic))
+				{
+					declarator.ok = false;
+					return;
+				}
+				if (!expect(TokenKind::RParen, "')'"))
+				{
+					declarator.ok = false;
+					return;
+				}
+				declarator.suffixes.push_back(std::move(suffix));
+				continue;
+			}
+
+			return;
+		}
+	}
+
+	Parser::Declarator Parser::parseDeclarator(bool allowAbstract)
+	{
+		Declarator declarator;
+
+		// The leading `*`s, left to right, each taking whatever qualifiers follow IT - `int * const *`
+		// is a pointer to a const pointer to int, and which `*` the `const` belongs to is decided by
+		// position alone.
+		while (match(TokenKind::Star))
+		{
+			PointerLevel level;
+			parseQualifierRun(level.isConst, level.isVolatile);
+			while (check(TokenKind::KwRestrict))
+			{
+				if (level.isRestrict)
+					_diagnostics.error(_current.location(), "duplicate 'restrict'");
+				level.isRestrict = true;
+				advance();
+				parseQualifierRun(level.isConst, level.isVolatile); // `* restrict const` is one run
+			}
+			declarator.pointers.push_back(level);
+		}
+
+		if (check(TokenKind::LParen) && nestedDeclaratorFollows())
+		{
+			advance(); // '('
+			declarator.nested = std::make_unique<Declarator>(parseDeclarator(allowAbstract));
+			if (!declarator.nested->ok)
+			{
+				declarator.ok = false;
+				return declarator;
+			}
+			if (!expect(TokenKind::RParen, "')'"))
+			{
+				declarator.ok = false;
+				return declarator;
+			}
+			// The name lives at the innermost level - in `int (*f)(void)` it is inside the
+			// parentheses - so carry it up. Every consumer then reads one field rather than knowing
+			// how deep the parentheses went.
+			declarator.name = declarator.nested->name;
+			declarator.nameLocation = declarator.nested->nameLocation;
+		}
+		else if (check(TokenKind::Identifier))
+		{
+			declarator.name = _current.lexeme();
+			declarator.nameLocation = _current.location();
+			advance();
+		}
+		else if (!allowAbstract)
+		{
+			_diagnostics.error(_current.location(), "expected an identifier in declaration");
+			declarator.ok = false;
+			return declarator;
+		}
+
+		parseDeclaratorSuffixes(declarator);
+		return declarator;
+	}
+
+	const Type* Parser::applyDeclarator(const Type* base, const Declarator& declarator, bool isParameter)
+	{
+		if (!base)
+			return nullptr;
+
+		// 1. The leading `*`s. They are the outermost construct whenever no parentheses separate
+		//    them from the name, which is why they go first: in `int *f[3]`, `f` is an array of
+		//    pointers, so the pointer has to exist before the array wraps it.
+		for (const PointerLevel& level : declarator.pointers)
+		{
+			base = Type::makePointer(_arena, base);
+			if (level.isConst)
+				base = Type::withConst(_arena, base);
+			if (level.isVolatile)
+				base = Type::withVolatile(_arena, base);
+			if (level.isRestrict)
+				base = Type::withRestrict(_arena, base);
+		}
+
+		// 2. The suffixes, RIGHT to left. `int f[2][3]` groups as `(f[2])[3]`, so `[3]` is the
+		//    outermost and `f` ends up an array of 2 arrays of 3.
+		for (usize i = declarator.suffixes.size(); i-- > 0;)
+		{
+			const DeclaratorSuffix& suffix = declarator.suffixes[i];
+			// Only the OUTERMOST dimension of a parameter decays, and only when nothing in this
+			// declarator wraps it - `int a[3]` is a parameter that decays, `int (*a)[3]` is not.
+			bool outermost = (i == 0) && declarator.pointers.empty() && !declarator.nested;
+
+			if (suffix.isFunction)
+			{
+				if (base->isFunction())
+					_diagnostics.error(suffix.location, "a function cannot return a function");
+				else if (base->isArray())
+					_diagnostics.error(suffix.location, "a function cannot return an array");
+
+				std::vector<const Type*> paramTypes;
+				paramTypes.reserve(suffix.params.size());
+				for (const Param& param : suffix.params)
+					paramTypes.push_back(param.type);
+				base = Type::makeFunction(_arena, base, paramTypes, suffix.isVariadic);
+				continue;
+			}
+
+			if (base->isVoid())
+				_diagnostics.error(suffix.location, "array has invalid element type 'void'");
+			else if (base->isFunction())
+				_diagnostics.error(suffix.location, "array has invalid element type: a function");
+
+			if (!suffix.hasArraySize)
+			{
+				// `int a[]` is legal for a parameter's outermost dimension and nowhere else, because
+				// that dimension is not part of the type in the first place - see the decay below.
+				if (!(isParameter && outermost))
+				{
+					_diagnostics.error(suffix.location,
+						"array size is required here (this version cannot infer it from an initializer)");
+				}
+				base = Type::makePointer(_arena, base); // decays, or recovers as a pointer
+				continue;
+			}
+			base = Type::makeArray(_arena, base, suffix.arraySize);
+		}
+
+		// 3. Whatever the parentheses enclosed, applied to everything built so far. This is the step
+		//    that makes `int (*f)(void)` a pointer to a function rather than a function returning a
+		//    pointer: the `(void)` suffix above has already turned `int` into `int(void)`, and only
+		//    now does the nested `*` see it.
+		if (declarator.nested)
+			return applyDeclarator(base, *declarator.nested, isParameter);
+
+		// C's parameter decay, applied once here rather than inside the suffix loop so that it also
+		// catches a type that arrived already an array or a function - `typedef int A[3]; void f(A a)`
+		// declares a pointer just as surely as `void f(int a[3])` does, and no suffix was written.
+		// An array parameter is a pointer to its first element and a function parameter is a pointer
+		// to the function, because there is nothing else either could be passed as.
+		if (isParameter && base->isArray())
+			return Type::makePointer(_arena, base->arrayElementType());
+		if (isParameter && base->isFunction())
+			return Type::makePointer(_arena, base);
+		return base;
+	}
 
 	const Type* Parser::parseArrayDeclaratorSuffix(const Type* elementType, bool isParameter)
 	{

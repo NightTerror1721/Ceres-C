@@ -1533,6 +1533,13 @@ namespace ceresc::sema
 		pushScope();
 		for (const Param& param : node.params())
 		{
+			if (param.name.empty())
+			{
+				// A prototype may leave a parameter unnamed, and a type-name has nowhere to put a
+				// name at all - but a definition's body would have no way to refer to it.
+				_diagnostics.error(param.location, "a parameter of a function definition must be named");
+				continue;
+			}
 			Symbol paramSymbol;
 			paramSymbol.kind = SymbolKind::Parameter;
 			paramSymbol.name = param.name;

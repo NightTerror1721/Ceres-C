@@ -3,6 +3,7 @@
 #include <ceresc/lexer/lexer.h>
 #include <ceresc/ast/ast_visitor.h>
 #include <ceresc/support/arena.h>
+#include <memory>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -218,6 +219,72 @@ namespace ceresc::parser
 			support::SourceLocation location{};
 		};
 
+		// The type-spec and its qualifiers alone - everything before the declarator. Split out
+		// because a `*` belongs to the declarator, not to the type it derives from.
+		const Type* parseBaseType(bool leadingConst, bool leadingVolatile, bool& outLeadingRestrict,
+			support::SourceLocation& outSpecifierLocation);
+
+		// ---- declarators ------------------------------------------------------------------------
+		//
+		// C's declarator syntax reads outside-in but BUILDS the type inside-out, and the two orders
+		// are not the same: `int *f(void)` is a function returning `int*`, while `int (*f)(void)` is
+		// a pointer to a function returning `int`. The only difference is a pair of parentheses, and
+		// nothing that walks the tokens left to right can tell them apart on its own.
+		//
+		// So a declarator is parsed into this little tree first and applied to its base type after,
+		// by applyDeclarator(). The rule it implements is C's own, stated once:
+		//
+		//     `T D`         declares D as having a type derived from T
+		//     `T *D`        -> in D, that type is "pointer to T"
+		//     `T D[N]`      -> "array N of T"
+		//     `T D(params)` -> "function(params) returning T"
+		//     `T (D)`       -> the same as `T D`
+		//
+		// Peeling the OUTERMOST construct each time gives the order: the leading `*`s first (they are
+		// outermost when no parentheses separate them), then the suffixes right to left, and finally
+		// whatever the parentheses enclosed. Worked through on applyDeclarator() itself.
+		struct PointerLevel
+		{
+			bool isConst = false;
+			bool isVolatile = false;
+			bool isRestrict = false;
+		};
+
+		// One `[N]` or `(params)` written after the direct-declarator.
+		struct DeclaratorSuffix
+		{
+			bool isFunction = false;
+			u32 arraySize = 0;
+			bool hasArraySize = false;
+			std::vector<Param> params;   // function only; a parameter's NAME lives here, not in the type
+			bool isVariadic = false;
+			support::SourceLocation location{};
+		};
+
+		struct Declarator
+		{
+			std::vector<PointerLevel> pointers;      // left to right as written
+			std::vector<DeclaratorSuffix> suffixes;  // left to right as written; APPLIED in reverse
+			std::unique_ptr<Declarator> nested;      // whatever `( ... )` enclosed, if anything
+			std::string_view name;                   // empty for an abstract declarator
+			support::SourceLocation nameLocation{};
+			bool ok = true;
+		};
+
+		// Parses one declarator. `allowAbstract` permits the nameless form a cast or `sizeof` uses
+		// (`int (*)(int)`); without it, a missing name is an error.
+		Declarator parseDeclarator(bool allowAbstract);
+		// The `[N]` / `(params)` run after a direct-declarator, shared by both forms.
+		void parseDeclaratorSuffixes(Declarator& declarator);
+		// Derives the declared type by applying `declarator` to `base` - see the comment above.
+		// `isParameter` applies C's array-parameter decay to the outermost dimension.
+		const Type* applyDeclarator(const Type* base, const Declarator& declarator, bool isParameter);
+
+		// At a '(' in direct-declarator position, does it open a nested declarator rather than a
+		// parameter list? `(*)`, `(f)` and `((...))` are declarators; `()` and `(int)` are lists.
+		// This is the one genuine ambiguity in C's declarator grammar and this is how it is resolved.
+		bool nestedDeclaratorFollows() const noexcept;
+
 		// Consumes every leading storage-class specifier and type qualifier, reporting a duplicate
 		// or a second storage class. Always returns - a declaration with a bad specifier still has a
 		// type and a name worth parsing, same panic-mode philosophy as everywhere else here.
@@ -230,6 +297,11 @@ namespace ceresc::parser
 
 		// Declarations. A variable and a function declaration share the same `type-name identifier`
 		// prefix - parseExternalDecl() parses that prefix once, then branches on whether a '(' follows.
+		// One declarator plus whatever follows it. Whether it declares a function or an object is
+		// decided by the declarator itself, exactly as in C - see the definition.
+		Decl* finishDeclarator(support::SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
+			bool leadingRestrict, support::SourceLocation specifierLocation);
+
 		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type,
 			const DeclSpecifiers& specifiers);
 
@@ -244,8 +316,11 @@ namespace ceresc::parser
 		// explicit that it is the contract "ni más ni menos". `{}` is rejected for the same reason -
 		// the production requires at least one element.
 		Expr* parseInitializer();
-		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType,
-			const DeclSpecifiers& specifiers);
+		// The body or the `;` after a declarator that turned out to name a function. The parameter
+		// list has already been read as part of that declarator - it is what made the type a
+		// function type - so this only takes the pieces rather than parsing them again.
+		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* functionType,
+			std::span<const Param> params, bool isVariadic, const DeclSpecifiers& specifiers);
 		// Reads the parameter list between an already-consumed '(' and its ')'. `outIsVariadic` is
 		// set when the list ended in `...`, which is never itself a Param: the ellipsis says that
 		// arguments MAY follow the ones named here, so outParams keeps describing exactly the fixed
@@ -318,7 +393,7 @@ namespace ceresc::parser
 		std::span<Expr* const> copyArgsToArena(const std::vector<Expr*>& args) noexcept;
 		std::span<Stmt* const> copyStmtsToArena(const std::vector<Stmt*>& stmts) noexcept;
 		std::span<Decl* const> copyDeclsToArena(const std::vector<Decl*>& decls) noexcept;
-		std::span<const Param> copyParamsToArena(const std::vector<Param>& params) noexcept;
+		std::span<const Param> copyParamsToArena(std::span<const Param> params) noexcept;
 		std::span<const FieldDecl> copyFieldsToArena(const std::vector<FieldDecl>& fields) noexcept;
 		std::span<const EnumeratorDecl> copyEnumeratorsToArena(const std::vector<EnumeratorDecl>& enumerators) noexcept;
 

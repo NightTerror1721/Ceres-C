@@ -188,14 +188,62 @@ namespace ceresc::ast
 				if (type->isConst()) suffix += " const";
 				if (type->isVolatile()) suffix += " volatile";
 				if (type->isRestrict()) suffix += " restrict";
-				return typeName(type->arrayElementType()) + "*" + suffix;
+
+				// A pointer to a function is the one case where the star does not go at the end:
+				// `int (*)(int)` and `int *(int)` are a pointer to a function and a function
+				// returning a pointer, and only the parentheses tell them apart. That is C's
+				// declarator syntax, which is why this is written as a declarator rather than as a
+				// left-to-right name.
+				const Type* pointee = type->arrayElementType();
+				if (pointee && pointee->isFunction())
+					return functionTypeName(pointee, "*" + suffix);
+
+				return typeName(pointee) + "*" + suffix;
 			}
 			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + "[" + std::to_string(type->arraySize()) + "]";
 			case TypeKind::Struct: return prefix + "struct " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Union: return prefix + "union " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Enum: return prefix + "enum " + std::string(type->enumDecl() ? type->enumDecl()->name() : std::string_view("<anonymous>"));
+			case TypeKind::Function: return functionTypeName(type, {});
 		}
 		return prefix + "<unknown-type>";
+	}
+
+	// `RETURN (INNER)(PARAMS)` - C's declarator shape, where INNER is whatever wraps the function:
+	// empty for the function type itself (`int (int)`), "*" for a pointer to one (`int (*)(int)`).
+	// Written as one function because the parentheses around INNER are exactly what distinguishes
+	// the two, and printing either without them produces a different type's name.
+	std::string AstPrinter::functionTypeName(const Type* type, std::string_view inner)
+	{
+		const FunctionTypeInfo* info = type ? type->functionInfo() : nullptr;
+		if (!info)
+			return "<null-function-type>";
+
+		std::string result = typeName(info->returnType);
+		// The parentheses exist to bind `inner` tighter than the parameter list. With nothing to
+		// bind, they would only be noise: a bare function type is `int (int)`, not `int ()(int)`.
+		result += ' ';
+		if (!inner.empty())
+		{
+			result += '(';
+			result += inner;
+			result += ')';
+		}
+		result += '(';
+		bool first = true;
+		for (const Type* param : info->params())
+		{
+			if (!first)
+				result += ", ";
+			first = false;
+			result += typeName(param);
+		}
+		if (info->isVariadic)
+			result += first ? "..." : ", ...";
+		else if (first)
+			result += "void";
+		result += ')';
+		return result;
 	}
 
 	void AstPrinter::visit(IntLiteralExpr& node)

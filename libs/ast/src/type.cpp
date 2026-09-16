@@ -51,6 +51,10 @@ namespace ceresc::ast
 				case TypeKind::Float: return 4;
 				case TypeKind::Double: return 8;
 				case TypeKind::Pointer: return 4;
+				// A function type is not an OBJECT type: nothing holds one, so it has no size. Zero is
+				// the same answer Void gives, and for the same reason. A POINTER to one is four bytes
+				// like every other address, which is the case a program can actually declare.
+				case TypeKind::Function: return 0;
 				case TypeKind::Array:
 				{
 					// u32*u32 can overflow for a large element size times a large count (e.g. a
@@ -93,6 +97,9 @@ namespace ceresc::ast
 			switch (type->kind())
 			{
 				case TypeKind::Void: return 1;
+				// Nothing holds a function, so nothing has to align one - 1 is alignmentOf()'s own
+				// "no constraint" answer, the same one Void gets.
+				case TypeKind::Function: return 1;
 				case TypeKind::Bool: case TypeKind::Char: case TypeKind::UChar: case TypeKind::SChar: return 1;
 				case TypeKind::Short: case TypeKind::UShort: return 2;
 				case TypeKind::Int: case TypeKind::UInt: case TypeKind::Long: case TypeKind::ULong: return 4;
@@ -130,11 +137,61 @@ namespace ceresc::ast
 	{
 		if (_kind != other._kind || _const != other._const || _volatile != other._volatile || _restrict != other._restrict || _arraySize != other._arraySize)
 			return false;
+
+		// Two function types are the same type when their signatures are, which has to be compared
+		// structurally: each `int(int)` written in a program builds its own FunctionTypeInfo, so
+		// comparing the pointers would make a prototype and its definition disagree.
+		if (_kind == TypeKind::Function)
+		{
+			const FunctionTypeInfo* self = functionInfo();
+			const FunctionTypeInfo* otherInfo = other.functionInfo();
+			if (!self || !otherInfo)
+				return self == otherInfo;
+			if (self->isVariadic != otherInfo->isVariadic || self->paramCount != otherInfo->paramCount)
+				return false;
+			if (!self->returnType || !otherInfo->returnType || !(*self->returnType == *otherInfo->returnType))
+				return false;
+			for (u32 i = 0; i < self->paramCount; ++i)
+			{
+				const Type* a = self->paramTypes[i];
+				const Type* b = otherInfo->paramTypes[i];
+				if (!a || !b || !(*a == *b))
+					return false;
+			}
+			return true;
+		}
+
 		const Type* element = arrayElementType();
 		const Type* otherElement = other.arrayElementType();
 		if (element || otherElement)
 			return element && otherElement && *element == *otherElement;
 		return _payload == other._payload;
+	}
+
+	const Type* Type::makeFunction(support::Arena& arena, const Type* returnType,
+		std::span<const Type* const> paramTypes, bool isVariadic) noexcept
+	{
+		const Type** stored = nullptr;
+		if (!paramTypes.empty())
+		{
+			void* memory = arena.allocate(sizeof(const Type*) * paramTypes.size(), alignof(const Type*));
+			if (!memory)
+				return nullptr;
+			stored = static_cast<const Type**>(memory);
+			for (usize i = 0; i < paramTypes.size(); ++i)
+				stored[i] = paramTypes[i];
+		}
+
+		FunctionTypeInfo info;
+		info.returnType = returnType;
+		info.paramTypes = stored;
+		info.paramCount = static_cast<u32>(paramTypes.size());
+		info.isVariadic = isVariadic;
+
+		// Never qualified: C leaves a qualifier on a function type undefined, and there is nothing
+		// for one to mean when the type names no object.
+		return makeCompound(arena, TypeKind::Function, false, false, false,
+			static_cast<const FunctionTypeInfo*>(arena.create<FunctionTypeInfo>(std::move(info))));
 	}
 
 	bool Type::isSigned() const noexcept

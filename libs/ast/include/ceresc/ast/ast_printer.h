@@ -98,5 +98,9 @@ namespace ceresc::ast
 
 	public:
 		static std::string typeName(const Type* type);
+
+		// The declarator spelling of a function type - see the definition for why it cannot be
+		// built left to right like every other type name.
+		static std::string functionTypeName(const Type* type, std::string_view inner);
 	};
 }
