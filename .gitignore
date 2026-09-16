@@ -7,6 +7,9 @@
 ## Only the TOP level ignores .casm: every .casm there is generated from a sibling .c. Under
 ## examples/interop/ a .casm is hand-written source, so it is listed by name in its own rules.
 examples/*.casm
+examples/interop/*.casm
+!examples/interop/triple.casm
+!examples/interop/banner.casm
 *.cobj
 *.cres
 *.decls.casm

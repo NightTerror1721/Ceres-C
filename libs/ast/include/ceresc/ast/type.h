@@ -79,7 +79,7 @@ namespace ceresc::ast
 		constexpr Type& operator=(const Type&) noexcept = default;
 		constexpr Type& operator=(Type&&) noexcept = default;
 
-		constexpr bool operator==(const Type&) const noexcept = default;
+		bool operator==(const Type& other) const noexcept;
 
 	private:
 		constexpr explicit Type(TypeKind kind, bool isConst, bool isVolatile, PayloadType payload = std::monostate{}, u32 arraySize = 0) noexcept :

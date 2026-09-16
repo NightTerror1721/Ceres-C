@@ -874,13 +874,6 @@ namespace ceresc::ir
 			// of calls from a root reaches can be dropped - this used to assume one self-contained
 			// translation unit, which stopped being true the moment ceresc learned to compile several
 			// files into objects and link them.
-			bool hasMain = false;
-			for (const auto& function : module.functions())
-				if (function->name() == "main")
-					hasMain = true;
-			if (!hasMain)
-				return false; // a fragment with no entry point - every function is potentially the root
-
 			std::unordered_map<std::string_view, const IrFunction*> byName;
 			for (const auto& function : module.functions())
 				byName.emplace(function->name(), function.get());

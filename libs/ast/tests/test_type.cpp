@@ -39,6 +39,26 @@ TEST(type, pointer_is_always_four_bytes)
 	CHECK_EQ(intPtr->alignment(), 4u);
 }
 
+TEST(type, withConst_preserves_volatile_and_qualifies_array_elements)
+{
+	support::Arena arena;
+	CHECK(Type::withConst(arena, &Type::VolatileInt) == &Type::ConstVolatileInt);
+
+	const Type* array = Type::makeArray(arena, &Type::Int, 3);
+	const Type* qualified = Type::withConst(arena, array);
+	CHECK(qualified->isArray());
+	CHECK(!qualified->isConst());
+	CHECK(qualified->arrayElementType()->isConst());
+}
+
+TEST(type, structurally_equal_compound_types_compare_equal)
+{
+	support::Arena arena;
+	const Type* first = Type::makePointer(arena, Type::makePointer(arena, &Type::Int));
+	const Type* second = Type::makePointer(arena, Type::makePointer(arena, &Type::Int));
+	CHECK(*first == *second);
+}
+
 TEST(type, isSigned_matches_C_signedness)
 {
 	CHECK(Type::Char.isSigned());

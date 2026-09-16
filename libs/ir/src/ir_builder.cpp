@@ -847,6 +847,18 @@ namespace ceresc::ir
 		if (toFloat)
 			return fromFloat ? value : emitUnOp(loc, IrUnOp::IntToFloat, value, false, !fromType || !fromType->isSigned());
 
+		if (toType && toType->isBool() && fromFloat)
+		{
+			IrCmpPayload payload;
+			payload.result = _currentFunction->newTemp();
+			payload.predicate = IrCmpPredicate::Ne;
+			payload.isFloat = true;
+			payload.lhs = value;
+			payload.rhs = emitConstFloat(loc, 0.0f);
+			emitVoid(loc, payload);
+			return payload.result;
+		}
+
 		if (fromFloat)
 		{
 			// Across the bank first, then the integer conversions below apply to the result exactly
@@ -1162,6 +1174,7 @@ namespace ceresc::ir
 				}
 				bool isIncrement = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PostIncrement);
 				IrValue newValue = emitBinOp(loc, isIncrement ? IrBinOp::Add : IrBinOp::Sub, oldValue, stepValue, type && !type->isSigned(), isFloat);
+				newValue = convertForStore(loc, newValue, isFloat ? type : &Type::Int, type);
 				emitStore(loc, addr, size, newValue, isFloat);
 				bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
 				_lastValue = isPre ? newValue : oldValue;

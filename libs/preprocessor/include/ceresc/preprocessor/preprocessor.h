@@ -101,7 +101,11 @@ namespace ceresc::preprocessor
 		void addIncludeDirectory(std::string directory) { _includeDirectories.push_back(std::move(directory)); }
 
 		// Predefines an object-like macro, as `-D NAME=value` on the command line does.
-		void define(std::string name, std::string replacement) { _macros[std::move(name)] = std::move(replacement); }
+		void define(std::string name, std::string replacement)
+		{
+			_predefines[name] = replacement;
+			_macros[std::move(name)] = std::move(replacement);
+		}
 
 		// Expands `path` and everything it includes. Registers every file it reads with the
 		// SourceManager, so a diagnostic about a header names the header.
@@ -119,12 +123,13 @@ namespace ceresc::preprocessor
 		// and comments alone. Rescans its own output so one macro may expand into another, bounded
 		// by a small pass limit rather than by a recursion guard - a macro that expands to itself
 		// stops being rewritten instead of looping forever.
-		std::string expandMacros(std::string_view line, support::SourceLocation location);
+		std::string expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment);
 
 	private:
 		support::SourceManager& _sourceManager;
 		support::DiagnosticEngine& _diagnostics;
 		std::vector<std::string> _includeDirectories;
+		std::unordered_map<std::string, std::string> _predefines;
 		std::unordered_map<std::string, std::string> _macros;
 		std::vector<std::string> _pragmaOnce; // canonical paths that asked not to be included again
 	};

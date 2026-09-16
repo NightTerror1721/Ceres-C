@@ -244,6 +244,46 @@ TEST(preprocessor, a_macro_is_not_substituted_inside_a_literal_or_a_comment)
 	CHECK(contains(result.text, "int ceres;"));
 }
 
+TEST(preprocessor, a_block_comment_spanning_lines_hides_directives_and_macro_names)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define NAME value\n"
+		"/* #include \"missing.h\"\n"
+		"   NAME */\n"
+		"int x = NAME;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "NAME */"));
+	CHECK(contains(result.text, "int x = value;"));
+}
+
+TEST(preprocessor, directive_comments_are_not_part_of_operands_or_macro_bodies)
+{
+	TempDirectory dir;
+	dir.write("thing.h", "int from_header;\n");
+	std::string path = dir.write("main.c",
+		"#include \"thing.h\" // header\n"
+		"#define X 1 // value\n"
+		"int a = X, b = 2;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int from_header;"));
+	CHECK(contains(result.text, "int a = 1, b = 2;"));
+}
+
+TEST(preprocessor, an_unknown_directive_prefix_is_not_misclassified)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "#include_next <thing.h>\n");
+	Result result = expand(path);
+	CHECK(!result.ok);
+	CHECK(!result.diagnostics.empty());
+	CHECK(contains(result.diagnostics.at(0), "include_next"));
+}
+
 TEST(preprocessor, a_macro_may_expand_into_another_one)
 {
 	TempDirectory dir;

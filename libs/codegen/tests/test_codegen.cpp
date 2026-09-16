@@ -990,6 +990,13 @@ TEST(codegen, converting_to_bool_is_one_unsigned_min_and_no_branch)
 	CHECK(contains(text, ", 1"));
 }
 
+TEST(codegen, a_float_converted_to_bool_is_compared_with_zero)
+{
+	std::string text = atO2("bool f(float x) { return x; }");
+	CHECK(contains(text, "ifne f"));
+	CHECK(!contains(text, "ftoi"));
+}
+
 TEST(codegen, a_narrowing_conversion_of_a_constant_folds_away)
 {
 	// Every `char c = 'a';` goes through a Narrow now. If it survived to the back end, -O1 would

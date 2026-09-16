@@ -95,8 +95,10 @@ namespace ceresc::codegen
 		// would fail to parse as a `let` name verbatim.
 		std::string mangledName(std::string_view name)
 		{
-			if (!name.empty() && name.front() == '.')
+			if (name.starts_with(".str"))
 				return std::format("__ccstr{}", name.substr(4)); // ".str7" -> "__ccstr7"
+			if (!name.empty() && name.front() == '.')
+				return std::format("__cc{}", name.substr(1));
 			return std::string(name);
 		}
 
@@ -135,10 +137,15 @@ namespace ceresc::codegen
 			// are ordinary identifiers.
 			if (name.size() >= 2 && (name.front() == 'r' || name.front() == 'f'))
 			{
+				u32 number = 0;
 				bool allDigits = true;
 				for (char c : name.substr(1))
+				{
 					allDigits = allDigits && (c >= '0' && c <= '9');
-				if (allDigits)
+					if (allDigits)
+						number = number * 10 + static_cast<u32>(c - '0');
+				}
+				if (allDigits && number < 16)
 					return true;
 			}
 			return false;
@@ -1447,7 +1454,7 @@ namespace ceresc::codegen
 		// its function's - so it cannot collide by accident, only by the user's own choice of the
 		// part that comes from C.
 		for (const IrStaticLocal& local : module.staticLocals())
-			check(local.decl->name(), local.decl->location(), "static local variable");
+			check(local.name, local.decl->location(), "static local variable");
 	}
 
 	std::vector<ExternalDeclaration> CodeGen::collectExternalDeclarations(const TranslationUnit& unit) const
@@ -1462,7 +1469,7 @@ namespace ceresc::codegen
 				// will contribute the same entry. The driver keeps one copy.
 				if (!function->hasExternalLinkage())
 					continue;
-				declarations.push_back(ExternalDeclaration{ std::string(function->name()), true, "@text", {} });
+				declarations.push_back(ExternalDeclaration{ std::string(function->name()), true, function->isDefinition(), false, "@text", {} });
 				continue;
 			}
 
@@ -1473,7 +1480,7 @@ namespace ceresc::codegen
 			if (!type)
 				continue;
 
-			std::string section = "@bss";
+			std::string section = type->isConst() ? "@rodata" : "@bss";
 			if (variable->initializer())
 				section = type->isConst() ? "@rodata" : "@data";
 
@@ -1490,7 +1497,8 @@ namespace ceresc::codegen
 			{
 				typeText = fieldTypeName(type->sizeInBytes(), type->isFloat());
 			}
-			declarations.push_back(ExternalDeclaration{ std::string(variable->name()), false, std::move(section), std::move(typeText) });
+			declarations.push_back(ExternalDeclaration{ std::string(variable->name()), false, !variable->isExternDeclaration(),
+				variable->initializer() != nullptr, std::move(section), std::move(typeText) });
 		}
 		return declarations;
 	}

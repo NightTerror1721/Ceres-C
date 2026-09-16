@@ -166,8 +166,13 @@ namespace ceresc::sema
 			// other direction is always fine: promising less about an object than you may.
 			const Type* targetPointee = target->arrayElementType();
 			const Type* sourcePointee = source->arrayElementType();
-			if (sourcePointee && sourcePointee->isConst() && targetPointee && !targetPointee->isConst())
-				return false;
+			while (sourcePointee && targetPointee)
+			{
+				if (sourcePointee->isConst() && !targetPointee->isConst())
+					return false;
+				sourcePointee = sourcePointee->arrayElementType();
+				targetPointee = targetPointee->arrayElementType();
+			}
 			return true;
 		}
 		if (target->isPointer() && isArithmeticType(source))
@@ -858,7 +863,7 @@ namespace ceresc::sema
 				{
 					if (field.name == node.memberName())
 					{
-						resultType = field.type;
+						resultType = structType->isConst() ? Type::withConst(_arena, field.type) : field.type;
 						found = true;
 						break;
 					}
@@ -1174,18 +1179,6 @@ namespace ceresc::sema
 					return false;
 			}
 		}
-		if (auto* binary = dynamic_cast<const ast::BinaryExpr*>(expr))
-			return isConstantInitializer(binary->lhs()) && isConstantInitializer(binary->rhs());
-		if (auto* cast = dynamic_cast<const ast::CastExpr*>(expr))
-			return isConstantInitializer(cast->operand());
-		if (dynamic_cast<const ast::SizeofExpr*>(expr))
-			return true;
-		// An enum constant is a compile-time value; any other name is an object read at run time.
-		if (auto* name = dynamic_cast<const ast::NameExpr*>(expr))
-		{
-			const Symbol* symbol = const_cast<Sema*>(this)->currentScope().lookup(name->name());
-			return symbol && symbol->kind == SymbolKind::EnumConstant;
-		}
 		return false;
 	}
 
@@ -1227,6 +1220,11 @@ namespace ceresc::sema
 				// Two initializers is the one case that really is a redefinition: there is no way to
 				// tell which value the object should start with.
 				_diagnostics.error(node.location(), "redefinition of '{}'", node.name());
+			}
+			else if (previous->varDecl &&
+				((previous->varDecl->storageClass() == ast::StorageClass::Static) != (node.storageClass() == ast::StorageClass::Static)))
+			{
+				_diagnostics.error(node.location(), "redeclaration of '{}' has conflicting linkage", node.name());
 			}
 			else if (node.initializer())
 			{

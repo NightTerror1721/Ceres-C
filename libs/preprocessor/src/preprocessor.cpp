@@ -16,6 +16,7 @@ namespace ceresc::preprocessor
 		// would otherwise never stop; with a limit it simply stops being rewritten, which is what
 		// every real preprocessor arranges (by a different mechanism) too.
 		constexpr int kMaxMacroPasses = 16;
+		constexpr usize kMaxExpandedLineBytes = 1024 * 1024;
 
 		constexpr int kMaxIncludeDepth = 64;
 
@@ -50,6 +51,20 @@ namespace ceresc::preprocessor
 			fs::path canonical = fs::weakly_canonical(fs::path(path), error);
 			return error ? path : canonical.string();
 		}
+
+		std::string_view withoutDirectiveComment(std::string_view text)
+		{
+			usize lineComment = text.find("//");
+			usize blockComment = text.find("/*");
+			usize comment = std::min(lineComment, blockComment);
+			return trim(comment == std::string_view::npos ? text : text.substr(0, comment));
+		}
+
+		bool isDirective(std::string_view directive, std::string_view name) noexcept
+		{
+			return directive.starts_with(name) &&
+				(directive.size() == name.size() || !isIdentifierChar(directive[name.size()]));
+		}
 	}
 
 	support::SourceLocation LineMap::toOriginal(support::SourceLocation location) const noexcept
@@ -62,6 +77,8 @@ namespace ceresc::preprocessor
 
 	PreprocessedSource Preprocessor::run(const std::string& path)
 	{
+		_macros = _predefines;
+		_pragmaOnce.clear();
 		PreprocessedSource result;
 		std::vector<std::string> includeStack;
 		result.ok = expandFile(path, result, includeStack);
@@ -91,14 +108,12 @@ namespace ceresc::preprocessor
 		return {};
 	}
 
-	std::string Preprocessor::expandMacros(std::string_view line, support::SourceLocation location)
+	std::string Preprocessor::expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment)
 	{
-		if (_macros.empty())
-			return std::string(line);
-
 		std::string current(line);
 		for (int pass = 0; pass < kMaxMacroPasses; ++pass)
 		{
+			bool commentState = pass == 0 && inBlockComment;
 			std::string next;
 			next.reserve(current.size());
 			bool changed = false;
@@ -137,12 +152,22 @@ namespace ceresc::preprocessor
 					next.append(current, i, std::string::npos);
 					break;
 				}
+				if (commentState)
+				{
+					usize end = current.find("*/", i);
+					usize stop = (end == std::string::npos) ? current.size() : end + 2;
+					next.append(current, i, stop - i);
+					i = stop;
+					commentState = end == std::string::npos;
+					continue;
+				}
 				if (c == '/' && i + 1 < current.size() && current[i + 1] == '*')
 				{
 					usize end = current.find("*/", i + 2);
 					usize stop = (end == std::string::npos) ? current.size() : end + 2;
 					next.append(current, i, stop - i);
 					i = stop;
+					commentState = end == std::string::npos;
 					continue;
 				}
 
@@ -168,6 +193,13 @@ namespace ceresc::preprocessor
 			}
 
 			current = std::move(next);
+			if (current.size() > kMaxExpandedLineBytes)
+			{
+				_diagnostics.warning(location, "gave up expanding macros on this line after it grew beyond {} bytes", kMaxExpandedLineBytes);
+				return current;
+			}
+			if (pass == 0)
+				inBlockComment = commentState;
 			if (!changed)
 				return current;
 		}
@@ -215,6 +247,7 @@ namespace ceresc::preprocessor
 		includeStack.push_back(canonical);
 		bool ok = true;
 		u32 sourceLine = 0;
+		bool inBlockComment = false;
 
 		// `< size`, not `<= size`: a file that ends with a newline has no line after it, and an
 		// extra empty one would shift every line number following an #include by one - which is
@@ -232,9 +265,9 @@ namespace ceresc::preprocessor
 			support::SourceLocation here{ sourceId, sourceLine, 1, 0 };
 			std::string_view trimmed = trim(line);
 
-			if (!trimmed.empty() && trimmed.front() == '#')
+			if (!inBlockComment && !trimmed.empty() && trimmed.front() == '#')
 			{
-				std::string_view directive = trim(trimmed.substr(1));
+				std::string_view directive = withoutDirectiveComment(trim(trimmed.substr(1)));
 				// Every directive contributes a BLANK line rather than nothing, so the expanded text
 				// keeps one line per source line for the files that have no includes at all - the
 				// common case, where the line map then reads as the identity and a diagnostic's line
@@ -245,7 +278,7 @@ namespace ceresc::preprocessor
 					out.text += '\n';
 				};
 
-				if (directive.starts_with("include"))
+				if (isDirective(directive, "include"))
 				{
 					std::string_view target = trim(directive.substr(7));
 					bool angled = !target.empty() && target.front() == '<';
@@ -271,7 +304,7 @@ namespace ceresc::preprocessor
 					continue;
 				}
 
-				if (directive.starts_with("define"))
+				if (isDirective(directive, "define"))
 				{
 					std::string_view rest = trim(directive.substr(6));
 					usize nameEnd = 0;
@@ -292,22 +325,29 @@ namespace ceresc::preprocessor
 					else
 					{
 						std::string name(rest.substr(0, nameEnd));
-						std::string replacement(trim(rest.substr(nameEnd)));
+						std::string replacement(withoutDirectiveComment(trim(rest.substr(nameEnd))));
 						_macros[name] = replacement;
 					}
 					keepLineNumbering();
 					continue;
 				}
 
-				if (directive.starts_with("undef"))
+				if (isDirective(directive, "undef"))
 				{
 					std::string_view name = trim(directive.substr(5));
-					_macros.erase(std::string(name));
+					if (name.empty() || !isIdentifierStart(name.front()) ||
+						std::any_of(name.begin() + 1, name.end(), [](char c) { return !isIdentifierChar(c); }))
+					{
+						_diagnostics.error(here, "#undef expects a name");
+						ok = false;
+					}
+					else
+						_macros.erase(std::string(name));
 					keepLineNumbering();
 					continue;
 				}
 
-				if (directive.starts_with("pragma"))
+				if (isDirective(directive, "pragma"))
 				{
 					std::string_view rest = trim(directive.substr(6));
 					if (rest == "once")
@@ -335,7 +375,7 @@ namespace ceresc::preprocessor
 			}
 
 			out.lineMap.append(static_cast<u32>(out.lineMap.entries().size() + 1), sourceId, sourceLine);
-			out.text += expandMacros(line, here);
+			out.text += expandMacros(line, here, inBlockComment);
 			out.text += '\n';
 		}
 

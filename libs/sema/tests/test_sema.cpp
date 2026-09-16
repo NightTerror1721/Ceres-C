@@ -1065,6 +1065,17 @@ TEST(sema, a_conversion_may_add_const_but_never_drop_it)
 	CheckOutcome dropping = checkSource("int main() { int n = 0; const int* r = &n; int* w = r; return *w; }");
 	CHECK(!dropping.ok);
 	CHECK(containsMessage(dropping, "incompatible type"));
+
+	CheckOutcome nestedDropping = checkSource("int main() { int n = 0; const int* p = &n; const int** pp = &p; int** q = pp; return 0; }");
+	CHECK(!nestedDropping.ok);
+	CHECK(containsMessage(nestedDropping, "incompatible type"));
+}
+
+TEST(sema, a_member_of_a_const_struct_cannot_be_written)
+{
+	CheckOutcome outcome = checkSource("struct S { int x; }; const struct S g = { 1 }; int main() { g.x = 2; return 0; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "const"));
 }
 
 TEST(sema, a_const_parameter_is_accepted_and_still_cannot_be_written)
@@ -1108,7 +1119,9 @@ TEST(sema, a_static_local_needs_a_compile_time_initializer)
 {
 	// Its initial value becomes bytes in the loaded image, so there is no moment at which a
 	// run-time expression could be evaluated for it.
-	CHECK(checkSource("int main() { static int n = 1 + 2; return n; }").ok);
+	CheckOutcome expression = checkSource("int main() { static int n = 1 + 2; return n; }");
+	CHECK(!expression.ok);
+	CHECK(containsMessage(expression, "compile-time constant"));
 
 	CheckOutcome outcome = checkSource("int seed = 4;\nint main() { static int n = seed; return n; }");
 	CHECK(!outcome.ok);
@@ -1142,6 +1155,13 @@ TEST(sema, redeclaring_a_global_with_a_different_type_is_an_error)
 	CheckOutcome outcome = checkSource("extern int counter;\nfloat counter = 0.0;\nint main() { return 0; }");
 	CHECK(!outcome.ok);
 	CHECK(containsMessage(outcome, "different type"));
+}
+
+TEST(sema, redeclaring_a_global_with_conflicting_linkage_is_an_error)
+{
+	CheckOutcome outcome = checkSource("extern int counter;\nstatic int counter = 0;\nint main() { return counter; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "conflicting linkage"));
 }
 
 TEST(sema, a_local_is_still_not_redeclarable)

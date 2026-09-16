@@ -15,6 +15,7 @@
 #include <ceresc/support/string_pool.h>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -44,7 +45,9 @@ namespace ceresc::driver
 
 		bool isCasmInput(const std::string& path)
 		{
-			return fs::path(path).extension() == ".casm";
+			std::string extension = fs::path(path).extension().string();
+			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return extension == ".casm";
 		}
 
 		fs::path withExtension(const fs::path& path, std::string_view extension)
@@ -208,9 +211,19 @@ namespace ceresc::driver
 					// One entry per NAME across the whole program: the same function is normally
 					// declared by every unit that calls it and defined by one, and CASM would report
 					// the second declaration as a redefinition.
-					if (!seen.insert(declaration.name).second)
-						continue;
-					(declaration.isFunction ? functions : variables).push_back(declaration);
+					auto [it, inserted] = seen.insert(declaration.name);
+					if (inserted)
+						(declaration.isFunction ? functions : variables).push_back(declaration);
+					else if (declaration.isDefinition)
+					{
+						auto& bucket = declaration.isFunction ? functions : variables;
+						for (codegen::ExternalDeclaration& existing : bucket)
+							if (existing.name == declaration.name && (!existing.isDefinition || declaration.hasInitializer))
+							{
+								existing = declaration;
+								break;
+							}
+					}
 				}
 			}
 
@@ -292,12 +305,11 @@ namespace ceresc::driver
 				preprocess.define(name, value);
 
 			preprocessor::PreprocessedSource expanded = preprocess.run(inputPath);
-			printer.setLineMap(&expanded.lineMap);
+			// Preprocessor diagnostics already point at their original files; only later phases need remapping.
+			printer.flush(std::cerr);
 			if (!expanded.ok)
-			{
-				printer.flush(std::cerr);
 				return 1;
-			}
+			printer.setLineMap(&expanded.lineMap);
 			if (options.emitPreprocessed)
 			{
 				if (cInputs.size() > 1)

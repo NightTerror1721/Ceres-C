@@ -259,7 +259,7 @@ namespace ceresc::parser
 	Expr* Parser::parseCast()
 	{
 		SourceLocation location = _current.location();
-		if (check(TokenKind::LParen) && isTypeSpecStart(_next))
+		if (check(TokenKind::LParen) && (isDeclSpecifierStart(_next.kind()) || isTypeSpecStart(_next)))
 		{
 			advance(); // '('
 			const Type* targetType = parseTypeName();
@@ -294,7 +294,7 @@ namespace ceresc::parser
 	{
 		advance(); // 'sizeof'
 
-		if (check(TokenKind::LParen) && isTypeSpecStart(_next))
+		if (check(TokenKind::LParen) && (isDeclSpecifierStart(_next.kind()) || isTypeSpecStart(_next)))
 		{
 			advance(); // '('
 			const Type* argumentType = parseTypeName();

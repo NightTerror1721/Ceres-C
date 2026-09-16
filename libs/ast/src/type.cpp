@@ -123,6 +123,17 @@ namespace ceresc::ast
 	u32 Type::sizeInBytes() const noexcept { return sizeOf(this, 0); }
 	u32 Type::alignment() const noexcept { return alignmentOf(this, 0); }
 
+	bool Type::operator==(const Type& other) const noexcept
+	{
+		if (_kind != other._kind || _const != other._const || _volatile != other._volatile || _arraySize != other._arraySize)
+			return false;
+		const Type* element = arrayElementType();
+		const Type* otherElement = other.arrayElementType();
+		if (element || otherElement)
+			return element && otherElement && *element == *otherElement;
+		return _payload == other._payload;
+	}
+
 	bool Type::isSigned() const noexcept
 	{
 		switch (_kind)
@@ -152,21 +163,23 @@ namespace ceresc::ast
 		switch (type->kind())
 		{
 			case TypeKind::Void:   return type; // `const void` is not a thing you can have one of
-			case TypeKind::Bool:   return &Type::ConstBool;
-			case TypeKind::Char:   return &Type::ConstChar;
-			case TypeKind::UChar:  return &Type::ConstUChar;
-			case TypeKind::SChar:  return &Type::ConstSChar;
-			case TypeKind::Short:  return &Type::ConstShort;
-			case TypeKind::UShort: return &Type::ConstUShort;
-			case TypeKind::Int:    return &Type::ConstInt;
-			case TypeKind::UInt:   return &Type::ConstUInt;
-			case TypeKind::Long:   return &Type::ConstLong;
-			case TypeKind::ULong:  return &Type::ConstULong;
-			case TypeKind::Float:  return &Type::ConstFloat;
-			case TypeKind::Double: return &Type::ConstDouble;
+			case TypeKind::Bool:   return type->isVolatile() ? &Type::ConstVolatileBool : &Type::ConstBool;
+			case TypeKind::Char:   return type->isVolatile() ? &Type::ConstVolatileChar : &Type::ConstChar;
+			case TypeKind::UChar:  return type->isVolatile() ? &Type::ConstVolatileUChar : &Type::ConstUChar;
+			case TypeKind::SChar:  return type->isVolatile() ? &Type::ConstVolatileSChar : &Type::ConstSChar;
+			case TypeKind::Short:  return type->isVolatile() ? &Type::ConstVolatileShort : &Type::ConstShort;
+			case TypeKind::UShort: return type->isVolatile() ? &Type::ConstVolatileUShort : &Type::ConstUShort;
+			case TypeKind::Int:    return type->isVolatile() ? &Type::ConstVolatileInt : &Type::ConstInt;
+			case TypeKind::UInt:   return type->isVolatile() ? &Type::ConstVolatileUInt : &Type::ConstUInt;
+			case TypeKind::Long:   return type->isVolatile() ? &Type::ConstVolatileLong : &Type::ConstLong;
+			case TypeKind::ULong:  return type->isVolatile() ? &Type::ConstVolatileULong : &Type::ConstULong;
+			case TypeKind::Float:  return type->isVolatile() ? &Type::ConstVolatileFloat : &Type::ConstFloat;
+			case TypeKind::Double: return type->isVolatile() ? &Type::ConstVolatileDouble : &Type::ConstDouble;
 			default:
 				break;
 		}
+		if (type->isArray())
+			return makeArray(arena, withConst(arena, type->arrayElementType()), type->arraySize(), false, type->isVolatile());
 		return makeCompound(arena, type->kind(), true, type->isVolatile(), type->_payload, type->_arraySize);
 	}
 

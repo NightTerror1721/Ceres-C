@@ -69,6 +69,8 @@ namespace ceresc::codegen
 	{
 		std::string name;
 		bool isFunction = false;
+		bool isDefinition = false;
+		bool hasInitializer = false;
 		std::string section;   // "@text", "@data", "@bss" or "@rodata" - where the real definition lives
 		std::string typeText;  // the CASM type for a variable ("u32", "u8[8]", ...); empty for a function
 	};
