@@ -1197,3 +1197,26 @@ TEST(ir, an_access_through_an_ordinary_pointer_is_not_marked)
 	std::string text = functionIr("int f(int* p) { *p = 1; return *p; }", "f");
 	CHECK(!contains(text, ".v"));
 }
+
+TEST(ir, a_volatile_pointer_declared_in_a_block_marks_the_same_accesses_as_the_parameter_form)
+{
+	// The two spellings of one type have to lower identically. They did not: a declaration applied
+	// `volatile` to the FINISHED type, after the `*`, producing `int* volatile` - a volatile local
+	// pointing at an ordinary int - so the two device accesses this exists for came out unmarked
+	// while the store into the pointer itself got the flag nobody needed there.
+	std::string text = functionIr(
+		"int f(void) { volatile int* term = (volatile int*)0xFF000004; *term = 1; return *term; }", "f");
+	CHECK(contains(text, "store.word.v"));
+	CHECK(contains(text, "load.word.v"));
+}
+
+TEST(ir, a_volatile_pointer_is_not_the_same_type_as_a_pointer_to_volatile)
+{
+	// The other side of the distinction, and the exact mirror of the test above: here the POINTER
+	// is volatile and what it points at is not, so reading `p` is the observable access and the
+	// dereference through it is the ordinary one. Both marks appear, on the opposite instructions.
+	std::string text = functionIr("int f(void) { int* volatile p = 0; return *p; }", "f");
+	CHECK(contains(text, "store.word.v"));  // writing the pointer
+	CHECK(contains(text, "load.word.v"));   // reading it back
+	CHECK(contains(text, "load.word ["));   // ...and an ordinary load through it
+}

@@ -92,6 +92,12 @@ instead (`load.word.v`). Both forms are checked by the passes that could otherwi
 access, rather than being safe only for as long as those passes happen not to look at indirect
 accesses.
 
+Which side of the `*` a qualifier sits on decides what it qualifies, and both spellings parse:
+`volatile int* p` is a pointer to volatile int, `int* volatile p` is a volatile pointer to ordinary
+int, and `--emit-ast` prints them differently because they are different types. Either word may also
+follow the type-spec (`int volatile x` is `volatile int x`), and repeating one across two positions
+is still a duplicate.
+
 `restrict` is accepted only on pointer types and is recorded in the type system. The current
 optimizer does not yet use no-alias assumptions across arbitrary pointers, so the qualifier is a
 checked contract rather than an unsafe speculative transformation.

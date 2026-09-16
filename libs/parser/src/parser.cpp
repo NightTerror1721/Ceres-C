@@ -576,12 +576,42 @@ namespace ceresc::parser
 		}
 	}
 
-	const Type* Parser::parseTypeName()
+	// One run of `const`/`volatile`, in any order, folded into flags the caller already holds. The
+	// same loop serves all three positions a qualifier can occupy - before the type-spec, after it,
+	// and after each `*` - because C allows either word, in either order, wherever one of them is
+	// allowed at all. Only the POSITION decides what they qualify, never which word came first,
+	// which is also what makes a qualifier written on one side a duplicate of the same one written
+	// on the other.
+	void Parser::parseQualifierRun(bool& isConst, bool& isVolatile)
 	{
-		return parseTypeName(false);
+		for (;;)
+		{
+			if (check(TokenKind::KwConst))
+			{
+				if (isConst)
+					_diagnostics.error(_current.location(), "duplicate 'const'");
+				isConst = true;
+				advance();
+				continue;
+			}
+			if (check(TokenKind::KwVolatile))
+			{
+				if (isVolatile)
+					_diagnostics.error(_current.location(), "duplicate 'volatile'");
+				isVolatile = true;
+				advance();
+				continue;
+			}
+			return;
+		}
 	}
 
-	const Type* Parser::parseTypeName(bool leadingConst)
+	const Type* Parser::parseTypeName()
+	{
+		return parseTypeName(false, false);
+	}
+
+	const Type* Parser::parseTypeName(bool leadingConst, bool leadingVolatile)
 	{
 		// A qualifier may sit on either side of the type-spec - `const int` and `int const` are the
 		// same type in C - and again after every `*`, where it means something different: `const
@@ -600,15 +630,9 @@ namespace ceresc::parser
 			return nullptr;
 
 		bool isConst = leading.isConst || leadingConst;
-		bool isVolatile = leading.isVolatile;
+		bool isVolatile = leading.isVolatile || leadingVolatile;
 		bool isRestrict = leading.isRestrict;
-		while (check(TokenKind::KwConst)) // trailing form: `int const`
-		{
-			if (isConst)
-				_diagnostics.error(_current.location(), "duplicate 'const'");
-			isConst = true;
-			advance();
-		}
+		parseQualifierRun(isConst, isVolatile); // trailing form: `int const`, `int volatile`
 		if (isConst)
 			base = Type::withConst(_arena, base);
 		if (isVolatile)
@@ -618,15 +642,12 @@ namespace ceresc::parser
 		{
 			base = Type::makePointer(_arena, base);
 			bool pointerIsConst = false;
-			while (check(TokenKind::KwConst))
-			{
-				if (pointerIsConst)
-					_diagnostics.error(_current.location(), "duplicate 'const'");
-				pointerIsConst = true;
-				advance();
-			}
+			bool pointerIsVolatile = false;
+			parseQualifierRun(pointerIsConst, pointerIsVolatile);
 			if (pointerIsConst)
 				base = Type::withConst(_arena, base);
+			if (pointerIsVolatile)
+				base = Type::withVolatile(_arena, base);
 		}
 		if (isRestrict)
 		{
@@ -1155,11 +1176,9 @@ namespace ceresc::parser
 		// `const` to the type. A local may say `static`, `extern`, `auto` or nothing at all; which
 		// of those make sense in a block is sema's call, not this one's.
 		DeclSpecifiers specifiers = parseDeclSpecifiers();
-		const Type* type = parseTypeName(specifiers.isConst);
+		const Type* type = parseTypeName(specifiers.isConst, specifiers.isVolatile);
 		if (!type)
 			return nullptr;
-		if (specifiers.isVolatile)
-			type = Type::withVolatile(_arena, type);
 		if (specifiers.isRestrict)
 		{
 			if (!type->isPointer())
@@ -1244,11 +1263,9 @@ namespace ceresc::parser
 			return nullptr;
 		}
 
-		const Type* type = parseTypeName(specifiers.isConst);
+		const Type* type = parseTypeName(specifiers.isConst, specifiers.isVolatile);
 		if (!type)
 			return nullptr;
-		if (specifiers.isVolatile)
-			type = Type::withVolatile(_arena, type);
 		if (specifiers.isRestrict)
 		{
 			if (!type->isPointer())

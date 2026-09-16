@@ -138,11 +138,19 @@ namespace ceresc::parser
 		Expr* parseExpression();
 		const Type* parseTypeName();
 		// parseTypeName() for a caller that has already read the declaration's specifiers and so has
-		// consumed a leading `const` of its own. It matters WHERE that const lands: it qualifies the
-		// base type, before any `*`, so `const char* p` is a pointer to const char - applying it to
+		// consumed leading qualifiers of its own. It matters WHERE those land: they qualify the
+		// base type, before any `*`, so `const char* p` is a pointer to const char - applying one to
 		// the finished type instead would silently produce `char* const p`, a const pointer to
 		// ordinary char, which is a different type and the opposite promise.
-		const Type* parseTypeName(bool leadingConst);
+		//
+		// `volatile` has to come through here for the same reason and not a weaker one: with
+		// `volatile int* p` the qualifier is what keeps the accesses through `p` observable, and
+		// putting it on the pointer instead moves the guarantee onto a local nothing needed it for
+		// while leaving the device register it was written for unprotected.
+		//
+		// `restrict` is deliberately NOT in this list. It can only qualify a pointer, so the
+		// finished type is the right place for it, and each caller applies it there itself.
+		const Type* parseTypeName(bool leadingConst, bool leadingVolatile);
 
 		TranslationUnit* parseTranslationUnit();
 		Decl* parseExternalDecl();
@@ -213,6 +221,11 @@ namespace ceresc::parser
 		// or a second storage class. Always returns - a declaration with a bad specifier still has a
 		// type and a name worth parsing, same panic-mode philosophy as everywhere else here.
 		DeclSpecifiers parseDeclSpecifiers();
+
+		// Consumes one run of `const`/`volatile` in any order, folding them into flags the caller
+		// already holds - see parseTypeName()'s definition for why all three qualifier positions
+		// share this one loop.
+		void parseQualifierRun(bool& isConst, bool& isVolatile);
 
 		// Declarations. A variable and a function declaration share the same `type-name identifier`
 		// prefix - parseExternalDecl() parses that prefix once, then branches on whether a '(' follows.

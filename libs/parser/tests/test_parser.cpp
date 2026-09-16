@@ -68,6 +68,21 @@ namespace
 		ast::AstPrinter printer;
 		return unit ? printer.print(*unit) : std::string("<null>");
 	}
+
+	// True when parsing `source` reported at least one error. The parser recovers rather than
+	// stopping (panic mode, see parser.h), so a rejected construct still produces a unit - what
+	// makes it a rejection is the diagnostic, not a null return.
+	bool parseFails(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		Parser parser(lexer, arena, diagnostics);
+
+		parser.parseTranslationUnit();
+		return diagnostics.hasErrors();
+	}
 }
 
 TEST(parser, array_typedef_parameter_decays_to_pointer)
@@ -84,7 +99,49 @@ TEST(parser, union_and_alignof_are_parsed_as_types_and_constant_expressions)
 TEST(parser, volatile_restrict_and_register_are_accepted)
 {
 	CHECK_EQ(printUnit("volatile int device; restrict int* data; int main(void) { register int cached; return 0; }"),
-		"(unit (var device volatile int <null>) (var data restrict int* <null>) (func main int (params) (block (decl-stmt (var cached int <null>)) (return 0))))");
+		"(unit (var device volatile int <null>) (var data int* restrict <null>) (func main int (params) (block (decl-stmt (var cached int <null>)) (return 0))))");
+}
+
+TEST(parser, a_leading_volatile_qualifies_the_pointee_not_the_pointer)
+{
+	// The whole point of the qualifier: with `volatile int* p` the accesses THROUGH p are the
+	// observable ones. Putting it on the pointer instead would protect a local nothing needed
+	// protecting and leave the device register it was written for unguarded. Declaration and
+	// parameter must agree - they used to disagree, because only the parameter path routed the
+	// qualifier into parseTypeName() while a declaration applied it to the finished type.
+	CHECK_EQ(printUnit("int f(volatile int* p) { return *p; }"),
+		"(unit (func f int (params (volatile int* p)) (block (return (* p)))))");
+	CHECK_EQ(printUnit("int g(void) { volatile int* p = 0; return *p; }"),
+		"(unit (func g int (params) (block (decl-stmt (var p volatile int* 0)) (return (* p)))))");
+	CHECK_EQ(printUnit("volatile int* global;"),
+		"(unit (var global volatile int* <null>))");
+}
+
+TEST(parser, a_qualifier_after_the_star_qualifies_the_pointer_itself)
+{
+	// The other half of the same distinction, and the reason one leading flag could never express
+	// both: `int* volatile` and `volatile int*` are different types, told apart only by which side
+	// of the star the word sits on.
+	CHECK_EQ(printUnit("int f(void) { int* volatile p = 0; return 0; }"),
+		"(unit (func f int (params) (block (decl-stmt (var p int* volatile 0)) (return 0))))");
+	CHECK_EQ(printUnit("int g(void) { const int* const p = 0; return *p; }"),
+		"(unit (func g int (params) (block (decl-stmt (var p const int* const 0)) (return (* p)))))");
+}
+
+TEST(parser, a_qualifier_may_follow_the_type_spec)
+{
+	// `const int` and `int const` are the same type in C, and so are `volatile int` and
+	// `int volatile`. Both words go through one loop, so neither spelling is the special case.
+	CHECK_EQ(printUnit("int f(void) { int volatile x = 1; return x; }"),
+		"(unit (func f int (params) (block (decl-stmt (var x volatile int 1)) (return x))))");
+	CHECK_EQ(printUnit("int g(void) { int const volatile x = 1; return x; }"),
+		"(unit (func g int (params) (block (decl-stmt (var x const volatile int 1)) (return x))))");
+}
+
+TEST(parser, a_qualifier_repeated_across_two_positions_is_still_a_duplicate)
+{
+	CHECK(parseFails("int f(void) { const int const x = 1; return x; }"));
+	CHECK(parseFails("int f(void) { volatile int volatile x = 1; return x; }"));
 }
 
 // ---- primary expressions -----------------------------------------------------------------------
@@ -923,9 +980,14 @@ TEST(parser, const_before_the_star_qualifies_the_pointee_and_after_it_the_pointe
 {
 	// The one place a misplaced qualifier silently produces a different, wrong type - which is why
 	// the leading `const` is threaded into the type name rather than applied to the finished type.
+	//
+	// These three used to print as `const char*`, `const char*` and `const const char*`: the parser
+	// had the distinction right, and the printer put every qualifier in front of the star, so the
+	// two different types read identically and the doubled one read as nothing at all. A pointer's
+	// own qualifiers belong after the star, which is where they are written in C.
 	CHECK_EQ(printDecl("const char* p;"), "(var p const char* <null>)");
-	CHECK_EQ(printDecl("char* const p;"), "(var p const char* <null>)");
-	CHECK_EQ(printDecl("const char* const p;"), "(var p const const char* <null>)");
+	CHECK_EQ(printDecl("char* const p;"), "(var p char* const <null>)");
+	CHECK_EQ(printDecl("const char* const p;"), "(var p const char* const <null>)");
 }
 
 TEST(parser, a_storage_class_may_come_before_or_after_const)

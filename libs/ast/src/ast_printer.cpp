@@ -177,7 +177,19 @@ namespace ceresc::ast
 			case TypeKind::ULong: return prefix + "unsigned long";
 			case TypeKind::Float: return prefix + "float";
 			case TypeKind::Double: return prefix + "double";
-			case TypeKind::Pointer: return prefix + typeName(type->arrayElementType()) + "*";
+			case TypeKind::Pointer:
+			{
+				// A pointer's OWN qualifiers are written after the star, not before it: `int* const`
+				// is a const pointer to ordinary int, while `const int*` is a pointer to const int,
+				// and those are different types. Folding both into one leading prefix would print
+				// the two identically - which is exactly how a qualifier landing on the wrong side
+				// of the star stays invisible in `--emit-ast`.
+				std::string suffix;
+				if (type->isConst()) suffix += " const";
+				if (type->isVolatile()) suffix += " volatile";
+				if (type->isRestrict()) suffix += " restrict";
+				return typeName(type->arrayElementType()) + "*" + suffix;
+			}
 			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + "[" + std::to_string(type->arraySize()) + "]";
 			case TypeKind::Struct: return prefix + "struct " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Union: return prefix + "union " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
