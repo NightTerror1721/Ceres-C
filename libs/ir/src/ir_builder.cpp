@@ -1948,6 +1948,12 @@ namespace ceresc::ir
 		}
 	}
 
+	void IrBuilder::visit(ast::InterruptVectorDecl&)
+	{
+		// Nothing to lower: it emits no code and no data, only a binding the linker resolves.
+		// Codegen writes it straight from the AST, the same way it writes a global's `let`.
+	}
+
 	void IrBuilder::visit(ast::TypedefDecl&)
 	{
 		// Nothing to lower - see sema.cpp's own identical no-op and decl.h's note on why a typedef

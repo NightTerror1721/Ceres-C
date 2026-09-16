@@ -453,6 +453,7 @@ namespace ceresc::lexer
 			{"register", &Token::makeKwRegister},
 			{"alignof", &Token::makeKwAlignof},
 			{"__interrupt", &Token::makeKwInterrupt},
+			{"__interrupt_vector", &Token::makeKwInterruptVector},
 		};
 		return table;
 	}

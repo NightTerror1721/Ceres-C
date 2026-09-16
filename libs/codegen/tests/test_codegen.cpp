@@ -1192,3 +1192,17 @@ TEST(codegen, a_static_interrupt_handler_survives_unused_function_elimination)
 	CHECK(contains(casm, "h:"));
 	CHECK(contains(casm, "iret"));
 }
+
+TEST(codegen, an_interrupt_vector_binding_becomes_one_top_level_interrupt_line)
+{
+	// It emits neither code nor data - only a binding the linker resolves and the loader applies
+	// before the program's first instruction - so it goes above every section.
+	std::string casm = atO2(
+		"enum Irq { Terminal = 17 };"
+		"__interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }"
+		"__interrupt_vector(Terminal, h);");
+
+	// The NUMBER, not the name the C source used: an enum constant means nothing to the assembler.
+	CHECK(contains(casm, "interrupt 17: h"));
+	CHECK(casm.find("interrupt 17: h") < casm.find("@text"));
+}

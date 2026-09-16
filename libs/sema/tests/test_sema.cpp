@@ -1344,3 +1344,34 @@ TEST(sema, an_interrupt_handler_has_no_caller_and_the_rules_all_follow_from_that
 	CHECK(!entry.ok);
 	CHECK(containsMessage(entry, "'main' cannot be an '__interrupt' handler"));
 }
+
+TEST(sema, an_interrupt_vector_binding_enforces_the_linkers_own_four_rules)
+{
+	std::string_view handler = "__interrupt void h(void) { } ";
+
+	CHECK(checkSource(std::string(handler) + "__interrupt_vector(17, h);").ok);
+	// An enum constant folds, so the vector can be named rather than spelled as a bare number.
+	CHECK(checkSource("enum Irq { Terminal = 17 }; " + std::string(handler) + "__interrupt_vector(Terminal, h);").ok);
+
+	// 1. The number must fold to a constant.
+	CheckOutcome variable = checkSource("int n; " + std::string(handler) + "__interrupt_vector(n, h);");
+	CHECK(!variable.ok);
+	CHECK(containsMessage(variable, "must be a constant expression"));
+
+	// 2. 0 is the reset vector, and 63 is the end of the table.
+	CHECK(containsMessage(checkSource(std::string(handler) + "__interrupt_vector(0, h);"), "reset vector"));
+	CHECK(containsMessage(checkSource(std::string(handler) + "__interrupt_vector(64, h);"), "out of range"));
+
+	// 3. The target must be an `__interrupt` handler - an ordinary function ends in `ret` and would
+	//    pop the flags the dispatcher pushed as a return address.
+	CheckOutcome ordinary = checkSource("void g(void) { } __interrupt_vector(17, g);");
+	CHECK(!ordinary.ok);
+	CHECK(containsMessage(ordinary, "is not declared '__interrupt'"));
+
+	// 4. One binding per number. Across objects that is the linker's to catch; inside one file the
+	//    message can name the first binding.
+	CheckOutcome twice = checkSource(std::string(handler) +
+		"__interrupt void k(void) { } __interrupt_vector(17, h); __interrupt_vector(17, k);");
+	CHECK(!twice.ok);
+	CHECK(containsMessage(twice, "already bound to 'h'"));
+}

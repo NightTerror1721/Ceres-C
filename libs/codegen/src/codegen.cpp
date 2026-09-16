@@ -1625,6 +1625,25 @@ namespace ceresc::codegen
 	{
 		checkSymbolNames(unit, module);
 
+		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
+		// code nor data - only a binding the linker resolves and the loader applies before the
+		// program's first instruction (CeresASM 26-Interrupt-Vector-Binding.md) - so it is valid
+		// wherever `const` is, and putting it first makes the .casm say what it answers before it says
+		// what it does.
+		bool wroteAnyVector = false;
+		for (Decl* decl : unit.decls())
+		{
+			auto* vector = dynamic_cast<ast::InterruptVectorDecl*>(decl);
+			if (!vector)
+				continue;
+			// The number is written out rather than passed through as the C source spelled it: an enum
+			// constant or a macro means nothing to the assembler, and sema has already folded it.
+			_emitter.raw(std::format("interrupt {}: {}", vector->resolvedNumber(), mangledName(vector->name())));
+			wroteAnyVector = true;
+		}
+		if (wroteAnyVector)
+			_emitter.blank();
+
 		// Four buckets, not two. `const` with an initializer goes to @rodata, where the machine
 		// itself enforces the qualifier - a store into it raises MemoryFault instead of quietly
 		// working (02-Memory.md). An `extern` declaration with no initializer defines nothing at

@@ -38,6 +38,7 @@ namespace ceresc::sema
 		_currentFunctionLabels.clear();
 		_loopDepth = 0;
 		_switchStack.clear();
+		_interruptVectors.clear();
 
 		usize errorsBefore = _diagnostics.errorCount();
 
@@ -1596,6 +1597,63 @@ namespace ceresc::sema
 	void Sema::visit(ast::TypedefDecl&)
 	{
 		// The parser already fully resolved the underlying type (decl.h) - nothing left to check.
+	}
+
+	void Sema::visit(ast::InterruptVectorDecl& node)
+	{
+		// Four rules, all of them the linker's own (CeresASM 26-Interrupt-Vector-Binding.md) - caught
+		// here so the message names the C declaration instead of generated assembly.
+
+		// 1. The number has to fold. It is written as any constant expression, so an enum constant
+		//    or a macro works and a variable does not.
+		checkExpr(node.number());
+		std::optional<i64> vector = evalConstantExpr(node.number());
+		if (!vector)
+		{
+			_diagnostics.error(node.numberLocation(), "an interrupt number must be a constant expression");
+			return;
+		}
+
+		// 2. 0 is the reset vector - the entry point, which `main` already is. 64 is the end of the
+		//    table.
+		if (*vector == 0)
+		{
+			_diagnostics.error(node.numberLocation(),
+				"interrupt 0 is the reset vector: it is where the program starts, which is what 'main' already is");
+			return;
+		}
+		if (*vector < 0 || *vector > 63)
+		{
+			_diagnostics.error(node.numberLocation(),
+				"interrupt number {} is out of range: the vector table holds 1 to 63", *vector);
+			return;
+		}
+		node.setResolvedNumber(*vector);
+
+		// 3. The target must be an `__interrupt` handler. An ordinary function would end in `ret`
+		//    and pop the flags the dispatcher pushed as a return address.
+		Symbol* symbol = _globalScope->lookupInThisScope(node.name());
+		if (!symbol || symbol->kind != SymbolKind::Function)
+		{
+			_diagnostics.error(node.location(), "'{}' is not a function", node.name());
+			return;
+		}
+		if (!symbol->funcDecl || !symbol->funcDecl->isInterruptHandler())
+		{
+			_diagnostics.error(node.location(),
+				"'{}' is not declared '__interrupt', so it cannot be an interrupt handler", node.name());
+			return;
+		}
+
+		// 4. One binding per number. Whole-program uniqueness is the linker's to enforce, since it
+		//    is the only thing that sees every object; this catches the case inside one file, where
+		//    the message can point at both declarations.
+		auto [it, inserted] = _interruptVectors.try_emplace(*vector, &node);
+		if (!inserted)
+		{
+			_diagnostics.error(node.location(),
+				"interrupt {} is already bound to '{}'", *vector, it->second->name());
+		}
 	}
 
 	void Sema::visit(ast::TranslationUnit& node)

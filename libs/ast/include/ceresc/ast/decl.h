@@ -221,6 +221,43 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<TypedefDecl>, "TypedefDecl must be trivially destructible (Arena-allocated)");
 
+	// `__interrupt_vector(NUMBER, handler);` - points one interrupt number at one `__interrupt`
+	// function. A declaration of its own rather than part of the handler's, which is the whole
+	// design decision here: CeresASM keeps `interrupt N: label` separate from the label it names
+	// (26-Interrupt-Vector-Binding.md), and keeping the two apart is what lets a library publish a
+	// handler while the application picks the vector - or lets a hand-written .casm bind a handler
+	// written in C, and the other way round.
+	//
+	// Its `name()` is the handler's, which is also what makes it a Decl rather than a plain record:
+	// everything that walks the unit looking for a name finds this one too. It declares no object
+	// and emits no code - only a binding the linker resolves and the loader applies before the
+	// program's first instruction (docs/10-Interrupts.md).
+	//
+	// `number` stays an Expr because the vector may be written as any constant expression - a
+	// literal, an enum constant, a macro. sema is what folds and range-checks it.
+	class InterruptVectorDecl final : public Decl
+	{
+	private:
+		Expr* _number;
+		support::SourceLocation _numberLocation;
+		i64 _resolvedNumber = 0; // filled in by sema once the expression folds
+
+	public:
+		InterruptVectorDecl(support::SourceLocation location, std::string_view handlerName, Expr* number,
+			support::SourceLocation numberLocation) noexcept :
+			Decl(location, handlerName), _number(number), _numberLocation(numberLocation)
+		{}
+
+	public:
+		Expr* number() const noexcept { return _number; }
+		support::SourceLocation numberLocation() const noexcept { return _numberLocation; }
+		i64 resolvedNumber() const noexcept { return _resolvedNumber; }
+		void setResolvedNumber(i64 value) noexcept { _resolvedNumber = value; }
+
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<InterruptVectorDecl>, "InterruptVectorDecl must be trivially destructible (Arena-allocated)");
+
 	// A function parameter's {type, name} pair - see the header comment above for why this is a
 	// plain record, not a Decl.
 	struct Param

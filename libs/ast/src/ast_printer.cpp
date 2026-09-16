@@ -605,6 +605,15 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(InterruptVectorDecl& node)
+	{
+		_output += "(interrupt-vector ";
+		printChild(node.number());
+		_output += ' ';
+		_output += node.name();
+		_output += ')';
+	}
+
 	void AstPrinter::visit(TranslationUnit& node)
 	{
 		_output += "(unit";

@@ -88,6 +88,7 @@ namespace ceresc::lexer
 		KwRegister,			// register
 		KwAlignof,			// alignof
 		KwInterrupt,		// __interrupt - marks a function as a VM interrupt handler (docs/10-Interrupts.md)
+		KwInterruptVector,	// __interrupt_vector - points one vector number at such a handler
 
 		// Punctuation and Operators
 		LParen,				// (
@@ -295,6 +296,7 @@ namespace ceresc::lexer
 				case TokenKind::KwSizeof:
 				case TokenKind::KwAlignof:
 				case TokenKind::KwInterrupt:
+				case TokenKind::KwInterruptVector:
 				return true;
 			default:
 				return false;
@@ -333,6 +335,7 @@ namespace ceresc::lexer
 		constexpr bool isKwExtern() const noexcept { return _kind == TokenKind::KwExtern; }
 		constexpr bool isKwRegister() const noexcept { return _kind == TokenKind::KwRegister; }
 		constexpr bool isKwInterrupt() const noexcept { return _kind == TokenKind::KwInterrupt; }
+		constexpr bool isKwInterruptVector() const noexcept { return _kind == TokenKind::KwInterruptVector; }
 		constexpr bool isKwAuto() const noexcept { return _kind == TokenKind::KwAuto; }
 		constexpr bool isKwVolatile() const noexcept { return _kind == TokenKind::KwVolatile; }
 		constexpr bool isKwRestrict() const noexcept { return _kind == TokenKind::KwRestrict; }
@@ -439,6 +442,7 @@ namespace ceresc::lexer
 		static forceinline constexpr Token makeKwSizeof(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::KwSizeof, "sizeof", location); }
 		static forceinline constexpr Token makeKwAlignof(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::KwAlignof, "alignof", location); }
 		static forceinline constexpr Token makeKwInterrupt(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::KwInterrupt, "__interrupt", location); }
+		static forceinline constexpr Token makeKwInterruptVector(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::KwInterruptVector, "__interrupt_vector", location); }
 		static forceinline constexpr Token makeLParen(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::LParen, "(", location); }
 		static forceinline constexpr Token makeRParen(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::RParen, ")", location); }
 		static forceinline constexpr Token makeLBrace(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::LBrace, "{", location); }

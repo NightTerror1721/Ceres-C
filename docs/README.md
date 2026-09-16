@@ -15,6 +15,7 @@ line of C it came from, which is the whole reason this compiler emits text inste
 | [07-CASM-Interop.md](07-CASM-Interop.md) | Building one program out of C and hand-written assembly, in both directions. |
 | [08-Preprocessor.md](08-Preprocessor.md) | `#include`, `#define`, headers, and what is missing. |
 | [09-Variadic-Convention.md](09-Variadic-Convention.md) | `...`, `va_list` and the four builtins: where a variadic argument is passed and how the callee finds it. |
+| [10-Interrupts.md](10-Interrupts.md) | `__interrupt` handlers, binding a vector, and the three builtins that mask and wait. |
 
 ## The pipeline
 

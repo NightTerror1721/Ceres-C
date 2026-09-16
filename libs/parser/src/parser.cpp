@@ -249,7 +249,7 @@ namespace ceresc::parser
 		// loop forever on a stray '}' at top level, since nothing above parseTranslationUnit() would
 		// ever consume it.
 		while (!isAtEnd() && !isTypeSpecStart(_current) && !check(TokenKind::KwTypedef) &&
-			!isDeclSpecifierStart(_current.kind()))
+			!check(TokenKind::KwInterruptVector) && !isDeclSpecifierStart(_current.kind()))
 			advance();
 	}
 
@@ -1285,6 +1285,9 @@ namespace ceresc::parser
 		if (check(TokenKind::KwTypedef))
 			return parseTypedefDecl();
 
+		if (check(TokenKind::KwInterruptVector))
+			return parseInterruptVectorDecl();
+
 		// Storage classes and `const` come first and belong to the DECLARATION, so they are read
 		// here rather than inside parseTypeName() - which would have no one to hand a storage class
 		// to, and rejects one for that reason. The `const` half is put back on the type afterwards.
@@ -1330,6 +1333,40 @@ namespace ceresc::parser
 		if (check(TokenKind::LBracket))
 			type = parseArrayDeclaratorSuffix(type, /*isParameter=*/false);
 		return finishVarDecl(location, name, type, specifiers);
+	}
+
+	Decl* Parser::parseInterruptVectorDecl()
+	{
+		SourceLocation location = _current.location();
+		advance(); // '__interrupt_vector'
+
+		if (!expect(TokenKind::LParen, "'(' after '__interrupt_vector'"))
+			return nullptr;
+
+		// Any constant expression: a literal, an enum constant, a macro. sema folds and
+		// range-checks it - the parser has no business knowing which numbers the machine has.
+		SourceLocation numberLocation = _current.location();
+		Expr* number = parseAssignment();
+		if (!number)
+			return nullptr;
+
+		if (!expect(TokenKind::Comma, "',' between the vector number and its handler"))
+			return nullptr;
+
+		if (!check(TokenKind::Identifier))
+		{
+			_diagnostics.error(_current.location(), "expected the name of an '__interrupt' handler");
+			return nullptr;
+		}
+		std::string_view handlerName = _current.lexeme();
+		advance();
+
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		return _arena.create<ast::InterruptVectorDecl>(location, handlerName, number, numberLocation);
 	}
 
 	Decl* Parser::parseTypedefDecl()

@@ -130,7 +130,7 @@ could contain but the one instruction. Each takes no arguments and produces `voi
 
 `__builtin_sti()` is what a program needs before a *user* interrupt (16–63) can be delivered at all;
 the reserved ones (0–15) are always deliverable. `__builtin_halt()` suspends the machine until an
-interrupt arrives, which is the point of installing a handler for one.
+interrupt arrives, which is the point of binding one. See [Interrupts](10-Interrupts.md).
 
 The `__builtin_` prefix is reserved to the implementation in C, so no existing program can be using
 these names — and because they are only recognized in call position, one that uses the spelling for

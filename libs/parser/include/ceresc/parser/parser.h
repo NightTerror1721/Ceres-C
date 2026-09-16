@@ -263,6 +263,11 @@ namespace ceresc::parser
 		// The machine builtins (__builtin_sti/__builtin_cli/__builtin_halt), recognized the same way
 		// and for the same reason: there is no header to declare them in, and nothing an ordinary
 		// function could contain but the one instruction. See docs/10-Interrupts.md.
+		// `__interrupt_vector(NUMBER, handler);` - a top-level declaration of its own, which is what
+		// lets the handler and the number it answers live in different files. See decl.h's
+		// InterruptVectorDecl and docs/10-Interrupts.md.
+		Decl* parseInterruptVectorDecl();
+
 		static std::optional<ast::MachineOp> machineBuiltinFor(std::string_view name) noexcept;
 		Expr* parseMachineBuiltin(support::SourceLocation location, ast::MachineOp op);
 

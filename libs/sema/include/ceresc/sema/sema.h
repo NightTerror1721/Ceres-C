@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 // Sema - walks the parser's AST (which does not yet know whether `x` exists, or what type
@@ -102,6 +103,7 @@ namespace ceresc::sema
 		void visit(ast::StructDecl& node) override;
 		void visit(ast::EnumDecl& node) override;
 		void visit(ast::TypedefDecl& node) override;
+		void visit(ast::InterruptVectorDecl& node) override;
 		void visit(ast::TranslationUnit& node) override;
 
 	public:
@@ -115,6 +117,11 @@ namespace ceresc::sema
 		// same subtree at least once), a cast (no truncation modeled, just passes the value
 		// through), and a NameExpr referring to a previously-declared enum constant.
 		std::optional<i64> evalConstantExpr(ast::Expr* expr);
+
+		// Every interrupt number bound in this unit, so a second binding to one can name the first.
+		// Only this unit: whole-program uniqueness belongs to `ceres link`, which is the only thing
+		// that sees every object (CeresASM 26-Interrupt-Vector-Binding.md).
+		std::unordered_map<i64, ast::InterruptVectorDecl*> _interruptVectors;
 
 	private:
 		support::Arena& _arena;
