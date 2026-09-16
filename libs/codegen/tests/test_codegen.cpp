@@ -1061,3 +1061,26 @@ TEST(codegen, a_variadic_function_always_gets_a_frame)
 	CHECK(contains(casm, "enter"));
 	CHECK(contains(casm, "leave"));
 }
+
+// ---- volatile keeps a memory home --------------------------------------------------------------
+
+TEST(codegen, a_volatile_parameter_keeps_a_frame_slot_instead_of_a_register)
+{
+	// docs/06 promises that a volatile object always retains a memory home, and ValuePlacement has
+	// the guard that keeps it - but it reads IrLocalSlot::isVolatile, and the slots reserved for
+	// PARAMETERS used to be built without that flag. The accesses were marked, so the optimizer
+	// left them alone, and the back end then deleted the object they were accesses to: `x + x`
+	// compiled to two `mov`s off r0 and touched memory exactly never.
+	std::string casm = atO2("int f(volatile int x) { return x + x; }");
+	CHECK(contains(casm, "struct __frame_f"));
+	CHECK_EQ(countOf(casm, "ldr r"), usize(2)); // one real load per read, neither forwarded
+}
+
+TEST(codegen, an_ordinary_parameter_is_still_promoted_to_a_register)
+{
+	// The contrast that makes the test above about `volatile` rather than about parameters never
+	// getting registers at all.
+	std::string casm = atO2("int f(int x) { return x + x; }");
+	CHECK(!contains(casm, "struct __frame_f"));
+	CHECK_EQ(countOf(casm, "ldr r"), usize(0));
+}

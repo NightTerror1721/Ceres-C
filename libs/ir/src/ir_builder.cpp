@@ -1852,11 +1852,20 @@ namespace ceresc::ir
 		for (const Param& param : node.params())
 		{
 			// A by-value struct too big for a register arrives as a POINTER to the caller's own
-			// copy, so its slot holds four bytes whatever the struct's own size is.
+			// copy, so its slot holds four bytes whatever the struct's own size is. The pointer is
+			// the compiler's own, never the parameter itself, so no qualifier of the parameter's
+			// applies to it.
 			if (isIndirectStruct(param.type))
 				paramSlots.push_back(IrLocalSlot{ 4u, false });
 			else
-				paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u, param.type && param.type->isFloat() });
+				// `isVolatile` belongs here for the same reason it does on an ordinary local: it is
+				// what keeps ValuePlacement from giving the parameter a register and no memory home
+				// at all (value_placement.cpp's own guard reads exactly this flag). Without it a
+				// `volatile int` parameter compiled to pure register moves - the accesses carried
+				// the mark, so the optimizer left them alone, and then the back end deleted the
+				// object they were accesses TO.
+				paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u,
+					param.type && param.type->isFloat(), param.type && param.type->isVolatile() });
 		}
 		function.reserveParamSlots(paramSlots);
 		// Slot reuse never crosses a function boundary: a slot freed by a scope in the previous
