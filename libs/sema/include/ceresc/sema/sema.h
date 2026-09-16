@@ -6,6 +6,7 @@
 #include <ceresc/support/diagnostics.h>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -116,6 +117,21 @@ namespace ceresc::sema
 		// the operand's already-annotated Type, so this must run after checkExpr() has visited the
 		// same subtree at least once), a cast (no truncation modeled, just passes the value
 		// through), and a NameExpr referring to a previously-declared enum constant.
+		// What a CALL needs to know about its callee, and all it needs to know: the return type, the
+		// fixed parameters and whether a `...` follows them. Deliberately not a FunctionDecl - a call
+		// checks the same things whether the callee was named or computed, and the declaration is
+		// only one of the places a signature can come from.
+		struct CallSignature
+		{
+			const ast::Type* returnType = nullptr;
+			std::span<const ast::Param> params;
+			bool isVariadic = false;
+		};
+
+		// Arity and argument types for one call against one signature. `calleeName` is already
+		// quoted (or "the called expression") and is only ever put in a diagnostic.
+		void checkCallArguments(ast::CallExpr& node, const CallSignature& signature, std::string_view calleeName);
+
 		std::optional<i64> evalConstantExpr(ast::Expr* expr);
 
 		// Every interrupt number bound in this unit, so a second binding to one can name the first.

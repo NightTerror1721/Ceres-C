@@ -1,4 +1,5 @@
 #include <ceresc/sema/sema.h>
+#include <format>
 #include <ceresc/sema/type_layout.h>
 #include <ceresc/ast/ast_printer.h>
 
@@ -616,6 +617,49 @@ namespace ceresc::sema
 		_lastExprType = resultType;
 	}
 
+	// Argument checking for one call, written against a SIGNATURE rather than against a
+	// FunctionDecl. A call knows what it may pass from the callee's return type, parameter list and
+	// `...` - never from which declaration those came from - so this works the same whether the
+	// callee was named or computed. `calleeName` is only ever quoted in a diagnostic.
+	void Sema::checkCallArguments(ast::CallExpr& node, const CallSignature& signature, std::string_view calleeName)
+	{
+		std::span<Expr* const> args = node.args();
+		std::span<const Param> params = signature.params;
+
+		// A `...` turns the declared arity into a MINIMUM: the fixed parameters must all be there
+		// and are type-checked as usual, and anything past them is the variadic tail, which by
+		// construction has no declared type to check against.
+		if (signature.isVariadic)
+		{
+			if (args.size() < params.size())
+				_diagnostics.error(node.location(), "{} expects at least {} argument(s), got {}",
+					calleeName, params.size(), args.size());
+		}
+		else if (args.size() != params.size())
+		{
+			_diagnostics.error(node.location(), "{} expects {} argument(s), got {}",
+				calleeName, params.size(), args.size());
+		}
+
+		usize checkCount = std::min(args.size(), params.size());
+		for (usize i = 0; i < checkCount; ++i)
+		{
+			const Type* argType = decayArray(checkExpr(args[i]));
+			if (!isAssignable(params[i].type, argType))
+			{
+				_diagnostics.error(args[i]->location(), "passing '{}' to parameter of incompatible type '{}'",
+					typeName(argType), typeName(params[i].type));
+			}
+			else if (isArithmeticType(argType) && isArithmeticType(params[i].type) &&
+				(argType->isFloat() != params[i].type->isFloat()))
+			{
+				_diagnostics.error(args[i]->location(), "implicit conversion between integer and float call arguments is not supported");
+			}
+		}
+		for (usize i = checkCount; i < args.size(); ++i)
+			checkVariadicArgument(args[i], signature.isVariadic);
+	}
+
 	void Sema::visit(ast::CallExpr& node)
 	{
 		const Type* resultType = errorRecoveryType();
@@ -648,48 +692,17 @@ namespace ceresc::sema
 			_diagnostics.error(node.location(), "expression is not callable");
 		}
 
-		std::span<Expr* const> args = node.args();
 		if (funcDecl)
 		{
-			std::span<const Param> params = funcDecl->params();
-			// A `...` turns the declared arity into a MINIMUM: the fixed parameters must all be
-			// there and are type-checked as usual, and anything past them is the variadic tail,
-			// which by construction has no declared type to check against.
-			if (funcDecl->isVariadic())
-			{
-				if (args.size() < params.size())
-					_diagnostics.error(node.location(), "'{}' expects at least {} argument(s), got {}",
-						funcDecl->name(), params.size(), args.size());
-			}
-			else if (args.size() != params.size())
-			{
-				_diagnostics.error(node.location(), "'{}' expects {} argument(s), got {}",
-					funcDecl->name(), params.size(), args.size());
-			}
-
-			usize checkCount = std::min(args.size(), params.size());
-			for (usize i = 0; i < checkCount; ++i)
-			{
-				const Type* argType = decayArray(checkExpr(args[i]));
-				if (!isAssignable(params[i].type, argType))
-				{
-					_diagnostics.error(args[i]->location(), "passing '{}' to parameter of incompatible type '{}'",
-						typeName(argType), typeName(params[i].type));
-				}
-				else if (isArithmeticType(argType) && isArithmeticType(params[i].type) &&
-					(argType->isFloat() != params[i].type->isFloat()))
-				{
-					_diagnostics.error(args[i]->location(), "implicit conversion between integer and float call arguments is not supported");
-				}
-			}
-			for (usize i = checkCount; i < args.size(); ++i)
-				checkVariadicArgument(args[i], funcDecl->isVariadic());
-
+			CallSignature signature{ funcDecl->returnType(), funcDecl->params(), funcDecl->isVariadic() };
+			checkCallArguments(node, signature, std::format("'{}'", funcDecl->name()));
 			resultType = funcDecl->returnType();
 		}
 		else
 		{
-			for (Expr* arg : args)
+			// Nothing to check them against, but they are still expressions and their own errors
+			// are worth reporting rather than swallowing behind the one above.
+			for (Expr* arg : node.args())
 				checkExpr(arg);
 		}
 
