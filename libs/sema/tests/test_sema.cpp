@@ -1293,3 +1293,14 @@ TEST(sema, a_qualified_struct_hands_each_qualifier_to_its_members_independently)
 	CHECK(checkSource("struct R { int a; }; int f(volatile struct R* p) { p->a = 1; return 0; }").ok);
 	CHECK(!checkSource("struct R { int a; }; int f(const volatile struct R* p) { p->a = 1; return 0; }").ok);
 }
+
+TEST(sema, a_pointer_conversion_may_not_discard_volatile)
+{
+	// The same rule `const` already had, for the same reason in a different currency: the alias
+	// would lose the guarantee, and the optimizer is then free over accesses the program needed
+	// kept. Adding a qualifier stays fine - promising more about an object than you have to never
+	// is - and an explicit cast is still the deliberate way out, exactly as in C.
+	CHECK(!checkSource("volatile int v; int f(void) { volatile int* q = &v; int* p = q; return *p; }").ok);
+	CHECK(checkSource("int w; int f(void) { int* p = &w; volatile int* q = p; return *q; }").ok);
+	CHECK(checkSource("int f(void) { volatile int* q = 0; int* p = (int*)q; return *p; }").ok);
+}

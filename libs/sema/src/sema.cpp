@@ -160,15 +160,20 @@ namespace ceresc::sema
 			return true;
 		if (target->isPointer() && source->isPointer())
 		{
-			// The one thing a pointer conversion may not do: forget that what it points at is
-			// const. `const int*` -> `int*` would hand out a writable alias to a read-only object,
-			// which for a global living in @rodata is not a formality - the store faults. The
-			// other direction is always fine: promising less about an object than you may.
+			// The one thing a pointer conversion may not do: forget a qualifier on what it points
+			// at. `const int*` -> `int*` would hand out a writable alias to a read-only object,
+			// which for a global living in @rodata is not a formality - the store faults.
+			// `volatile int*` -> `int*` is the same shape of mistake with a different consequence:
+			// the alias loses the guarantee, and the optimizer is then free over accesses the
+			// program needed kept. The other direction is always fine for both: promising more
+			// about an object than you have to is never wrong.
 			const Type* targetPointee = target->arrayElementType();
 			const Type* sourcePointee = source->arrayElementType();
 			while (sourcePointee && targetPointee)
 			{
 				if (sourcePointee->isConst() && !targetPointee->isConst())
+					return false;
+				if (sourcePointee->isVolatile() && !targetPointee->isVolatile())
 					return false;
 				sourcePointee = sourcePointee->arrayElementType();
 				targetPointee = targetPointee->arrayElementType();
