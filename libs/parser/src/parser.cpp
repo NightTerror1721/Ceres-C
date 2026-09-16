@@ -1402,12 +1402,24 @@ namespace ceresc::parser
 			// than in sema because there is nothing type-dependent about it.
 			_diagnostics.error(specifiers.location, "'auto' is not allowed on a function");
 		}
+		if (specifiers.storageClass == ast::StorageClass::Register)
+		{
+			// Same: `register` asks for a kind of storage a function does not have either. Only
+			// `static`, `extern` and `inline` say anything about one.
+			_diagnostics.error(specifiers.location, "'register' is not allowed on a function");
+		}
 		if (specifiers.isInline && !body)
 			_diagnostics.error(specifiers.location, "'inline' is only meaningful on a function definition, not on a prototype");
 
+		// Neither `auto` nor `register` survives onto the node: both were rejected just above, and
+		// carrying one forward would leave every later phase asking what a register-resident
+		// function is supposed to be. Error recovery continues with the default linkage instead.
+		ast::StorageClass storageClass = specifiers.storageClass;
+		if (storageClass == ast::StorageClass::Auto || storageClass == ast::StorageClass::Register)
+			storageClass = ast::StorageClass::None;
+
 		return _arena.create<ast::FunctionDecl>(location, name, returnType, copyParamsToArena(params), body,
-			specifiers.storageClass == ast::StorageClass::Auto ? ast::StorageClass::None : specifiers.storageClass,
-			specifiers.isInline, isVariadic);
+			storageClass, specifiers.isInline, isVariadic);
 	}
 
 	bool Parser::parseParamList(std::vector<Param>& outParams, bool& outIsVariadic)

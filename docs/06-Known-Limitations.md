@@ -86,12 +86,23 @@ variadic `float` is not promoted to `double`, because there is no `double`. See
 optimizer neither forwards a preceding store into a volatile load nor removes a volatile store.
 This keeps distinct device-register reads and writes observable.
 
+That holds for an access through a pointer too: `volatile int* p` qualifies the pointee, not the
+pointer, so there is no local to hang the fact on and the IR marks the individual load or store
+instead (`load.word.v`). Both forms are checked by the passes that could otherwise drop such an
+access, rather than being safe only for as long as those passes happen not to look at indirect
+accesses.
+
 `restrict` is accepted only on pointer types and is recorded in the type system. The current
 optimizer does not yet use no-alias assumptions across arbitrary pointers, so the qualifier is a
 checked contract rather than an unsafe speculative transformation.
 
 `register` requests ordinary register allocation when it is available and may only be used for
-automatic local variables. As in C, taking its address is rejected.
+automatic local variables — at file scope or on a function it is rejected, as in C. Also as in C,
+taking the address of one is rejected. It does not yet reorder the allocator's own preferences, so
+on a variable the allocator would have kept in a register anyway it says nothing new.
+
+Unlike C, `register` is not accepted on a *parameter*: no storage-class specifier is, which is a
+general limitation of the parameter grammar rather than anything about this keyword.
 
 None of the three changes which values a correct program computes — `volatile` only removes
 optimizations, and `restrict` and `register` are checked contracts that the back end is free to

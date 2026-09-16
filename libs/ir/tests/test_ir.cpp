@@ -1177,3 +1177,23 @@ TEST(ir, an_ordinary_call_marks_nothing_as_variadic)
 	CHECK_EQ(countOccurrences(text, "param.var "), usize(0));
 	CHECK_EQ(countOccurrences(text, "param "), usize(2));
 }
+
+// ---- volatile through a pointer --------------------------------------------------------------
+
+TEST(ir, an_access_through_a_volatile_pointee_is_marked_on_the_access_itself)
+{
+	// `volatile int* p` qualifies the POINTEE, so there is no local slot to hang the fact on -
+	// IrLocalSlot::isVolatile cannot express it and the access has to carry it.
+	std::string text = functionIr("int f(volatile int* p) { *p = 1; return *p; }", "f");
+	CHECK(contains(text, "store.word.v"));
+	CHECK(contains(text, "load.word.v"));
+
+	// The pointer variable itself is not volatile, so reading `p` is an ordinary load.
+	CHECK(contains(text, "load.word ["));
+}
+
+TEST(ir, an_access_through_an_ordinary_pointer_is_not_marked)
+{
+	std::string text = functionIr("int f(int* p) { *p = 1; return *p; }", "f");
+	CHECK(!contains(text, ".v"));
+}

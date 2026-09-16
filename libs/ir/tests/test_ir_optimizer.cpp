@@ -551,3 +551,37 @@ TEST(ir_optimizer, inlining_leaves_a_variadic_function_alone)
 	std::string text = optimizedIr("int one(int a, ...) { return a; } int main() { return one(5, 9); }", options);
 	CHECK(contains(text, "call"));
 }
+
+namespace
+{
+	usize countOccurrences(std::string_view haystack, std::string_view needle)
+	{
+		usize count = 0;
+		for (usize at = haystack.find(needle); at != std::string_view::npos; at = haystack.find(needle, at + needle.size()))
+			++count;
+		return count;
+	}
+}
+
+TEST(ir_optimizer, a_volatile_access_is_never_forwarded_or_dropped)
+{
+	// Both writes and both reads have to survive: each one is observable, so neither dead-store
+	// elimination nor load forwarding may touch them - even though the object is a plain local
+	// whose address never escapes, which is exactly the shape both passes normally act on.
+	std::string text = optimizedIr(
+		"int main() { volatile int x; x = 1; x = 2; return x + x; }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
+	CHECK_EQ(countOccurrences(text, "store."), usize(2));
+	CHECK_EQ(countOccurrences(text, "load."), usize(2));
+}
+
+TEST(ir_optimizer, the_same_shape_without_volatile_is_optimized)
+{
+	// The contrast that makes the test above about `volatile` rather than about this pass being
+	// switched off: drop the qualifier and the first store and both loads go away.
+	std::string text = optimizedIr(
+		"int main() { int x; x = 1; x = 2; return x + x; }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
+	CHECK(countOccurrences(text, "store.") < usize(2));
+	CHECK(countOccurrences(text, "load.") < usize(2));
+}

@@ -312,13 +312,15 @@ namespace ceresc::ir
 		emitVoid(loc, payload);
 	}
 
-	IrValue IrBuilder::emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat, bool isSigned)
+	IrValue IrBuilder::emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat, bool isSigned,
+		bool isVolatile)
 	{
 		IrLoadPayload payload;
 		payload.result = _currentFunction->newTemp();
 		payload.size = size;
 		payload.isFloat = isFloat;
 		payload.isSigned = isSigned;
+		payload.isVolatile = isVolatile;
 		payload.address = address;
 		emitVoid(loc, payload);
 		return payload.result;
@@ -329,14 +331,17 @@ namespace ceresc::ir
 		// A pointer, an array and a struct are all word-sized addresses here, and Type::isSigned()
 		// says false for them - which is the right answer for a load anyway, since a Word load fills
 		// the whole register and has no extension to choose.
-		return emitLoad(loc, address, memSizeOf(type), type && type->isFloat(), type && type->isSigned());
+		return emitLoad(loc, address, memSizeOf(type), type && type->isFloat(), type && type->isSigned(),
+			type && type->isVolatile());
 	}
 
-	void IrBuilder::emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat)
+	void IrBuilder::emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat,
+		bool isVolatile)
 	{
 		IrStorePayload payload;
 		payload.size = size;
 		payload.isFloat = isFloat;
+		payload.isVolatile = isVolatile;
 		payload.address = address;
 		payload.value = value;
 		emitVoid(loc, payload);
@@ -529,7 +534,7 @@ namespace ceresc::ir
 				return;
 			}
 			IrValue value = convertForStore(loc, lowerExpr(init), init->type(), type);
-			emitStore(loc, offsetAddress(loc, baseAddr, offset), memSizeOf(type), value, type->isFloat());
+			emitStore(loc, offsetAddress(loc, baseAddr, offset), memSizeOf(type), value, type->isFloat(), type->isVolatile());
 			return;
 		}
 
@@ -1183,7 +1188,7 @@ namespace ceresc::ir
 				bool isIncrement = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PostIncrement);
 				IrValue newValue = emitBinOp(loc, isIncrement ? IrBinOp::Add : IrBinOp::Sub, oldValue, stepValue, type && !type->isSigned(), isFloat);
 				newValue = convertForStore(loc, newValue, isFloat ? type : &Type::Int, type);
-				emitStore(loc, addr, size, newValue, isFloat);
+				emitStore(loc, addr, size, newValue, isFloat, type && type->isVolatile());
 				bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
 				_lastValue = isPre ? newValue : oldValue;
 				return;
@@ -1272,7 +1277,7 @@ namespace ceresc::ir
 			// element written, which is the whole difference the ISA's indexed stores exist to make.
 			IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), targetType);
 			IrValue destAddr = lowerAddress(node.target());
-			emitStore(loc, destAddr, size, value, targetIsFloat);
+			emitStore(loc, destAddr, size, value, targetIsFloat, targetType && targetType->isVolatile());
 			_lastValue = value;
 			return;
 		}
@@ -1296,7 +1301,7 @@ namespace ceresc::ir
 		// e.g. `int x; x += 1.5f;` promotes to float for the add, then truncates back to store.
 		value = convertForStore(loc, value, promotedType, targetType);
 
-		emitStore(loc, addr, size, value, targetIsFloat);
+		emitStore(loc, addr, size, value, targetIsFloat, targetType && targetType->isVolatile());
 		_lastValue = value;
 	}
 
@@ -1816,7 +1821,7 @@ namespace ceresc::ir
 
 		IrValue value = convertForStore(node.location(), lowerExpr(node.initializer()), node.initializer()->type(), type);
 		IrValue addr = emitFrameAddr(node.location(), symbol.localSlot);
-		emitStore(node.location(), addr, memSizeOf(type), value, type && type->isFloat());
+		emitStore(node.location(), addr, memSizeOf(type), value, type && type->isFloat(), type && type->isVolatile());
 	}
 
 	void IrBuilder::visit(ast::FunctionDecl& node)

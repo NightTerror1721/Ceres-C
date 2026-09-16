@@ -164,16 +164,16 @@ namespace ceresc::ir
 				const auto& payload = instr.as<IrLoadPayload>();
 				// ".s" marks a sign-extending narrow load (`ldrsb`/`ldrsh`), a different instruction
 				// from the zero-extending one and not deducible from the size alone.
-				_output += std::format("{} = load.{}{}{} [{}]\n", valueName(payload.result), sizeName(payload.size),
+				_output += std::format("{} = load.{}{}{}{} [{}]\n", valueName(payload.result), sizeName(payload.size),
 					payload.isFloat ? ".f" : "", (payload.isSigned && payload.size != IrMemSize::Word) ? ".s" : "",
-					valueName(payload.address));
+					payload.isVolatile ? ".v" : "", valueName(payload.address));
 				break;
 			}
 			case IrOpcode::Store:
 			{
 				const auto& payload = instr.as<IrStorePayload>();
-				_output += std::format("store.{}{} [{}], {}\n", sizeName(payload.size), payload.isFloat ? ".f" : "",
-					valueName(payload.address), valueName(payload.value));
+				_output += std::format("store.{}{}{} [{}], {}\n", sizeName(payload.size), payload.isFloat ? ".f" : "",
+					payload.isVolatile ? ".v" : "", valueName(payload.address), valueName(payload.value));
 				break;
 			}
 			case IrOpcode::Param:

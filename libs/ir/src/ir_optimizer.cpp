@@ -755,7 +755,10 @@ namespace ceresc::ir
 						u32 local = localOf(p.address);
 						if (local != ~0u)
 						{
-							if (localSlots[local].isVolatile)
+							// Either the whole local is volatile, or this one access is - the second
+							// is how `volatile int* p` says it, since the qualifier is on the pointee
+							// and there is no local slot to hang it on.
+							if (localSlots[local].isVolatile || p.isVolatile)
 							{
 								known.erase(local);
 								rewritten.push_back(instr);
@@ -789,7 +792,7 @@ namespace ceresc::ir
 						const auto& p = instr->as<IrLoadPayload>();
 						u32 local = localOf(p.address);
 						auto it = (local == ~0u) ? known.end() : known.find(local);
-						if (local != ~0u && !localSlots[local].isVolatile && it != known.end() &&
+						if (local != ~0u && !localSlots[local].isVolatile && !p.isVolatile && it != known.end() &&
 							p.size == irMemSizeForBytes(localSlots[local].sizeInBytes) &&
 							p.isFloat == localSlots[local].isFloat)
 						{
@@ -853,9 +856,11 @@ namespace ceresc::ir
 				{
 					if (instr->opcode() == IrOpcode::Store)
 					{
-						IrValue address = instr->as<IrStorePayload>().address;
+						const auto& store = instr->as<IrStorePayload>();
+						IrValue address = store.address;
 						u32 local = (address.isValid() && address.id < frameAddrLocal.size()) ? frameAddrLocal[address.id] : ~0u;
-						if (local != ~0u && local < nonEscaping.size() && !function.localSlots()[local].isVolatile && nonEscaping[local] && !everRead[local])
+						if (local != ~0u && local < nonEscaping.size() && !function.localSlots()[local].isVolatile &&
+							!store.isVolatile && nonEscaping[local] && !everRead[local])
 						{
 							changed = true;
 							continue;

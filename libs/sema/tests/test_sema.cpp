@@ -1272,3 +1272,14 @@ TEST(sema, a_va_list_may_be_passed_to_another_function)
 		"int worker(va_list ap) { return va_arg(ap, int); }"
 		"int f(int a, ...) { va_list ap; va_start(ap, a); int r = worker(ap); va_end(ap); return r; }").ok);
 }
+
+TEST(sema, register_is_only_allowed_on_a_variable_inside_a_block)
+{
+	CHECK(checkSource("int main(void) { register int cached = 1; return cached; }").ok);
+
+	// A file-scope object has static storage duration whatever it asks for, so `register` there is
+	// the same kind of error `auto` is.
+	CheckOutcome atFileScope = checkSource("register int counter;");
+	CHECK(!atFileScope.ok);
+	CHECK(containsMessage(atFileScope, "only allowed on a variable declared inside a block"));
+}

@@ -188,6 +188,14 @@ namespace ceresc::ir
 		                       // `signed char` read back from memory has to come out negative, and
 		                       // the zero-extending forms are the reason it used not to. Word loads
 		                       // already fill the register, and a float load has no such choice
+
+		// The object being read is `volatile`, so this load is observable and no pass may remove
+		// it, reorder it, or answer it from a value some earlier store is known to have left in
+		// memory. IrLocalSlot::isVolatile says the same thing about a whole local; this says it
+		// about ONE access, which is the only form the fact can take when the object is reached
+		// through a pointer (`volatile int* p` qualifies the pointee, not the pointer, so there is
+		// no local slot to hang it on).
+		bool isVolatile = false;
 		IrValue address;
 	};
 
@@ -195,6 +203,8 @@ namespace ceresc::ir
 	{
 		IrMemSize size = IrMemSize::Word;
 		bool isFloat = false; // selects `str [...], fs` (FSTR) over the integer store family
+		bool isVolatile = false; // see IrLoadPayload::isVolatile - a volatile store is observable
+		                         // even when nothing ever reads the object back
 		IrValue address;
 		IrValue value;
 	};

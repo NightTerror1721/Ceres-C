@@ -338,13 +338,15 @@ namespace ceresc::ir
 		// loaded TYPE's own signedness, never from the address's. Use loadOfType() below wherever
 		// there is a Type to ask; this raw form exists for the few loads that describe a machine word
 		// rather than a C object (a one-register struct argument, a whole-object copy's pieces).
-		IrValue emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat = false, bool isSigned = false);
+		IrValue emitLoad(support::SourceLocation loc, IrValue address, IrMemSize size, bool isFloat = false, bool isSigned = false,
+			bool isVolatile = false);
 
 		// emitLoad() for a value of a known C type: picks the width, the bank and the signedness
 		// from `type` in one place, so a caller cannot get two of the three right and forget the
 		// third. That is exactly how narrow signed loads came to be zero-extending.
 		IrValue loadOfType(support::SourceLocation loc, IrValue address, const ast::Type* type);
-		void emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat = false);
+		void emitStore(support::SourceLocation loc, IrValue address, IrMemSize size, IrValue value, bool isFloat = false,
+			bool isVolatile = false);
 		IrValue emitFrameAddr(support::SourceLocation loc, u32 localIndex);
 		IrValue emitGlobalAddr(support::SourceLocation loc, std::string_view name);
 		IrValue emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat = false);

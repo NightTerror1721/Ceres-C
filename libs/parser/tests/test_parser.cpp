@@ -1019,3 +1019,10 @@ TEST(parser, an_ellipsis_must_close_the_parameter_list)
 	CHECK(unitHasErrors("int f(int x, ..., int y);"));
 	CHECK(unitHasErrors("int f(int x, ...,);"));
 }
+
+TEST(parser, register_is_not_allowed_on_a_function)
+{
+	// A function has no storage of its own for `register` to ask about - the same reason `auto` is
+	// rejected on one.
+	CHECK(unitHasErrors("register int f(void);"));
+}

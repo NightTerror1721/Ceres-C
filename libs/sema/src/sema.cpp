@@ -1250,6 +1250,15 @@ namespace ceresc::sema
 			_diagnostics.error(node.location(), "'auto' is only allowed on a variable declared inside a block");
 		}
 
+		if (storageClass == ast::StorageClass::Register && atFileScope)
+		{
+			// Same reason as `auto` above: `register` asks for automatic storage that lives in a
+			// register, and a file-scope object has static storage duration whatever it is asked
+			// for. Its one real consequence - that the address cannot be taken - would also be a
+			// promise this compiler could not keep for something a whole other unit may refer to.
+			_diagnostics.error(node.location(), "'register' is only allowed on a variable declared inside a block");
+		}
+
 		if (storageClass == ast::StorageClass::Extern && node.initializer() && !atFileScope)
 		{
 			// At file scope `extern int x = 1;` is a definition with external linkage, which is
