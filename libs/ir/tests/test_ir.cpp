@@ -40,7 +40,7 @@ namespace
 		bool ok = sema.check(*unit);
 		CHECK(ok);
 
-		ir::IrBuilder builder(arena, diagnostics);
+		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
 		ir::IrModule module = builder.build(*unit);
 
 		for (const auto& function : module.functions())
@@ -71,7 +71,7 @@ namespace
 		sema::Sema sema(arena, diagnostics);
 		CHECK(sema.check(*unit));
 
-		ir::IrBuilder builder(arena, diagnostics);
+		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
 		ir::IrModule module = builder.build(*unit);
 		return ir::IrPrinter{}.print(module);
 	}
@@ -99,7 +99,7 @@ namespace
 		CHECK(sema.check(*unit));
 
 		usize diagnosticsBeforeIr = diagnostics.diagnosticCount();
-		ir::IrBuilder builder(arena, diagnostics);
+		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
 		builder.build(*unit);
 
 		for (usize i = diagnosticsBeforeIr; i < diagnostics.diagnosticCount(); ++i)
@@ -679,7 +679,7 @@ namespace
 		std::vector<ast::Decl*> decls{ func };
 		ast::TranslationUnit unit(loc, std::span<ast::Decl* const>(decls));
 
-		ir::IrBuilder builder(arena, diagnostics);
+		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
 		ir::IrModule module = builder.build(unit);
 
 		CHECK_EQ(module.functions().size(), static_cast<usize>(1));

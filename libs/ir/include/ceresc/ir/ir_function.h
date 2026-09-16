@@ -51,6 +51,15 @@ namespace ceresc::ir
 		bool isTerminated() const noexcept;
 
 		void append(IrInstr* instr) { _instrs.push_back(instr); }
+
+		// Swaps this block's whole instruction list for another one - how ir_optimizer.h's passes
+		// rewrite a block (dropping a dead instruction, folding one into a Const, retargeting a
+		// terminator, splicing an inlined callee in). Deliberately a wholesale replacement rather
+		// than in-place mutation of an IrInstr: an IrInstr's payload is read-only by design
+		// (ir_instr.h's `as<T>() const`), so a pass builds the replacement instruction in the same
+		// Arena and swaps the list, instead of every consumer having to wonder whether the payload
+		// it just read can change underneath it.
+		void replaceInstrs(std::vector<IrInstr*> instrs) noexcept { _instrs = std::move(instrs); }
 	};
 
 	// A local frame slot's byte size and register bank - everything libs/codegen's frame_layout
@@ -124,7 +133,73 @@ namespace ceresc::ir
 			_localSlots.push_back(IrLocalSlot{ sizeInBytes, isFloat });
 			return static_cast<u32>(_localSlots.size() - 1);
 		}
+
+		// Widens an already-reserved slot so it can also hold a second local of a different type -
+		// what IrBuilder's scope-based slot reuse needs when the local now taking over a dead
+		// sibling scope's slot is wider than the one that had it (see IrBuilder's own
+		// `reuseLocalSlot` note, ir_builder.cpp). Never narrows: a slot only ever grows to the
+		// widest thing that has lived in it, exactly like a union's size.
+		void widenLocalSlot(u32 index, u32 sizeInBytes, bool isFloat) noexcept
+		{
+			IrLocalSlot& slot = _localSlots[index];
+			if (sizeInBytes > slot.sizeInBytes)
+				slot.sizeInBytes = sizeInBytes;
+			// f32 fields are exactly one word. A wider reused slot must use an integer-word array,
+			// otherwise codegen would declare only four bytes for a larger object.
+			if (slot.sizeInBytes == 4)
+				slot.isFloat = isFloat;
+			else
+				slot.isFloat = false;
+		}
+
+		// Drops every block whose index in blocks() has `keep[i] == false` - unreachable-block
+		// elimination (ir_optimizer.h). Block ids are deliberately NOT renumbered: a BasicBlock* in
+		// some surviving terminator's payload keeps pointing at the same block, and codegen's
+		// `.L<id>` labels stay stable, so the numbering just develops gaps. Only ever called with
+		// blocks nothing reachable branches to, which is what makes dropping them safe at all.
+		void retainBlocks(const std::vector<bool>& keep)
+		{
+			std::vector<std::unique_ptr<BasicBlock>> remaining;
+			remaining.reserve(_blocks.size());
+			for (usize i = 0; i < _blocks.size(); ++i)
+			{
+				if (keep.size() <= i || keep[i])
+					remaining.push_back(std::move(_blocks[i]));
+			}
+			_blocks = std::move(remaining);
+		}
 	};
+
+	// The blocks control can reach from the one at `blockIndex`. Shared by every CFG walk over a
+	// function (ir_optimizer.cpp's reachability, libs/codegen's liveness) so they all agree on one
+	// subtle case: a block WITHOUT a terminator falls through to the next one in order, which is
+	// exactly how codegen emits them - it never inserts a jump between consecutive blocks.
+	inline std::vector<BasicBlock*> successorsOf(const IrFunction& function, usize blockIndex)
+	{
+		std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+		std::span<IrInstr* const> instrs = blocks[blockIndex]->instrs();
+
+		if (!instrs.empty())
+		{
+			const IrInstr& last = *instrs.back();
+			switch (last.opcode())
+			{
+				case IrOpcode::Jump: return { last.as<IrJumpPayload>().target };
+				case IrOpcode::CondJump:
+				{
+					const IrCondJumpPayload& p = last.as<IrCondJumpPayload>();
+					if (p.trueTarget == p.falseTarget)
+						return { p.trueTarget };
+					return { p.trueTarget, p.falseTarget };
+				}
+				case IrOpcode::Return: return {};
+				default: break;
+			}
+		}
+		if (blockIndex + 1 < blocks.size())
+			return { blocks[blockIndex + 1].get() };
+		return {};
+	}
 
 	// A string literal's synthesized global label and the interned value it names - see
 	// ir_builder.cpp's visit(StringLiteralExpr&). Owned by IrModule so the same `name` a GlobalAddr
@@ -168,6 +243,23 @@ namespace ceresc::ir
 		void addStringLiteral(std::string_view name, support::PooledString value)
 		{
 			_stringLiterals.push_back(IrGlobalString{ name, value });
+		}
+
+		// Drops every function whose index in functions() has `keep[i] == false` - unused-function
+		// elimination (ir_optimizer.h), which is only sound because a Ceres-C program is one
+		// self-contained translation unit whose single externally reachable symbol is `main`. Note
+		// that string literals are NOT pruned alongside: a literal only ever referenced by a dropped
+		// function stays in `.rodata`, costing a few bytes rather than risking a dangling reference.
+		void retainFunctions(const std::vector<bool>& keep)
+		{
+			std::vector<std::unique_ptr<IrFunction>> remaining;
+			remaining.reserve(_functions.size());
+			for (usize i = 0; i < _functions.size(); ++i)
+			{
+				if (keep.size() <= i || keep[i])
+					remaining.push_back(std::move(_functions[i]));
+			}
+			_functions = std::move(remaining);
 		}
 	};
 }

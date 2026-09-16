@@ -252,6 +252,10 @@ namespace ceresc::ir
 	static_assert(OpcodeMapsToPayload<IrOpcode::CondJump, IrCondJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Return, IrReturnPayload>);
 
+	// Declared before IrInstr so resultOf()/forEachOperand() below can be defined right after it -
+	// see their own comment for why they live here rather than in each consumer.
+	class IrInstr;
+
 	class IrInstr
 	{
 	private:
@@ -281,4 +285,81 @@ namespace ceresc::ir
 	// std::vector (the exact trap FieldDecl/Param avoid by storing a {pointer, count} view instead
 	// of owning storage, see expr.h's header comment) would silently break this.
 	static_assert(TriviallyDestructible<IrInstr>, "IrInstr must be trivially destructible because it is allocated in an arena and never deleted individually");
+
+	// ---- reading an instruction without switching on its opcode ------------------------------------
+	//
+	// Which payload field is a RESULT and which is an OPERAND is a fact about this opcode table and
+	// nothing else, so it is answered once, here, rather than separately inside every consumer that
+	// needs it: ir_optimizer.cpp (use counting for dead-code elimination, remapping for inlining)
+	// and libs/codegen's value_placement.cpp (liveness) would otherwise each carry their own copy
+	// of the same fourteen-case switch, and a payload gaining a field would have to be remembered in
+	// every one of them.
+
+	// The temporary `instr` defines, or an invalid IrValue for an opcode that defines none
+	// (Store/Param/Jump/CondJump/Return, and a Call whose callee returns void).
+	inline IrValue resultOf(const IrInstr& instr) noexcept
+	{
+		switch (instr.opcode())
+		{
+			case IrOpcode::Const:      return instr.as<IrConstPayload>().result;
+			case IrOpcode::BinOp:      return instr.as<IrBinOpPayload>().result;
+			case IrOpcode::UnOp:       return instr.as<IrUnOpPayload>().result;
+			case IrOpcode::Cmp:        return instr.as<IrCmpPayload>().result;
+			case IrOpcode::Copy:       return instr.as<IrCopyPayload>().result;
+			case IrOpcode::FrameAddr:  return instr.as<IrFrameAddrPayload>().result;
+			case IrOpcode::GlobalAddr: return instr.as<IrGlobalAddrPayload>().result;
+			case IrOpcode::Load:       return instr.as<IrLoadPayload>().result;
+			case IrOpcode::Call:
+			{
+				const IrCallPayload& payload = instr.as<IrCallPayload>();
+				return payload.hasResult ? payload.result : IrValue{};
+			}
+			default: return IrValue{};
+		}
+	}
+
+	// Calls `fn(IrValue)` once per temporary `instr` READS, in operand order.
+	template <typename F>
+	void forEachOperand(const IrInstr& instr, F&& fn)
+	{
+		switch (instr.opcode())
+		{
+			case IrOpcode::BinOp:
+			{
+				const IrBinOpPayload& p = instr.as<IrBinOpPayload>();
+				fn(p.lhs); fn(p.rhs);
+				break;
+			}
+			case IrOpcode::UnOp: fn(instr.as<IrUnOpPayload>().operand); break;
+			case IrOpcode::Cmp:
+			{
+				const IrCmpPayload& p = instr.as<IrCmpPayload>();
+				fn(p.lhs); fn(p.rhs);
+				break;
+			}
+			case IrOpcode::Copy: fn(instr.as<IrCopyPayload>().source); break;
+			case IrOpcode::Load: fn(instr.as<IrLoadPayload>().address); break;
+			case IrOpcode::Store:
+			{
+				const IrStorePayload& p = instr.as<IrStorePayload>();
+				fn(p.address); fn(p.value);
+				break;
+			}
+			case IrOpcode::Param: fn(instr.as<IrParamPayload>().value); break;
+			case IrOpcode::CondJump:
+			{
+				const IrCondJumpPayload& p = instr.as<IrCondJumpPayload>();
+				fn(p.lhs); fn(p.rhs);
+				break;
+			}
+			case IrOpcode::Return:
+			{
+				const IrReturnPayload& p = instr.as<IrReturnPayload>();
+				if (p.hasValue)
+					fn(p.value);
+				break;
+			}
+			default: break; // Const/FrameAddr/GlobalAddr/Call/Jump read no temporary
+		}
+	}
 }

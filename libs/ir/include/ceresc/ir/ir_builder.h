@@ -4,6 +4,7 @@
 #include <ceresc/ir/ir_function.h>
 #include <ceresc/support/arena.h>
 #include <ceresc/support/diagnostics.h>
+#include <ceresc/support/optimization.h>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -41,7 +42,14 @@ namespace ceresc::ir
 	class IrBuilder final : public ast::AstVisitor
 	{
 	public:
-		IrBuilder(support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept;
+		// `options` controls the one optimization IrBuilder itself performs: reusing a frame slot
+		// between locals whose lexical scopes are disjoint (see newLocalSlotFor()). Everything else
+		// optimization-related happens later, over the finished IR (ir_optimizer.h) or during code
+		// generation - IrBuilder's job is to lower faithfully first. Pass
+		// support::OptimizationOptions::none() for the plain, one-slot-per-declaration lowering that
+		// every IR golden test pins.
+		IrBuilder(support::Arena& arena, support::DiagnosticEngine& diagnostics,
+			const support::OptimizationOptions& options) noexcept;
 		IrBuilder(const IrBuilder&) = delete;
 		IrBuilder(IrBuilder&&) = delete;
 		~IrBuilder() override = default;
@@ -110,6 +118,7 @@ namespace ceresc::ir
 	private:
 		support::Arena& _arena;
 		support::DiagnosticEngine& _diagnostics;
+		support::OptimizationOptions _options;
 
 		IrModule _module;
 		IrFunction* _currentFunction = nullptr;
@@ -119,6 +128,15 @@ namespace ceresc::ir
 		std::vector<std::unordered_map<std::string_view, LocalSymbol>> _scopes; // function-local block scopes; empty at file scope
 		std::unordered_map<std::string_view, LocalSymbol> _globalSymbols;      // file-scope variables + file-scope enum constants
 
+		// Frame-slot reuse across disjoint lexical scopes (options().localSlotReuse). `_scopeSlots`
+		// records which slots each open scope introduced; popping a scope returns them to
+		// `_freeLocalSlots`, where the next declaration in a SIBLING scope can claim one instead of
+		// growing the frame. Lexical scoping is what makes this safe without any analysis: a local
+		// is unreachable by name once its scope closes, and a pointer still aimed at it is already
+		// dangling by C's own rules.
+		std::vector<std::vector<u32>> _scopeSlots;
+		std::vector<u32> _freeLocalSlots;
+
 		std::vector<BasicBlock*> _breakTargets;
 		std::vector<BasicBlock*> _continueTargets;
 		std::unordered_map<std::string_view, BasicBlock*> _labelBlocks; // goto targets, rebuilt once per function (see collectLabelBlocks())
@@ -127,6 +145,12 @@ namespace ceresc::ir
 		u32 _nextStringLiteralId = 0;
 
 	private:
+		// Reserves a frame slot for one local VarDecl: a slot a closed sibling scope left behind
+		// when options().localSlotReuse allows it, a brand new one otherwise. Either way the slot
+		// is recorded against the innermost open scope, so it returns to the pool when that scope
+		// closes - see _scopeSlots/_freeLocalSlots.
+		u32 newLocalSlotFor(u32 sizeInBytes, bool isFloat);
+
 		void pushScope();
 		void popScope();
 		void declareSymbol(std::string_view name, const LocalSymbol& symbol);

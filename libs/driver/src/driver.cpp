@@ -3,6 +3,7 @@
 #include <ceresc/ast/ast_printer.h>
 #include <ceresc/codegen/codegen.h>
 #include <ceresc/ir/ir_builder.h>
+#include <ceresc/ir/ir_optimizer.h>
 #include <ceresc/ir/ir_printer.h>
 #include <ceresc/lexer/lexer.h>
 #include <ceresc/parser/parser.h>
@@ -172,8 +173,11 @@ namespace ceresc::driver
 			return 0;
 		}
 
-		ir::IrBuilder builder(arena, diagnostics);
+		ir::IrBuilder builder(arena, diagnostics, options.optimization);
 		ir::IrModule module = builder.build(*unit);
+		// Optimized IR is what --emit-ir shows too: the point of that flag is to see what the back
+		// end will actually be handed, not an intermediate nobody compiles. -O0 leaves it untouched.
+		ir::optimize(module, arena, options.optimization);
 
 		if (options.emitIr)
 		{
@@ -182,7 +186,7 @@ namespace ceresc::driver
 			return diagnostics.hasErrors() ? 1 : 0;
 		}
 
-		codegen::CodeGen codeGen(sourceManager, diagnostics);
+		codegen::CodeGen codeGen(sourceManager, diagnostics, options.optimization);
 		std::string casmText = codeGen.generate(*unit, module);
 		printNewDiagnostics(diagnostics, sourceManager, printedSoFar, std::cerr);
 		if (diagnostics.hasErrors())

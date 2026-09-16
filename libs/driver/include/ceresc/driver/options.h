@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ceresc/support/optimization.h>
 #include <ceresc/support/types.h>
 #include <optional>
 #include <ostream>
@@ -7,7 +8,12 @@
 #include <string>
 
 // Options - command-line options: --emit-ast, --emit-ir, -S, --run, --ceres-path, -Werror (§11 of
-// the architecture plan).
+// the architecture plan), plus the optimization controls: -O0/-O1/-O2 and the per-optimization
+// -f<name>/-fno-<name> switches (support/optimization.h owns the list of names).
+//
+// Optimizations are ON by default: no -O flag means -O1. -O0 selects the simplified behaviour every
+// optimization has a counterpart for, which is what makes a miscompilation bisectable and what the
+// golden tests pin on both sides - see support/optimization.h's own header comment.
 //
 // Implemented in Fase 6 (--run, the minimum needed to invoke `ceres asm`/`ceres run` for the
 // first end-to-end test) and completed in Fase 8 of the phased plan (§13).
@@ -23,6 +29,11 @@ namespace ceresc::driver
 		bool run = false;            // --run: also invoke `ceres asm`/`ceres run` as subprocesses
 		std::string ceresPath;       // --ceres-path <dir> - empty means "look up `ceres` on PATH"
 		bool warningsAsErrors = false; // -Werror
+
+		// -O<n> and the -f switches, already resolved into the individual toggles every stage reads.
+		// A later -f<name>/-fno-<name> overrides what the -O level set, in command-line order, the
+		// same way a C compiler resolves them.
+		support::OptimizationOptions optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O1);
 	};
 
 	// Parses `args` (argv[1:], i.e. without the program name itself). Prints a usage line and

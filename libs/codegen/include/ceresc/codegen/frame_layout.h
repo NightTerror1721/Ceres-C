@@ -17,28 +17,20 @@
 // another project's implementation, not a contract either side promises to keep). Symbolic
 // `[sp + Frame.field]` references stay correct by construction instead.
 //
-// Every function gets a real frame in this version - the "no frame at all" leaf optimization §10
-// mentions is deliberately not implemented: proving it safe needs knowing that no local's or
-// parameter's address is ever taken (`&x` on a value that would otherwise just live in a
-// register), which needs a real escape analysis over the IR. Getting that wrong would generate a
-// function that reads/writes through a frame slot that was never actually reserved - silent memory
-// corruption, not a compile error - for the sake of an optimization the plan itself calls optional
-// (§13's Fase 9 already lists moving unaddressed locals into r8-r11 as a later, clearly-scoped
-// candidate). One frame shape, always correct, beats two shapes where one has a sharp edge - see
-// §0's "comprensible antes que completo".
+// WHICH values end up in the frame at all - and whether there is a frame to begin with - is not
+// decided here either. ValuePlacement (value_placement.h) owns that: the escape analysis that makes
+// §10's frameless-leaf rule safe, the liveness dataflow behind its register window, and the frame
+// fields left over for whatever neither can hold. This class only answers the one question that is
+// pure ABI arithmetic and needs no analysis at all - how wide the outgoing-argument area has to be.
 //
-// A second simplification goes further than §10's own text: EVERY temporary (not just one still
-// live across a `call`) gets its own permanent frame field, not only the locals/parameters a real
-// VarDecl/Param introduces. §10 describes keeping a temporary in r4-r7/r12 while evaluating a
-// single expression, spilling it only around a `call`; that needs a liveness analysis (which
-// temporaries are still needed after which instruction) to know when a spill is actually required.
-// Giving every temporary a durable memory home instead needs no liveness analysis at all - a
-// `call` can never lose a value nothing was ever resident in a register to begin with - at the
-// cost of more load/store traffic than the minimum. Reclaiming the tighter, register-window
-// version of §10's rule is a natural Fase 9 candidate once the simpler version has real programs
-// running against it.
+// Both of those decisions have a simplified counterpart that is still reachable and still tested
+// (-O0, or -fno-frameless-leaf / -fno-regalloc): a real frame for every function, and one permanent
+// field per local, parameter and temporary. That is the shape this file used to describe as the
+// only one, and it stays alive on purpose - it needs no analysis to be correct, so it is the thing
+// you bisect against when an optimized program misbehaves. See support/optimization.h's own header
+// comment, and §0's "comprensible antes que completo".
 //
-// Implemented in Fase 6 of the phased plan (§13).
+// Implemented in Fase 6 of the phased plan (§13); the placement optimizations are §13's Fase 9.
 
 namespace ceresc::codegen
 {

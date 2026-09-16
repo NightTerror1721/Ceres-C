@@ -119,8 +119,9 @@ namespace ceresc::ir
 
 	// ---- construction / entry point -----------------------------------------------------------
 
-	IrBuilder::IrBuilder(support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept :
-		_arena(arena), _diagnostics(diagnostics)
+	IrBuilder::IrBuilder(support::Arena& arena, support::DiagnosticEngine& diagnostics,
+		const support::OptimizationOptions& options) noexcept :
+		_arena(arena), _diagnostics(diagnostics), _options(options)
 	{}
 
 	IrModule IrBuilder::build(ast::TranslationUnit& unit)
@@ -136,6 +137,8 @@ namespace ceresc::ir
 		_currentBlock = nullptr;
 		_lastValue = IrValue{};
 		_scopes.clear();
+		_scopeSlots.clear();
+		_freeLocalSlots.clear();
 		_globalSymbols.clear();
 		_breakTargets.clear();
 		_continueTargets.clear();
@@ -149,8 +152,46 @@ namespace ceresc::ir
 
 	// ---- scope / symbol helpers -----------------------------------------------------------------
 
-	void IrBuilder::pushScope() { _scopes.emplace_back(); }
-	void IrBuilder::popScope() { if (!_scopes.empty()) _scopes.pop_back(); }
+	void IrBuilder::pushScope()
+	{
+		_scopes.emplace_back();
+		_scopeSlots.emplace_back();
+	}
+
+	void IrBuilder::popScope()
+	{
+		if (!_scopes.empty())
+			_scopes.pop_back();
+		if (!_scopeSlots.empty())
+		{
+			// Everything this scope declared is out of reach by name from here on, so its slots go
+			// back into the pool for the next sibling scope to claim - see _freeLocalSlots.
+			for (u32 slot : _scopeSlots.back())
+				_freeLocalSlots.push_back(slot);
+			_scopeSlots.pop_back();
+		}
+	}
+
+	u32 IrBuilder::newLocalSlotFor(u32 sizeInBytes, bool isFloat)
+	{
+		u32 slot;
+		if (_options.localSlotReuse && !_freeLocalSlots.empty())
+		{
+			slot = _freeLocalSlots.back();
+			_freeLocalSlots.pop_back();
+			// The slot keeps whichever size is larger: reusing a `char`'s slot for an `int` has to
+			// grow it, reusing an `int`'s for a `char` must not shrink it (IrFunction::widenLocalSlot).
+			_currentFunction->widenLocalSlot(slot, sizeInBytes, isFloat);
+		}
+		else
+		{
+			slot = _currentFunction->newLocalSlot(sizeInBytes, isFloat);
+		}
+
+		if (!_scopeSlots.empty())
+			_scopeSlots.back().push_back(slot);
+		return slot;
+	}
 
 	void IrBuilder::declareSymbol(std::string_view name, const LocalSymbol& symbol)
 	{
@@ -1252,7 +1293,7 @@ namespace ceresc::ir
 
 		LocalSymbol symbol;
 		symbol.kind = LocalSymbolKind::Local;
-		symbol.localSlot = _currentFunction->newLocalSlot(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat());
+		symbol.localSlot = newLocalSlotFor(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat());
 		declareSymbol(node.name(), symbol);
 
 		if (node.initializer())
@@ -1276,6 +1317,9 @@ namespace ceresc::ir
 		for (const Param& param : node.params())
 			paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u, param.type && param.type->isFloat() });
 		function.reserveParamSlots(paramSlots);
+		// Slot reuse never crosses a function boundary: a slot freed by a scope in the previous
+		// function names an index in THAT function's frame - see newLocalSlotFor().
+		_freeLocalSlots.clear();
 
 		pushScope();
 		u32 slot = 0;

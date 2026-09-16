@@ -8,15 +8,15 @@
 #include <optional>
 #include <vector>
 
-// See codegen.h for the overall register-allocation rule (every local/parameter/temporary lives
-// in its own frame field, always) and why a Cmp is never fused into a following CondJump.
+// See codegen.h for where values live (ValuePlacement decides, this file emits) and for the three
+// ISA-level peepholes this file applies.
 //
 // Every mnemonic below is checked against CeresASM's own docs/05-Instruction-Set.md and
 // docs/06-Pseudo-Instructions.md - none is invented. Two auto-dispatch rules those pages document
 // are used throughout instead of picking an F-prefixed opcode by hand: `add`/`sub`/`ldr`/`str`/
-// `neg`/`ifXX`/... all choose their float form (FADD/FLDR/FNEG/FCMP/...) on their own once given a
-// float register operand - the mnemonic text this file writes never changes between the int and
-// float form, only which register name (`r4` vs `f4`) it names.
+// `mov`/`neg`/`ifXX`/... all choose their float form (FADD/FLDR/FMOV/FNEG/FCMP/...) on their own
+// once given a float register operand - the mnemonic text this file writes never changes between
+// the int and float form, only which register name (`r4` vs `f4`) it names.
 
 namespace ceresc::codegen
 {
@@ -26,12 +26,44 @@ namespace ceresc::codegen
 
 	namespace
 	{
+		// Reserved for shuttling a spilled value in and out while one IR instruction is translated -
+		// never handed to a value (value_placement.cpp keeps them out of its pools for exactly this).
 		constexpr u32 kScratchA = 4;
 		constexpr u32 kScratchB = 5;
 
+		// An immediate is only used where BOTH readings of the 16-bit field agree. The machine is
+		// not consistent about it: ADDI/SUBI read it zero-extended (`inst.imm16()`), while
+		// CMPI/IMULI/IDIVI read it sign-extended (`inst.simm16()`) - both verified in CeresASM's own
+		// Ceres/libs/vm/include/ceres/vm/execution_engine.h, and 05-Instruction-Set.md does not say
+		// which is which per opcode. Restricting the peephole to 0..32767 makes the distinction
+		// irrelevant instead of depending on a detail this project does not own; a negative constant
+		// simply materializes into a register as it always did.
+		constexpr i64 kMaxImmediate = 32767;
+
 		std::string intReg(u32 n) { return std::format("r{}", n); }
 		std::string floatReg(u32 n) { return std::format("f{}", n); }
-		std::string_view storeMnemonicFor(u32 sizeInBytes, bool isFloat)
+		std::string bankReg(u32 n, bool isFloat) { return isFloat ? floatReg(n) : intReg(n); }
+
+		std::string_view loadMnemonicFor(IrMemSize size, bool isFloat)
+		{
+			// All integer loads are unsigned in this version (§10/§14 of the architecture plan - a
+			// documented v1 simplification, not an oversight): `ldrb`/`ldrh`, never `ldrsb`/`ldrsh`.
+			// `ldr` auto-dispatches to FLDR for a float destination.
+			if (isFloat) return "ldr";
+			if (size == IrMemSize::Byte) return "ldrb";
+			if (size == IrMemSize::Half) return "ldrh";
+			return "ldr";
+		}
+
+		std::string_view storeMnemonicFor(IrMemSize size, bool isFloat)
+		{
+			if (isFloat) return "str";
+			if (size == IrMemSize::Byte) return "strb";
+			if (size == IrMemSize::Half) return "strh";
+			return "str";
+		}
+
+		std::string_view storeMnemonicForSize(u32 sizeInBytes, bool isFloat)
 		{
 			if (isFloat) return "str";
 			if (sizeInBytes == 1) return "strb";
@@ -137,7 +169,10 @@ namespace ceresc::codegen
 			}
 			return result;
 		}
+
 	}
+
+	// ---- small helpers ----------------------------------------------------------------------------
 
 	std::string CodeGen::sourceComment(SourceLocation location) const
 	{
@@ -147,8 +182,7 @@ namespace ceresc::codegen
 		return std::format("{}:{}", buffer ? buffer->name() : std::string_view("?"), location.line);
 	}
 
-	std::string CodeGen::localFieldName(u32 slotIndex) { return std::format("local{}", slotIndex); }
-	std::string CodeGen::tempFieldName(u32 tempId) { return std::format("t{}", tempId); }
+	std::string CodeGen::slotFieldName(u32 slotIndex) { return std::format("slot{}", slotIndex); }
 
 	std::string CodeGen::fieldTypeName(u32 sizeInBytes, bool isFloat)
 	{
@@ -161,6 +195,11 @@ namespace ceresc::codegen
 			case 4: return "u32";
 			default: return std::format("u32[{}]", (sizeInBytes + 3) / 4);
 		}
+	}
+
+	std::string CodeGen::slotAddress(u32 slotIndex) const
+	{
+		return std::format("[sp + {}.{}]", _frameName, slotFieldName(slotIndex));
 	}
 
 	std::string_view CodeGen::ifMnemonic(IrCmpPredicate predicate, bool isUnsigned)
@@ -177,30 +216,64 @@ namespace ceresc::codegen
 		return "ifeq";
 	}
 
-	std::string CodeGen::tempAddress(IrValue value) const
+	IrCmpPredicate CodeGen::invertPredicate(IrCmpPredicate predicate)
 	{
-		return std::format("[sp + {}.{}]", _frameName, tempFieldName(value.id));
+		switch (predicate)
+		{
+			case IrCmpPredicate::Eq: return IrCmpPredicate::Ne;
+			case IrCmpPredicate::Ne: return IrCmpPredicate::Eq;
+			case IrCmpPredicate::Lt: return IrCmpPredicate::Ge;
+			case IrCmpPredicate::Le: return IrCmpPredicate::Gt;
+			case IrCmpPredicate::Gt: return IrCmpPredicate::Le;
+			case IrCmpPredicate::Ge: return IrCmpPredicate::Lt;
+		}
+		return IrCmpPredicate::Eq;
 	}
 
-	std::string CodeGen::localAddress(u32 slotIndex) const
+	std::optional<std::string> CodeGen::localRegister(u32 localIndex) const
 	{
-		return std::format("[sp + {}.{}]", _frameName, localFieldName(slotIndex));
+		Placement placement = _placement->local(localIndex);
+		if (placement.kind != PlacementKind::Register)
+			return std::nullopt;
+		return bankReg(placement.index, placement.isFloat);
 	}
 
-	void CodeGen::loadTemp(IrValue value, std::string_view reg, bool isFloat, SourceLocation loc)
+	// ---- operand access ---------------------------------------------------------------------------
+
+	std::string CodeGen::valueIn(IrValue value, u32 scratch, bool isFloat, SourceLocation loc)
 	{
-		if (!value.isValid())
-			return;
-		(void)isFloat; // `ldr`/`str` auto-dispatch on `reg`'s own bank - see the header comment above
-		_emitter.instr(std::format("ldr {}, {}", reg, tempAddress(value)), sourceComment(loc));
+		Placement placement = _placement->temp(value);
+		if (placement.kind == PlacementKind::Register)
+			return bankReg(placement.index, placement.isFloat);
+
+		if (placement.kind == PlacementKind::Virtual)
+		{
+			// A FrameAddr naming a register-resident local has no address to hand out. Every
+			// legitimate reader of one is a Load/Store, which handle it directly (see their cases in
+			// generateInstr) - reaching here means the escape analysis and this file disagree.
+			_diagnostics.error(loc, "internal error: the address of a register-resident local escaped code generation");
+			return bankReg(scratch, isFloat);
+		}
+
+		std::string reg = bankReg(scratch, isFloat);
+		_emitter.instr(std::format("ldr {}, {}", reg, slotAddress(placement.index)), sourceComment(loc));
+		return reg;
 	}
 
-	void CodeGen::storeTemp(IrValue value, std::string_view reg, bool isFloat, SourceLocation loc)
+	std::string CodeGen::defineInto(IrValue value, u32 scratch, bool isFloat)
 	{
-		if (!value.isValid())
-			return;
-		(void)isFloat;
-		_emitter.instr(std::format("str {}, {}", tempAddress(value), reg), sourceComment(loc));
+		Placement placement = _placement->temp(value);
+		if (placement.kind == PlacementKind::Register)
+			return bankReg(placement.index, placement.isFloat);
+		return bankReg(scratch, isFloat);
+	}
+
+	void CodeGen::storeResult(IrValue value, std::string_view reg, SourceLocation loc)
+	{
+		Placement placement = _placement->temp(value);
+		if (placement.kind != PlacementKind::Slot)
+			return; // already computed into the register the value lives in
+		_emitter.instr(std::format("str {}, {}", slotAddress(placement.index), reg), sourceComment(loc));
 	}
 
 	void CodeGen::emitLoadImmediate(std::string_view reg, i64 rawValue, SourceLocation loc)
@@ -213,19 +286,122 @@ namespace ceresc::codegen
 			_emitter.instr(std::format("la {}, {}", reg, value), comment);
 	}
 
+	std::optional<i64> CodeGen::immediateFor(IrValue value) const
+	{
+		if (!_options.immediateOperands || !value.isValid() || !_function)
+			return std::nullopt;
+		auto defs = _defCount.find(value.id);
+		if (defs == _defCount.end() || defs->second != 1)
+			return std::nullopt;
+
+		for (const auto& block : _function->blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				if (instr->opcode() != IrOpcode::Const)
+					continue;
+				const auto& p = instr->as<IrConstPayload>();
+				if (!(p.result == value) || p.isFloat)
+					continue;
+				if (p.intValue < 0 || p.intValue > kMaxImmediate)
+					return std::nullopt; // see kMaxImmediate: outside the range both readings agree on
+				return p.intValue;
+			}
+		}
+		return std::nullopt;
+	}
+
+	void CodeGen::collectSuppressedConstants(const IrFunction& function)
+	{
+		_suppressedConsts.assign(function.tempCount(), false);
+		if (!_options.immediateOperands)
+			return;
+
+		// Start from "every eligible constant is suppressible", then let any reader that cannot take
+		// an immediate veto it. A constant with no readers at all stays suppressed, which is right:
+		// nothing would read the register either.
+		std::vector<bool> candidate(function.tempCount(), false);
+		for (const auto& block : function.blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				if (instr->opcode() != IrOpcode::Const)
+					continue;
+				const auto& p = instr->as<IrConstPayload>();
+				if (p.result.isValid() && p.result.id < candidate.size() && immediateFor(p.result))
+					candidate[p.result.id] = true;
+			}
+		}
+
+		auto veto = [&](IrValue value)
+		{
+			if (value.isValid() && value.id < candidate.size())
+				candidate[value.id] = false;
+		};
+
+		for (const auto& block : function.blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				switch (instr->opcode())
+				{
+					case IrOpcode::BinOp:
+					{
+						// Only the SECOND operand of an integer operation becomes an immediate:
+						// the encoding puts it where `rt` would go (04-Instruction-Format.md), and
+						// the first operand has no such field to live in.
+						const auto& p = instr->as<IrBinOpPayload>();
+						veto(p.lhs);
+						if (p.isFloat)
+							veto(p.rhs);
+						break;
+					}
+					case IrOpcode::Cmp:
+					{
+						const auto& p = instr->as<IrCmpPayload>();
+						veto(p.lhs);
+						if (p.isFloat)
+							veto(p.rhs);
+						break;
+					}
+					case IrOpcode::CondJump:
+					{
+						const auto& p = instr->as<IrCondJumpPayload>();
+						veto(p.lhs);
+						break;
+					}
+					default:
+						forEachOperand(*instr, veto);
+						break;
+				}
+			}
+		}
+
+		_suppressedConsts = std::move(candidate);
+	}
+
+	// ---- comparisons ------------------------------------------------------------------------------
+
+	void CodeGen::emitConditionalBranch(IrCmpPredicate predicate, bool isUnsigned, bool isFloat,
+		IrValue lhs, IrValue rhs, std::string_view target, SourceLocation loc)
+	{
+		std::string a = valueIn(lhs, kScratchA, isFloat, loc);
+		// A float comparison has no immediate form (FCMP takes two float registers), so the
+		// immediate peephole only ever applies to the integer one.
+		std::optional<i64> immediate = isFloat ? std::nullopt : immediateFor(rhs);
+		std::string b = immediate ? std::format("{}", *immediate) : valueIn(rhs, kScratchB, isFloat, loc);
+		_emitter.instr(std::format("{} {}, {}, {}", ifMnemonic(predicate, isUnsigned), a, b, target), sourceComment(loc));
+	}
+
 	void CodeGen::materializeCmp(const IrCmpPayload& payload, std::string_view resultReg, SourceLocation loc)
 	{
 		std::string comment = sourceComment(loc);
-		std::string a = payload.isFloat ? floatReg(kScratchA) : intReg(kScratchA);
-		std::string b = payload.isFloat ? floatReg(kScratchB) : intReg(kScratchB);
-		loadTemp(payload.lhs, a, payload.isFloat, loc);
-		loadTemp(payload.rhs, b, payload.isFloat, loc);
-
 		std::string trueLabel = std::format("cmp{}_true", _nextComparisonLabel);
 		std::string endLabel = std::format("cmp{}_end", _nextComparisonLabel);
 		++_nextComparisonLabel;
 
-		_emitter.instr(std::format("{} {}, {}, .{}", ifMnemonic(payload.predicate, payload.isUnsigned), a, b, trueLabel), comment);
+		emitConditionalBranch(payload.predicate, payload.isUnsigned, payload.isFloat, payload.lhs, payload.rhs,
+			std::format(".{}", trueLabel), loc);
 		_emitter.instr(std::format("li {}, 0", resultReg), comment);
 		_emitter.instr(std::format("jp .{}", endLabel), comment);
 		_emitter.localLabel(trueLabel);
@@ -233,10 +409,52 @@ namespace ceresc::codegen
 		_emitter.localLabel(endLabel);
 	}
 
+	bool CodeGen::findFusableCmp(std::span<IrInstr* const> instrs, usize index, const IrCmpPayload*& cmpOut) const
+	{
+		cmpOut = nullptr;
+		if (!_options.cmpBranchFusion || index < 2 || instrs[index]->opcode() != IrOpcode::CondJump)
+			return false;
+
+		// The exact shape lowerCondition() emits for a relational condition (ir_builder.cpp): the
+		// comparison, a zero constant, then a branch testing one against the other.
+		const auto& branch = instrs[index]->as<IrCondJumpPayload>();
+		if (branch.predicate != IrCmpPredicate::Ne || branch.isUnsigned)
+			return false;
+
+		const IrInstr& zeroInstr = *instrs[index - 1];
+		if (zeroInstr.opcode() != IrOpcode::Const)
+			return false;
+		const auto& zero = zeroInstr.as<IrConstPayload>();
+		if (zero.isFloat || zero.intValue != 0 || !(zero.result == branch.rhs))
+			return false;
+
+		const IrInstr& cmpInstr = *instrs[index - 2];
+		if (cmpInstr.opcode() != IrOpcode::Cmp)
+			return false;
+		const auto& cmp = cmpInstr.as<IrCmpPayload>();
+		if (!(cmp.result == branch.lhs))
+			return false;
+
+		// Both intermediate values have to be private to this pair: if anything else reads the
+		// comparison's 0/1 result (or that zero), it still has to be materialized.
+		auto cmpUses = _useCount.find(cmp.result.id);
+		auto zeroUses = _useCount.find(zero.result.id);
+		if (cmpUses == _useCount.end() || cmpUses->second != 1)
+			return false;
+		if (zeroUses == _useCount.end() || zeroUses->second != 1)
+			return false;
+
+		cmpOut = &cmp;
+		return true;
+	}
+
 	// ---- one IR instruction -------------------------------------------------------------------
 
-	void CodeGen::generateInstr(std::span<IrInstr* const> instrs, usize index)
+	void CodeGen::generateInstr(std::span<IrInstr* const> instrs, usize index, u32 nextBlockId)
 	{
+		if (index < _skipInstr.size() && _skipInstr[index])
+			return; // already consumed by the cmp/branch fusion below
+
 		const IrInstr& instr = *instrs[index];
 		SourceLocation loc = instr.location();
 		std::string comment = sourceComment(loc);
@@ -246,6 +464,8 @@ namespace ceresc::codegen
 			case IrOpcode::Const:
 			{
 				const auto& p = instr.as<IrConstPayload>();
+				if (p.result.isValid() && p.result.id < _suppressedConsts.size() && _suppressedConsts[p.result.id])
+					break; // every reader folds it in as an immediate - see collectSuppressedConstants()
 				if (p.isFloat)
 				{
 					// No float-immediate load exists (05-Instruction-Set.md/06-Pseudo-Instructions.md):
@@ -254,13 +474,15 @@ namespace ceresc::codegen
 					// pattern needs).
 					u32 bits = std::bit_cast<u32>(p.floatValue);
 					emitLoadImmediate(intReg(kScratchA), static_cast<i64>(static_cast<i32>(bits)), loc);
-					_emitter.instr(std::format("mtf {}, {}", floatReg(kScratchA), intReg(kScratchA)), comment);
-					storeTemp(p.result, floatReg(kScratchA), true, loc);
+					std::string dest = defineInto(p.result, kScratchB, true);
+					_emitter.instr(std::format("mtf {}, {}", dest, intReg(kScratchA)), comment);
+					storeResult(p.result, dest, loc);
 				}
 				else
 				{
-					emitLoadImmediate(intReg(kScratchA), p.intValue, loc);
-					storeTemp(p.result, intReg(kScratchA), false, loc);
+					std::string dest = defineInto(p.result, kScratchA, false);
+					emitLoadImmediate(dest, p.intValue, loc);
+					storeResult(p.result, dest, loc);
 				}
 				break;
 			}
@@ -268,11 +490,6 @@ namespace ceresc::codegen
 			case IrOpcode::BinOp:
 			{
 				const auto& p = instr.as<IrBinOpPayload>();
-				std::string a = p.isFloat ? floatReg(kScratchA) : intReg(kScratchA);
-				std::string b = p.isFloat ? floatReg(kScratchB) : intReg(kScratchB);
-				loadTemp(p.lhs, a, p.isFloat, loc);
-				loadTemp(p.rhs, b, p.isFloat, loc);
-
 				std::string_view mnemonic;
 				switch (p.op)
 				{
@@ -290,8 +507,13 @@ namespace ceresc::codegen
 					case IrBinOp::Shr: mnemonic = "shr"; break;
 					case IrBinOp::Sar: mnemonic = "sar"; break;
 				}
-				_emitter.instr(std::format("{} {}, {}, {}", mnemonic, a, a, b), comment);
-				storeTemp(p.result, a, p.isFloat, loc);
+
+				std::string a = valueIn(p.lhs, kScratchA, p.isFloat, loc);
+				std::optional<i64> immediate = p.isFloat ? std::nullopt : immediateFor(p.rhs);
+				std::string b = immediate ? std::format("{}", *immediate) : valueIn(p.rhs, kScratchB, p.isFloat, loc);
+				std::string dest = defineInto(p.result, kScratchA, p.isFloat);
+				_emitter.instr(std::format("{} {}, {}, {}", mnemonic, dest, a, b), comment);
+				storeResult(p.result, dest, loc);
 				break;
 			}
 
@@ -302,18 +524,18 @@ namespace ceresc::codegen
 				{
 					case IrUnOp::Neg:
 					{
-						std::string r = p.isFloat ? floatReg(kScratchA) : intReg(kScratchA);
-						loadTemp(p.operand, r, p.isFloat, loc);
-						_emitter.instr(std::format("neg {}, {}", r, r), comment); // pseudo: imul r,r,-1 (int) / FNEG (float)
-						storeTemp(p.result, r, p.isFloat, loc);
+						std::string source = valueIn(p.operand, kScratchA, p.isFloat, loc);
+						std::string dest = defineInto(p.result, kScratchA, p.isFloat);
+						_emitter.instr(std::format("neg {}, {}", dest, source), comment); // pseudo: imul r,r,-1 (int) / FNEG (float)
+						storeResult(p.result, dest, loc);
 						break;
 					}
 					case IrUnOp::Not:
 					{
-						std::string r = intReg(kScratchA);
-						loadTemp(p.operand, r, false, loc);
-						_emitter.instr(std::format("not {}, {}", r, r), comment);
-						storeTemp(p.result, r, false, loc);
+						std::string source = valueIn(p.operand, kScratchA, false, loc);
+						std::string dest = defineInto(p.result, kScratchA, false);
+						_emitter.instr(std::format("not {}, {}", dest, source), comment);
+						storeResult(p.result, dest, loc);
 						break;
 					}
 					case IrUnOp::LogicalNot:
@@ -321,32 +543,34 @@ namespace ceresc::codegen
 						// Unreachable from IrBuilder today - visit(UnaryExpr&)'s LogicalNot case goes
 						// through materializeBoolean() instead (ir_builder.cpp), never constructing
 						// this payload. Handled anyway so this switch stays exhaustive: `!x` is `x == 0`.
-						std::string r = intReg(kScratchA);
-						loadTemp(p.operand, r, false, loc);
+						std::string source = valueIn(p.operand, kScratchA, false, loc);
+						std::string dest = defineInto(p.result, kScratchA, false);
 						std::string trueLabel = std::format("lnot{}_true", _nextComparisonLabel);
 						std::string endLabel = std::format("lnot{}_end", _nextComparisonLabel);
 						++_nextComparisonLabel;
-						_emitter.instr(std::format("ifeq {}, 0, .{}", r, trueLabel), comment);
-						_emitter.instr(std::format("li {}, 0", r), comment);
+						_emitter.instr(std::format("ifeq {}, 0, .{}", source, trueLabel), comment);
+						_emitter.instr(std::format("li {}, 0", dest), comment);
 						_emitter.instr(std::format("jp .{}", endLabel), comment);
 						_emitter.localLabel(trueLabel);
-						_emitter.instr(std::format("li {}, 1", r), comment);
+						_emitter.instr(std::format("li {}, 1", dest), comment);
 						_emitter.localLabel(endLabel);
-						storeTemp(p.result, r, false, loc);
+						storeResult(p.result, dest, loc);
 						break;
 					}
 					case IrUnOp::IntToFloat:
 					{
-						loadTemp(p.operand, intReg(kScratchA), false, loc);
-						_emitter.instr(std::format("{} {}, {}", p.isUnsigned ? "itof" : "iitof", floatReg(kScratchA), intReg(kScratchA)), comment);
-						storeTemp(p.result, floatReg(kScratchA), true, loc);
+						std::string source = valueIn(p.operand, kScratchA, false, loc);
+						std::string dest = defineInto(p.result, kScratchB, true);
+						_emitter.instr(std::format("{} {}, {}", p.isUnsigned ? "itof" : "iitof", dest, source), comment);
+						storeResult(p.result, dest, loc);
 						break;
 					}
 					case IrUnOp::FloatToInt:
 					{
-						loadTemp(p.operand, floatReg(kScratchA), true, loc);
-						_emitter.instr(std::format("{} {}, {}", p.isUnsigned ? "ftoi" : "ftoii", intReg(kScratchA), floatReg(kScratchA)), comment);
-						storeTemp(p.result, intReg(kScratchA), false, loc);
+						std::string source = valueIn(p.operand, kScratchA, true, loc);
+						std::string dest = defineInto(p.result, kScratchB, false);
+						_emitter.instr(std::format("{} {}, {}", p.isUnsigned ? "ftoi" : "ftoii", dest, source), comment);
+						storeResult(p.result, dest, loc);
 						break;
 					}
 				}
@@ -356,63 +580,82 @@ namespace ceresc::codegen
 			case IrOpcode::Cmp:
 			{
 				const auto& p = instr.as<IrCmpPayload>();
-				std::string r = intReg(kScratchA);
-				materializeCmp(p, r, loc);
-				storeTemp(p.result, r, false, loc);
+				std::string dest = defineInto(p.result, kScratchA, false);
+				materializeCmp(p, dest, loc);
+				storeResult(p.result, dest, loc);
 				break;
 			}
 
 			case IrOpcode::Copy:
 			{
 				const auto& p = instr.as<IrCopyPayload>();
-				std::string r = p.isFloat ? floatReg(kScratchA) : intReg(kScratchA);
-				loadTemp(p.source, r, p.isFloat, loc);
-				storeTemp(p.result, r, p.isFloat, loc);
+				std::string source = valueIn(p.source, kScratchA, p.isFloat, loc);
+				std::string dest = defineInto(p.result, kScratchA, p.isFloat);
+				if (dest != source)
+					_emitter.instr(std::format("mov {}, {}", dest, source), comment);
+				storeResult(p.result, dest, loc);
 				break;
 			}
 
 			case IrOpcode::FrameAddr:
 			{
 				const auto& p = instr.as<IrFrameAddrPayload>();
-				std::string r = intReg(kScratchA);
-				_emitter.instr(std::format("la {}, {}", r, localAddress(p.localIndex)), comment); // LEA form: [sp + Frame.field]
-				storeTemp(p.result, r, false, loc);
+				if (_placement->temp(p.result).kind == PlacementKind::Virtual)
+					break; // the local lives in a register - there is no address, and nobody needs one
+
+				Placement local = _placement->local(p.localIndex);
+				std::string dest = defineInto(p.result, kScratchA, false);
+				_emitter.instr(std::format("la {}, {}", dest, slotAddress(local.index)), comment); // LEA form: [sp + Frame.field]
+				storeResult(p.result, dest, loc);
 				break;
 			}
 
 			case IrOpcode::GlobalAddr:
 			{
 				const auto& p = instr.as<IrGlobalAddrPayload>();
-				std::string r = intReg(kScratchA);
-				_emitter.instr(std::format("la {}, {}", r, mangledName(p.name)), comment); // pseudo form: la rd, symbol
-				storeTemp(p.result, r, false, loc);
+				std::string dest = defineInto(p.result, kScratchA, false);
+				_emitter.instr(std::format("la {}, {}", dest, mangledName(p.name)), comment); // pseudo form: la rd, symbol
+				storeResult(p.result, dest, loc);
 				break;
 			}
 
 			case IrOpcode::Load:
 			{
 				const auto& p = instr.as<IrLoadPayload>();
-				std::string addrReg = intReg(kScratchA);
-				loadTemp(p.address, addrReg, false, loc);
-				std::string destReg = p.isFloat ? floatReg(kScratchB) : intReg(kScratchB);
-				// All Load byte/half/word forms are unsigned in this version (§10/§14 of the
-				// architecture plan - a documented v1 simplification, not an oversight): `ldrb`/
-				// `ldrh` never `ldrsb`/`ldrsh`. `ldr` auto-dispatches to FLDR for a float destination.
-				std::string_view mnemonic = p.isFloat ? "ldr" : (p.size == IrMemSize::Byte ? "ldrb" : p.size == IrMemSize::Half ? "ldrh" : "ldr");
-				_emitter.instr(std::format("{} {}, [{}]", mnemonic, destReg, addrReg), comment);
-				storeTemp(p.result, destReg, p.isFloat, loc);
+				if (std::optional<u32> local = _placement->virtualAddressLocal(p.address))
+				{
+					// Reading a local that lives in a register is just a register read - there is no
+					// memory access to make at all.
+					std::optional<std::string> source = localRegister(*local);
+					std::string dest = defineInto(p.result, kScratchB, p.isFloat);
+					if (source && *source != dest)
+						_emitter.instr(std::format("mov {}, {}", dest, *source), comment);
+					storeResult(p.result, dest, loc);
+					break;
+				}
+
+				std::string addrReg = valueIn(p.address, kScratchA, false, loc);
+				std::string dest = defineInto(p.result, kScratchB, p.isFloat);
+				_emitter.instr(std::format("{} {}, [{}]", loadMnemonicFor(p.size, p.isFloat), dest, addrReg), comment);
+				storeResult(p.result, dest, loc);
 				break;
 			}
 
 			case IrOpcode::Store:
 			{
 				const auto& p = instr.as<IrStorePayload>();
-				std::string addrReg = intReg(kScratchA);
-				loadTemp(p.address, addrReg, false, loc);
-				std::string valueReg = p.isFloat ? floatReg(kScratchB) : intReg(kScratchB);
-				loadTemp(p.value, valueReg, p.isFloat, loc);
-				std::string_view mnemonic = p.isFloat ? "str" : (p.size == IrMemSize::Byte ? "strb" : p.size == IrMemSize::Half ? "strh" : "str");
-				_emitter.instr(std::format("{} [{}], {}", mnemonic, addrReg, valueReg), comment);
+				if (std::optional<u32> local = _placement->virtualAddressLocal(p.address))
+				{
+					std::optional<std::string> dest = localRegister(*local);
+					std::string source = valueIn(p.value, kScratchB, p.isFloat, loc);
+					if (dest && *dest != source)
+						_emitter.instr(std::format("mov {}, {}", *dest, source), comment);
+					break;
+				}
+
+				std::string addrReg = valueIn(p.address, kScratchA, false, loc);
+				std::string valueReg = valueIn(p.value, kScratchB, p.isFloat, loc);
+				_emitter.instr(std::format("{} [{}], {}", storeMnemonicFor(p.size, p.isFloat), addrReg, valueReg), comment);
 				break;
 			}
 
@@ -444,6 +687,10 @@ namespace ceresc::codegen
 					argValues[k] = param.value;
 				}
 
+				// No parallel-move hazard to worry about: the argument registers (r0-r3/f0-f3) are
+				// never handed to a value in a function that makes a call at all
+				// (value_placement.cpp's allocatable pools), so no source below can be one of the
+				// destinations being written here.
 				std::vector<ArgSlot> slots = assignArgSlots(argIsFloat);
 				for (u32 k = 0; k < argCount; ++k)
 				{
@@ -451,16 +698,19 @@ namespace ceresc::codegen
 					switch (slot.kind)
 					{
 						case ArgSlotKind::IntReg:
-							loadTemp(argValues[k], intReg(slot.index), false, loc);
-							break;
 						case ArgSlotKind::FloatReg:
-							loadTemp(argValues[k], floatReg(slot.index), true, loc);
+						{
+							bool isFloat = slot.kind == ArgSlotKind::FloatReg;
+							std::string dest = bankReg(slot.index, isFloat);
+							std::string source = valueIn(argValues[k], isFloat ? kScratchB : kScratchA, isFloat, loc);
+							if (source != dest)
+								_emitter.instr(std::format("mov {}, {}", dest, source), comment);
 							break;
+						}
 						case ArgSlotKind::Stack:
 						{
-							std::string r = argIsFloat[k] ? floatReg(kScratchA) : intReg(kScratchA);
-							loadTemp(argValues[k], r, argIsFloat[k], loc);
-							_emitter.instr(std::format("str [sp + {}], {}", slot.index * 4, r), comment);
+							std::string source = valueIn(argValues[k], argIsFloat[k] ? kScratchB : kScratchA, argIsFloat[k], loc);
+							_emitter.instr(std::format("str [sp + {}], {}", slot.index * 4, source), comment);
 							break;
 						}
 					}
@@ -468,29 +718,63 @@ namespace ceresc::codegen
 
 				_emitter.instr(std::format("call {}", mangledName(p.callee)), comment);
 				if (p.hasResult)
-					storeTemp(p.result, p.isFloat ? floatReg(0) : intReg(0), p.isFloat, loc);
+				{
+					std::string returned = bankReg(0, p.isFloat);
+					std::string dest = defineInto(p.result, p.isFloat ? kScratchB : kScratchA, p.isFloat);
+					if (dest != returned)
+						_emitter.instr(std::format("mov {}, {}", dest, returned), comment);
+					storeResult(p.result, dest, loc);
+				}
 				break;
 			}
 
 			case IrOpcode::Jump:
 			{
 				const auto& p = instr.as<IrJumpPayload>();
+				if (_options.fallthroughBranches && p.target->id() == nextBlockId)
+					break; // the target is the very next block emitted - falling through gets there
 				_emitter.instr(std::format("jp .L{}", p.target->id()), comment);
 				break;
 			}
 
 			case IrOpcode::CondJump:
 			{
-				// Always plain ints: lowerCondition()'s only two shapes are a 0/1 boolean already
-				// materialized by Cmp/materializeBoolean(), or a general "value != 0" truthiness
-				// check - neither ever compares float registers directly (ir_builder.cpp).
 				const auto& p = instr.as<IrCondJumpPayload>();
-				std::string a = intReg(kScratchA);
-				std::string b = intReg(kScratchB);
-				loadTemp(p.lhs, a, false, loc);
-				loadTemp(p.rhs, b, false, loc);
-				_emitter.instr(std::format("{} {}, {}, .L{}", ifMnemonic(p.predicate, p.isUnsigned), a, b, p.trueTarget->id()), comment);
-				_emitter.instr(std::format("jp .L{}", p.falseTarget->id()), comment);
+
+				IrCmpPredicate predicate = p.predicate;
+				bool isUnsigned = p.isUnsigned;
+				bool isFloat = false;
+				IrValue lhs = p.lhs;
+				IrValue rhs = p.rhs;
+
+				const IrCmpPayload* fused = nullptr;
+				if (findFusableCmp(instrs, index, fused))
+				{
+					// `cmp != 0` is just the comparison itself - branch on its own operands and
+					// predicate, skipping the 0/1 value entirely.
+					predicate = fused->predicate;
+					isUnsigned = fused->isUnsigned;
+					isFloat = fused->isFloat;
+					lhs = fused->lhs;
+					rhs = fused->rhs;
+				}
+
+				bool trueIsNext = _options.fallthroughBranches && p.trueTarget->id() == nextBlockId;
+				bool falseIsNext = _options.fallthroughBranches && p.falseTarget->id() == nextBlockId;
+
+				if (trueIsNext && !falseIsNext && !isFloat)
+				{
+					// Invert the test so the single branch goes to the false target and the taken
+					// path falls through.
+					emitConditionalBranch(invertPredicate(predicate), isUnsigned, isFloat, lhs, rhs,
+						std::format(".L{}", p.falseTarget->id()), loc);
+					break;
+				}
+
+				emitConditionalBranch(predicate, isUnsigned, isFloat, lhs, rhs,
+					std::format(".L{}", p.trueTarget->id()), loc);
+				if (!falseIsNext)
+					_emitter.instr(std::format("jp .L{}", p.falseTarget->id()), comment);
 				break;
 			}
 
@@ -498,7 +782,12 @@ namespace ceresc::codegen
 			{
 				const auto& p = instr.as<IrReturnPayload>();
 				if (p.hasValue)
-					loadTemp(p.value, p.isFloat ? floatReg(0) : intReg(0), p.isFloat, loc);
+				{
+					std::string returnReg = bankReg(0, p.isFloat);
+					std::string source = valueIn(p.value, p.isFloat ? kScratchB : kScratchA, p.isFloat, loc);
+					if (source != returnReg)
+						_emitter.instr(std::format("mov {}, {}", returnReg, source), comment);
+				}
 
 				if (_generatingMain)
 				{
@@ -508,17 +797,17 @@ namespace ceresc::codegen
 					// reads it: `ceres run`'s own process exit code is always 0 on a clean halt,
 					// never a program-chosen value (verified against Ceres/libs/driver/src/
 					// machine_runner.cpp - there is no register-to-exit-code channel at all).
-					_emitter.instr("leave", comment);
-					std::string cmdAddr = intReg(kScratchA);
-					std::string cmdValue = intReg(kScratchB);
-					_emitter.instr(std::format("la {}, 0xFFFF0000", cmdAddr), comment); // SystemControlDevice, 07-IO-Devices-and-Ports.md
-					_emitter.instr(std::format("li {}, 1", cmdValue), comment);
-					_emitter.instr(std::format("strb [{} + 0], {}", cmdAddr, cmdValue), comment);
+					if (_hasFrame)
+						_emitter.instr("leave", comment);
+					_emitter.instr(std::format("la {}, 0xFFFF0000", intReg(kScratchA)), comment); // SystemControlDevice, 07-IO-Devices-and-Ports.md
+					_emitter.instr(std::format("li {}, 1", intReg(kScratchB)), comment);
+					_emitter.instr(std::format("strb [{} + 0], {}", intReg(kScratchA), intReg(kScratchB)), comment);
 					_emitter.instr("halt", comment);
 				}
 				else
 				{
-					_emitter.instr("leave", comment);
+					if (_hasFrame)
+						_emitter.instr("leave", comment);
 					_emitter.instr("ret", comment);
 				}
 				break;
@@ -530,11 +819,27 @@ namespace ceresc::codegen
 
 	void CodeGen::generateFunction(const FunctionDecl& decl, const IrFunction& function)
 	{
-		FrameLayout layout(function);
-		_outgoingSlotCount = layout.outgoingSlotCount();
-		std::span<const IrLocalSlot> locals = function.localSlots();
-		u32 tempCount = function.tempCount();
-		bool hasFields = (_outgoingSlotCount + static_cast<u32>(locals.size()) + tempCount) > 0;
+		_function = &function;
+		_placement.emplace(function, _options);
+		const ValuePlacement& placement = *_placement;
+
+		_useCount.clear();
+		_defCount.clear();
+		for (const auto& block : function.blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				forEachOperand(*instr, [&](IrValue value) { if (value.isValid()) ++_useCount[value.id]; });
+				IrValue result = resultOf(*instr);
+				if (result.isValid())
+					++_defCount[result.id];
+			}
+		}
+
+		collectSuppressedConstants(function);
+
+		_hasFrame = placement.needsFrame();
+		bool hasFields = placement.outgoingSlotCount() > 0 || !placement.slots().empty();
 		_frameName = hasFields ? std::format("__frame_{}", decl.name()) : std::string{};
 
 		_emitter.blank();
@@ -543,17 +848,13 @@ namespace ceresc::codegen
 		if (hasFields)
 		{
 			_emitter.raw(std::format("struct {}", _frameName));
-			for (u32 i = 0; i < _outgoingSlotCount; ++i)
+			for (u32 i = 0; i < placement.outgoingSlotCount(); ++i)
 				_emitter.raw(std::format("    outgoing{}: u32", i));
-			for (u32 i = 0; i < locals.size(); ++i)
-				_emitter.raw(std::format("    {}: {}", localFieldName(i), fieldTypeName(locals[i].sizeInBytes, locals[i].isFloat)));
-			// Every temporary is one word regardless of bank (frame_layout.h's own note) - declared
-			// as `u32` uniformly rather than tracking each one's float-ness solely to pick a
-			// cosmetic field type that lays out identically either way (f32 and u32 are both 4
-			// bytes, 4-byte aligned - CeresASM's data_type.h): codegen.cpp never reads a temp
-			// field's declared TYPE back, only its computed OFFSET, so nothing depends on this.
-			for (u32 i = 0; i < tempCount; ++i)
-				_emitter.raw(std::format("    {}: u32", tempFieldName(i)));
+			for (u32 i = 0; i < placement.slots().size(); ++i)
+			{
+				const FrameSlotInfo& slot = placement.slots()[i];
+				_emitter.raw(std::format("    {}: {}", slotFieldName(i), fieldTypeName(slot.sizeInBytes, slot.isFloat)));
+			}
 			_emitter.raw("endstruct");
 		}
 
@@ -562,49 +863,77 @@ namespace ceresc::codegen
 		_emitter.label(isEntryPoint ? std::format("global {}", mangledName(decl.name())) : mangledName(decl.name()));
 
 		SourceLocation entryLoc = decl.location();
-		_emitter.instr(hasFields ? std::format("enter {}", _frameName) : "enter", sourceComment(entryLoc));
+		if (_hasFrame)
+			_emitter.instr(hasFields ? std::format("enter {}", _frameName) : "enter", sourceComment(entryLoc));
 
-		// Copy every incoming parameter into its own frame field immediately - see codegen.h's own
-		// header comment on why every local/parameter gets a durable memory home uniformly, even
-		// the first four (which arrive in registers) and the fifth-and-up (which already have a
-		// valid address in the CALLER's frame at `[fp + 8]`, `[fp + 12]`, ... but get copied down
-		// here too, for one uniform addressing story for the rest of this function's body).
-		std::vector<bool> paramIsFloat(function.paramCount());
-		for (u32 i = 0; i < function.paramCount(); ++i)
-			paramIsFloat[i] = locals[i].isFloat;
-		std::vector<ArgSlot> paramSlots = assignArgSlots(paramIsFloat);
+		// Settle every parameter into wherever it lives for the rest of the function: nothing at all
+		// when it already arrived in the register it was assigned, a move when it was assigned a
+		// different one, a store when it lives in a frame field. A parameter that arrived on the
+		// stack is read from the CALLER's frame at [fp + 8], [fp + 12], ... (24-Calling-Convention.md).
+		std::span<const ArgSlot> arrivals = placement.paramArrival();
 		for (u32 i = 0; i < function.paramCount(); ++i)
 		{
-			const ArgSlot& slot = paramSlots[i];
-			std::string destAddr = localAddress(i);
-			switch (slot.kind)
+			const ArgSlot& arrival = arrivals[i];
+			const IrLocalSlot& slot = function.localSlots()[i];
+			Placement home = placement.local(i);
+			std::string comment = sourceComment(entryLoc);
+
+			if (home.kind == PlacementKind::None)
+				continue; // nothing in the body reads this parameter - it can stay where it landed
+
+			if (arrival.kind == ArgSlotKind::Stack)
 			{
-				case ArgSlotKind::IntReg:
-					_emitter.instr(std::format("{} {}, {}", storeMnemonicFor(locals[i].sizeInBytes, false), destAddr, intReg(slot.index)), sourceComment(entryLoc));
-					break;
-				case ArgSlotKind::FloatReg:
-					_emitter.instr(std::format("{} {}, {}", storeMnemonicFor(locals[i].sizeInBytes, true), destAddr, floatReg(slot.index)), sourceComment(entryLoc));
-					break;
-				case ArgSlotKind::Stack:
+				std::string scratch = bankReg(kScratchA, slot.isFloat);
+				std::string target = home.kind == PlacementKind::Register ? bankReg(home.index, home.isFloat) : scratch;
+				_emitter.instr(std::format("ldr {}, [fp + {}]", target, 8 + arrival.index * 4), comment);
+				if (home.kind == PlacementKind::Slot)
+					_emitter.instr(std::format("{} {}, {}", storeMnemonicForSize(slot.sizeInBytes, slot.isFloat),
+						slotAddress(home.index), target), comment);
+				continue;
+			}
+
+			std::string arrived = bankReg(arrival.index, arrival.kind == ArgSlotKind::FloatReg);
+			if (home.kind == PlacementKind::Register)
+			{
+				std::string target = bankReg(home.index, home.isFloat);
+				if (target != arrived)
+					_emitter.instr(std::format("mov {}, {}", target, arrived), comment);
+				continue;
+			}
+			_emitter.instr(std::format("{} {}, {}", storeMnemonicForSize(slot.sizeInBytes, slot.isFloat),
+				slotAddress(home.index), arrived), comment);
+		}
+
+		std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+		for (usize b = 0; b < blocks.size(); ++b)
+		{
+			_emitter.localLabel(std::format("L{}", blocks[b]->id()));
+			std::span<IrInstr* const> instrs = blocks[b]->instrs();
+			u32 nextBlockId = (b + 1 < blocks.size()) ? blocks[b + 1]->id() : ~0u;
+
+			// Mark, up front, the instructions a later fusion will consume: the comparison and the
+			// zero it is tested against both disappear into the branch that reads them.
+			_skipInstr.assign(instrs.size(), false);
+			for (usize i = 0; i < instrs.size(); ++i)
+			{
+				const IrCmpPayload* fused = nullptr;
+				if (findFusableCmp(instrs, i, fused))
 				{
-					std::string r = paramIsFloat[i] ? floatReg(kScratchA) : intReg(kScratchA);
-					_emitter.instr(std::format("ldr {}, [fp + {}]", r, 8 + slot.index * 4), sourceComment(entryLoc));
-					_emitter.instr(std::format("{} {}, {}", storeMnemonicFor(locals[i].sizeInBytes, paramIsFloat[i]), destAddr, r), sourceComment(entryLoc));
-					break;
+					_skipInstr[i - 1] = true;
+					_skipInstr[i - 2] = true;
 				}
 			}
-		}
 
-		for (const auto& block : function.blocks())
-		{
-			_emitter.localLabel(std::format("L{}", block->id()));
-			std::span<IrInstr* const> instrs = block->instrs();
 			for (usize i = 0; i < instrs.size(); ++i)
-				generateInstr(instrs, i);
+				generateInstr(instrs, i, nextBlockId);
 		}
 
+		_skipInstr.clear();
+		_suppressedConsts.clear();
 		_frameName.clear();
 		_generatingMain = false;
+		_placement.reset();
+		_function = nullptr;
 	}
 
 	// ---- globals and string literals --------------------------------------------------------------
@@ -620,7 +949,7 @@ namespace ceresc::codegen
 			return;
 		}
 
-		std::string_view casmType = fieldTypeName(type->sizeInBytes(), type->isFloat());
+		std::string casmType = fieldTypeName(type->sizeInBytes(), type->isFloat());
 		std::string name = mangledName(decl.name());
 		if (!decl.initializer())
 		{
