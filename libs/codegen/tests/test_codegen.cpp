@@ -1144,3 +1144,51 @@ TEST(codegen, a_machine_builtin_does_not_cost_a_function_its_register_window)
 	std::string casm = atO2("int f(int n) { __builtin_cli(); return n + n; }");
 	CHECK(!contains(casm, "struct __frame_f"));
 }
+
+// ---- interrupt handlers ------------------------------------------------------------------------
+
+TEST(codegen, an_interrupt_handler_saves_every_register_it_could_touch_and_ends_in_iret)
+{
+	// The hardware pushes the flags and the PC and nothing else, and the code this preempted never
+	// agreed to lose a register - so the caller/callee split of the calling convention does not
+	// apply. r0-r7 and r12 go back in one pushm/popm pair.
+	std::string casm = atO2("__interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }");
+	CHECK(contains(casm, "pushm 0x10FF"));
+	CHECK(contains(casm, "popm 0x10FF"));
+	CHECK(contains(casm, "iret"));
+	CHECK(!contains(casm, "\n    ret"));
+
+	// No float in sight, so none of the eight float pushes it would otherwise cost.
+	CHECK(!contains(casm, "push f"));
+}
+
+TEST(codegen, an_interrupt_handler_that_touches_the_float_bank_saves_it_too)
+{
+	std::string casm = atO2("float g; __interrupt void h(void) { g = g + 1.0; }");
+	CHECK(contains(casm, "push f0"));
+	CHECK(contains(casm, "pop f0"));
+	CHECK(contains(casm, "push f7"));
+}
+
+TEST(codegen, an_interrupt_handler_saves_before_it_opens_its_frame)
+{
+	// `leave` restores sp from fp, so the restore only finds the saved registers where it left them
+	// if the save happened before `enter`.
+	std::string casm = atO2(
+		"__interrupt void h(void) { int a[4]; a[0] = 1; a[1] = a[0]; }");
+	usize save = casm.find("pushm");
+	usize open = casm.find("enter");
+	usize close = casm.find("leave");
+	usize restore = casm.find("popm");
+	CHECK(save < open);
+	CHECK(close < restore);
+}
+
+TEST(codegen, a_static_interrupt_handler_survives_unused_function_elimination)
+{
+	// Nothing calls it and nothing names it - the machine reaches it through the vector table, an
+	// edge with no instruction at all at the far end. Without rooting it, -O2 deleted it.
+	std::string casm = atO2("static __interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }");
+	CHECK(contains(casm, "h:"));
+	CHECK(contains(casm, "iret"));
+}

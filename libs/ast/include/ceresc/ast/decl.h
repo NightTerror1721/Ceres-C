@@ -241,13 +241,14 @@ namespace ceresc::ast
 		StorageClass _storageClass = StorageClass::None;
 		bool _isInline = false;
 		bool _isVariadic = false;
+		bool _isInterrupt = false;
 
 	public:
 		FunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType, std::span<const Param> params,
 			CompoundStmt* body = nullptr, StorageClass storageClass = StorageClass::None, bool isInline = false,
-			bool isVariadic = false) noexcept :
+			bool isVariadic = false, bool isInterrupt = false) noexcept :
 			Decl(location, name), _returnType(returnType), _params(params.data()), _paramCount(static_cast<u32>(params.size())),
-			_body(body), _storageClass(storageClass), _isInline(isInline), _isVariadic(isVariadic)
+			_body(body), _storageClass(storageClass), _isInline(isInline), _isVariadic(isVariadic), _isInterrupt(isInterrupt)
 		{}
 
 	public:
@@ -268,6 +269,16 @@ namespace ceresc::ast
 		// parameters, so every arity/type rule that reads it keeps meaning what it always meant -
 		// what changes is only that `args.size() == params().size()` stops being the whole story.
 		bool isVariadic() const noexcept { return _isVariadic; }
+
+		// Declared `__interrupt`: this function is not called, it is DISPATCHED TO, by the machine,
+		// at a point the surrounding code never chose. That changes its whole contract with the
+		// world - it takes no arguments and returns nothing (nobody is there to pass or read one),
+		// it must leave every register exactly as it found it (the hardware saves only the flags and
+		// the PC), and it ends in `iret` rather than `ret`. `__interrupt_vector` is what points a
+		// vector at one; the two are separate for the same reason CeresASM keeps them separate, so
+		// that a handler and the number it answers can live in different files.
+		// See docs/10-Interrupts.md.
+		bool isInterruptHandler() const noexcept { return _isInterrupt; }
 
 		// True when the function has external linkage - i.e. `global` in the generated CASM, and
 		// therefore visible to another object at link time. `static` is the only thing that takes

@@ -582,6 +582,13 @@ namespace ceresc::parser
 					specifiers.isInline = true;
 					specifiers.sawAny = true;
 					continue;
+				case TokenKind::KwInterrupt:
+					advance();
+					if (specifiers.isInterrupt)
+						_diagnostics.error(here, "duplicate '__interrupt'");
+					specifiers.isInterrupt = true;
+					specifiers.sawAny = true;
+					continue;
 				case TokenKind::KwStatic: storageClass = ast::StorageClass::Static; break;
 				case TokenKind::KwExtern: storageClass = ast::StorageClass::Extern; break;
 				case TokenKind::KwAuto:   storageClass = ast::StorageClass::Auto; break;
@@ -646,7 +653,7 @@ namespace ceresc::parser
 		// types and the difference is exactly which side of the star the word is on, which is why
 		// this cannot be collapsed into one leading flag.
 		DeclSpecifiers leading = parseDeclSpecifiers();
-		if (leading.storageClass != ast::StorageClass::None || leading.isInline)
+		if (leading.storageClass != ast::StorageClass::None || leading.isInline || leading.isInterrupt)
 		{
 			_diagnostics.error(leading.location,
 				"a storage-class specifier is not allowed here - it belongs to a declaration, not to a type name");
@@ -1399,6 +1406,12 @@ namespace ceresc::parser
 	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type,
 		const DeclSpecifiers& specifiers)
 	{
+		if (specifiers.isInterrupt)
+		{
+			// `__interrupt` describes how a function is ENTERED AND LEFT - no arguments, every
+			// register restored, `iret` at the end. A variable has none of that to describe.
+			_diagnostics.error(specifiers.location, "'__interrupt' is only allowed on a function");
+		}
 		Expr* initializer = nullptr;
 		if (match(TokenKind::Equal))
 		{
@@ -1454,6 +1467,11 @@ namespace ceresc::parser
 		}
 		if (specifiers.isInline && !body)
 			_diagnostics.error(specifiers.location, "'inline' is only meaningful on a function definition, not on a prototype");
+		if (specifiers.isInterrupt && specifiers.isInline)
+		{
+			// Nothing calls an interrupt handler, so there is no call site to inline it into.
+			_diagnostics.error(specifiers.location, "'__interrupt' cannot be combined with 'inline'");
+		}
 
 		// Neither `auto` nor `register` survives onto the node: both were rejected just above, and
 		// carrying one forward would leave every later phase asking what a register-resident
@@ -1463,7 +1481,7 @@ namespace ceresc::parser
 			storageClass = ast::StorageClass::None;
 
 		return _arena.create<ast::FunctionDecl>(location, name, returnType, copyParamsToArena(params), body,
-			storageClass, specifiers.isInline, isVariadic);
+			storageClass, specifiers.isInline, isVariadic, specifiers.isInterrupt);
 	}
 
 	bool Parser::parseParamList(std::vector<Param>& outParams, bool& outIsVariadic)

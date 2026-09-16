@@ -1316,3 +1316,31 @@ TEST(sema, register_is_rejected_on_an_array)
 
 	CHECK(checkSource("int f(void) { register int x = 1; return x; }").ok);
 }
+
+// ---- interrupt handlers ------------------------------------------------------------------------
+
+TEST(sema, an_interrupt_handler_has_no_caller_and_the_rules_all_follow_from_that)
+{
+	CHECK(checkSource("__interrupt void h(void) { }").ok);
+
+	// Nothing is there to receive a result...
+	CheckOutcome returns = checkSource("__interrupt int h(void) { return 0; }");
+	CHECK(!returns.ok);
+	CHECK(containsMessage(returns, "must return 'void'"));
+
+	// ...nor to pass an argument.
+	CheckOutcome takes = checkSource("__interrupt void h(int x) { }");
+	CHECK(!takes.ok);
+	CHECK(containsMessage(takes, "takes no parameters"));
+
+	// The vector is the only way in: reached by `call`, its `iret` would pop the return address as
+	// a PC and whatever sat below it as flags.
+	CheckOutcome called = checkSource("__interrupt void h(void) { } int main(void) { h(); return 0; }");
+	CHECK(!called.ok);
+	CHECK(containsMessage(called, "cannot be called"));
+
+	// `main` is the reset vector, found by name, and does not return to anything either.
+	CheckOutcome entry = checkSource("__interrupt void main(void) { }");
+	CHECK(!entry.ok);
+	CHECK(containsMessage(entry, "'main' cannot be an '__interrupt' handler"));
+}

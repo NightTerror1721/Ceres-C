@@ -902,7 +902,9 @@ namespace ceresc::ir
 			std::unordered_map<std::string_view, bool> reached;
 			for (const auto& function : module.functions())
 			{
-				if (function->name() != "main" && !function->hasExternalLinkage())
+				// An interrupt handler is a root whatever its linkage: the machine reaches it through
+				// the vector table, and no instruction anywhere names it.
+				if (function->name() != "main" && !function->hasExternalLinkage() && !function->isInterruptHandler())
 					continue;
 				reached[function->name()] = true;
 				worklist.push_back(function->name());
@@ -1117,6 +1119,11 @@ namespace ceresc::ir
 		bool isInlinable(const IrFunction& function)
 		{
 			if (function.name() == "main")
+				return false;
+			// Nothing calls an interrupt handler, so there is no call site to splice it into - and its
+			// prologue and epilogue are the point of it (save every register, `iret`), which a spliced
+			// body would leave behind.
+			if (function.isInterruptHandler())
 				return false;
 			// A variadic callee is handed arguments its parameter list does not describe, so there is
 			// nothing for inlineCall() to bind them to - and its body reads them out of the caller's

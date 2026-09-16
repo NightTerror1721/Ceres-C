@@ -1047,11 +1047,94 @@ namespace ceresc::codegen
 				{
 					if (_hasFrame)
 						_emitter.instr("leave", comment);
-					_emitter.instr("ret", comment);
+					if (_generatingInterrupt)
+					{
+						// `iret` pops the PC and then the flags the dispatcher pushed, so the registers
+						// have to come back off the stack first - and `ret` would pop a return address
+						// nobody ever wrote.
+						emitInterruptEpilogue(comment);
+						_emitter.instr("iret", comment);
+					}
+					else
+					{
+						_emitter.instr("ret", comment);
+					}
 				}
 				break;
 			}
 		}
+	}
+
+	// ---- interrupt handlers -----------------------------------------------------------------------
+
+	namespace
+	{
+		// Does anything in this function touch the float bank? Asked of the IR rather than of the C
+		// declaration because the answer has to cover temporaries too - a handler with no float
+		// local can still compute one - and because by this point the IR is what codegen will
+		// actually walk.
+		bool usesFloatBank(const IrFunction& function)
+		{
+			for (const IrLocalSlot& slot : function.localSlots())
+				if (slot.isFloat)
+					return true;
+
+			for (const auto& block : function.blocks())
+			{
+				for (const IrInstr* instr : block->instrs())
+				{
+					switch (instr->opcode())
+					{
+						case IrOpcode::Const:   if (instr->as<IrConstPayload>().isFloat) return true; break;
+						case IrOpcode::BinOp:   if (instr->as<IrBinOpPayload>().isFloat) return true; break;
+						case IrOpcode::UnOp:    if (instr->as<IrUnOpPayload>().isFloat) return true; break;
+						case IrOpcode::Cmp:     if (instr->as<IrCmpPayload>().isFloat) return true; break;
+						case IrOpcode::Copy:    if (instr->as<IrCopyPayload>().isFloat) return true; break;
+						case IrOpcode::Load:    if (instr->as<IrLoadPayload>().isFloat) return true; break;
+						case IrOpcode::Store:   if (instr->as<IrStorePayload>().isFloat) return true; break;
+						case IrOpcode::Param:   if (instr->as<IrParamPayload>().isFloat) return true; break;
+						case IrOpcode::Return:  if (instr->as<IrReturnPayload>().isFloat) return true; break;
+						case IrOpcode::CondJump: if (instr->as<IrCondJumpPayload>().isFloat) return true; break;
+						case IrOpcode::Call:
+							// A callee may use the bank whatever this body does, and nothing here can
+							// see into it - so any call at all makes the answer yes.
+							return true;
+						default:
+							break;
+					}
+				}
+			}
+			return false;
+		}
+	}
+
+	void CodeGen::emitInterruptPrologue(const IrFunction& function, std::string_view comment)
+	{
+		// One instruction for the whole integer set. `pushm` is all or nothing: it checks room for
+		// the entire mask before storing anything, so a handler can never end up half-saved on a
+		// stack it does not own (05-Instruction-Set.md).
+		_emitter.instr(std::format("pushm 0x{:04X}", kInterruptSaveMask), comment);
+
+		// The float bank has no mask instruction, so it costs one push per register - worth paying
+		// only when the handler can reach the bank at all.
+		_interruptSavesFloats = usesFloatBank(function);
+		if (_interruptSavesFloats)
+		{
+			for (u32 i = 0; i < kInterruptSavedFloatCount; ++i)
+				_emitter.instr(std::format("push f{}", i), comment);
+		}
+	}
+
+	void CodeGen::emitInterruptEpilogue(std::string_view comment)
+	{
+		// Exactly the prologue reversed: the floats came off a stack that grows down, so the last
+		// one pushed is the first one back.
+		if (_interruptSavesFloats)
+		{
+			for (u32 i = kInterruptSavedFloatCount; i > 0; --i)
+				_emitter.instr(std::format("pop f{}", i - 1), comment);
+		}
+		_emitter.instr(std::format("popm 0x{:04X}", kInterruptSaveMask), comment);
 	}
 
 	// ---- functions ------------------------------------------------------------------------------
@@ -1099,6 +1182,7 @@ namespace ceresc::codegen
 
 		bool isEntryPoint = decl.name() == "main"; // must be `global` - 12-Labels-and-Symbols.md's "The main entry point"
 		_generatingMain = isEntryPoint;
+		_generatingInterrupt = function.isInterruptHandler();
 		// `global` is what publishes a symbol to the linker (12-Labels-and-Symbols.md), so it is
 		// exactly C's external linkage: everything except a `static` function. `main` gets it
 		// regardless - the linker looks that name up to find the entry point.
@@ -1106,6 +1190,9 @@ namespace ceresc::codegen
 		_emitter.label(exported ? std::format("global {}", mangledName(decl.name())) : mangledName(decl.name()));
 
 		SourceLocation entryLoc = decl.location();
+		// Before `enter`, so `leave` puts sp back exactly where the restore expects to find it.
+		if (_generatingInterrupt)
+			emitInterruptPrologue(function, sourceComment(entryLoc));
 		if (_hasFrame)
 			_emitter.instr(hasFields ? std::format("enter {}", _frameName) : "enter", sourceComment(entryLoc));
 
@@ -1183,6 +1270,8 @@ namespace ceresc::codegen
 		_suppressedConsts.clear();
 		_frameName.clear();
 		_generatingMain = false;
+		_generatingInterrupt = false;
+		_interruptSavesFloats = false;
 		_placement.reset();
 		_function = nullptr;
 	}

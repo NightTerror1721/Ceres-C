@@ -213,6 +213,7 @@ namespace ceresc::parser
 			bool isConst = false;
 			bool isVolatile = false;
 			bool isRestrict = false;
+			bool isInterrupt = false;
 			bool sawAny = false;
 			support::SourceLocation location{};
 		};
@@ -339,6 +340,7 @@ namespace ceresc::parser
 				case TokenKind::KwAuto:
 				case TokenKind::KwRegister:
 				case TokenKind::KwInline:
+				case TokenKind::KwInterrupt:
 					return true;
 				default:
 					return false;

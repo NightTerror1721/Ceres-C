@@ -193,6 +193,9 @@ namespace ceresc::sema
 		// allowed to appear, and what it demands of an initializer. `static` is the interesting one -
 		// its initializer becomes bytes in the loaded image, so it has to be computable now.
 		void checkStorageClass(ast::VarDecl& node);
+		// Everything `__interrupt` promises about a function's contract with the world - see the
+		// definition. A no-op for every ordinary function.
+		void checkInterruptHandler(ast::FunctionDecl& node);
 
 		// True for an expression whose value the compiler can work out without running anything -
 		// what a variable with static storage (a global, or a `static` local) needs its initializer

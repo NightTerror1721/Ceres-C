@@ -106,6 +106,11 @@ namespace ceresc::ir
 		// nothing to bind them to) and codegen (a variadic function reads its tail out of the
 		// caller's frame, which means it always needs a frame pointer of its own).
 		bool _isVariadic = false;
+		// Declared `__interrupt`. Three passes need it and none can see the AST: the inliner (there
+		// is no call site to splice it into), unused-function elimination (a handler is reachable
+		// only through the vector table, an edge with no instruction at the far end) and codegen,
+		// which has to save every register and end in `iret`.
+		bool _isInterruptHandler = false;
 
 	public:
 		IrFunction(std::string_view name, const ast::Type* returnType) noexcept :
@@ -128,8 +133,10 @@ namespace ceresc::ir
 		bool hasExternalLinkage() const noexcept { return _externalLinkage; }
 		bool isInlineHint() const noexcept { return _inlineHint; }
 		bool isVariadic() const noexcept { return _isVariadic; }
+		bool isInterruptHandler() const noexcept { return _isInterruptHandler; }
 		void setLinkage(bool external, bool inlineHint) noexcept { _externalLinkage = external; _inlineHint = inlineHint; }
 		void setVariadic(bool variadic) noexcept { _isVariadic = variadic; }
+		void setInterruptHandler(bool isHandler) noexcept { _isInterruptHandler = isHandler; }
 
 		BasicBlock& createBlock()
 		{

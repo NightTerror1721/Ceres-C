@@ -1847,6 +1847,7 @@ namespace ceresc::ir
 		// A third such fact: the inliner must not splice a variadic body into another frame, and
 		// codegen must give one a frame pointer to read its argument tail through.
 		function.setVariadic(node.isVariadic());
+		function.setInterruptHandler(node.isInterruptHandler());
 		_currentFunction = &function;
 
 		// A struct returned through memory takes a hidden first parameter holding its destination

@@ -452,6 +452,7 @@ namespace ceresc::lexer
 			{"restrict", &Token::makeKwRestrict},
 			{"register", &Token::makeKwRegister},
 			{"alignof", &Token::makeKwAlignof},
+			{"__interrupt", &Token::makeKwInterrupt},
 		};
 		return table;
 	}

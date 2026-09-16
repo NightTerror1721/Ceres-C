@@ -627,6 +627,15 @@ namespace ceresc::sema
 				_diagnostics.error(node.location(), "use of undeclared identifier '{}'", nameExpr->name());
 			else if (symbol->kind != SymbolKind::Function)
 				_diagnostics.error(node.location(), "called object '{}' is not a function", nameExpr->name());
+			else if (symbol->funcDecl && symbol->funcDecl->isInterruptHandler())
+			{
+				// A handler ends in `iret`, which pops a PC and flags the machine pushed on dispatch.
+				// Reached by `call`, it would pop the return address as a PC and whatever sat below it
+				// as flags. The vector is the only way in.
+				_diagnostics.error(node.location(),
+					"'{}' is an '__interrupt' handler and cannot be called: it is reached through its vector",
+					nameExpr->name());
+			}
 			else
 				funcDecl = symbol->funcDecl;
 
@@ -1419,8 +1428,38 @@ namespace ceresc::sema
 			checkInitializer(node.type(), node.initializer());
 	}
 
+	// Everything `__interrupt` promises, checked in one place. A handler is not called - it is
+	// dispatched to, by the machine, at a point the surrounding code never chose - so there is no
+	// caller to pass it an argument, none to read a result, and none whose registers it may
+	// disturb. Each rule below is that one fact seen from a different side.
+	void Sema::checkInterruptHandler(ast::FunctionDecl& node)
+	{
+		if (!node.isInterruptHandler())
+			return;
+
+		if (node.returnType() && !node.returnType()->isVoid())
+		{
+			_diagnostics.error(node.location(),
+				"an '__interrupt' handler must return 'void', not '{}': nothing is there to receive a result",
+				typeName(node.returnType()));
+		}
+		if (!node.params().empty() || node.isVariadic())
+		{
+			_diagnostics.error(node.location(),
+				"an '__interrupt' handler takes no parameters: nothing is there to pass one");
+		}
+		if (node.name() == "main")
+		{
+			// The reset vector is the entry point, and the linker finds it by this name. A handler
+			// ending in `iret` would return to a PC and flags nothing ever pushed.
+			_diagnostics.error(node.location(), "'main' cannot be an '__interrupt' handler");
+		}
+	}
+
 	void Sema::visit(ast::FunctionDecl& node)
 	{
+		checkInterruptHandler(node);
+
 		Symbol* existing = _globalScope->lookupInThisScope(node.name());
 		bool kindConflict = existing && existing->kind != SymbolKind::Function;
 		if (kindConflict)

@@ -531,7 +531,7 @@ namespace ceresc::ast
 
 	void AstPrinter::visit(FunctionDecl& node)
 	{
-		_output += "(func ";
+		_output += node.isInterruptHandler() ? "(interrupt-func " : "(func ";
 		_output += node.name();
 		_output += ' ';
 		appendTypeName(node.returnType());
