@@ -7,21 +7,9 @@ namespace ceresc::driver
 {
 	namespace
 	{
-		void printUsage(std::ostream& out)
+		void printOptimizationUsage(std::ostream& out)
 		{
 			out <<
-				"usage: ceresc <file.c> [-o <file.casm>] [--emit-ast] [--emit-ir]\n"
-				"               [--run] [--ceres-path <dir>] [-Werror] [-O<level>] [-f<opt>]\n"
-				"\n"
-				"  <file.c>            the C subset source file to compile\n"
-				"  -o <file.casm>      where to write the generated CASM text (default: <file.casm>)\n"
-				"  --emit-ast          print the annotated AST (s-expression form) and stop\n"
-				"  --emit-ir           print the IR and stop\n"
-				"  --run               assemble and run the generated program with `ceres asm`/`ceres run`\n"
-				"  --ceres-path <dir>  where to find the `ceres` binary (default: look it up on PATH)\n"
-				"  -Werror             treat warnings as errors\n"
-				"\n"
-				"optimization (on by default, -O1):\n"
 				"  -O0                 every optimization off - the simplest, most uniform output\n"
 				"  -O1                 everything except inlining (the default)\n"
 				"  -O2                 everything, inlining included\n"
@@ -31,7 +19,35 @@ namespace ceresc::driver
 			for (const support::OptimizationFlag& flag : support::optimizationFlags())
 				out << std::format("      {:<20}{}\n", flag.name, flag.description);
 		}
+	}
 
+	void printUsage(std::ostream& out)
+	{
+		out <<
+			"usage: ceresc <file.c> [-o <file.casm>] [--emit-ast] [--emit-ir] [-S | --run]\n"
+			"               [--ceres-path <dir>] [-Werror] [-O<level>] [-f<opt>]\n"
+			"       ceresc --version | --help\n"
+			"\n"
+			"  <file.c>            the C subset source file to compile\n"
+			"  -o <file.casm>      where to write the generated CASM text (default: <file.casm>)\n"
+			"  --emit-ast          print the annotated AST (s-expression form) and stop\n"
+			"  --emit-ir           print the IR and stop\n"
+			"  -S                  stop at the CASM text, do not assemble it (the default)\n"
+			"  --run               assemble and run the generated program with `ceres asm`/`ceres run`\n"
+			"  --ceres-path <dir>  where to find the `ceres` binary (default: look it up on PATH)\n"
+			"  -Werror             treat warnings as errors\n"
+			"  --version           print the version and stop\n"
+			"  --help, -h          print this text\n"
+			"\n"
+			"-S and --run are opposites and resolve in argument order: the last one written wins.\n"
+			"\n"
+			"optimization (on by default, -O1):\n";
+
+		printOptimizationUsage(out);
+	}
+
+	namespace
+	{
 		// Applies `-f<name>` / `-fno-<name>` to `options`. Returns false for a name that is not one
 		// of support::optimizationFlags()' own - the caller reports it and gives up, rather than
 		// silently ignoring a flag the user believes took effect.
@@ -68,9 +84,11 @@ namespace ceresc::driver
 
 			if (arg == "--emit-ast") { options.emitAst = true; continue; }
 			if (arg == "--emit-ir") { options.emitIr = true; continue; }
-			if (arg == "-S") { continue; } // already the default: stop at .casm text unless --run
+			// Opposites, resolved in argument order rather than by precedence - see Options::run.
+			if (arg == "-S") { options.run = false; continue; }
 			if (arg == "--run") { options.run = true; continue; }
 			if (arg == "-Werror") { options.warningsAsErrors = true; continue; }
+			if (arg == "--version") { options.showVersion = true; continue; }
 			if (arg == "--help" || arg == "-h") { printUsage(diagnosticsOut); return std::nullopt; }
 
 			if (arg == "-O0") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0); continue; }
@@ -132,7 +150,9 @@ namespace ceresc::driver
 			sawInput = true;
 		}
 
-		if (!sawInput)
+		// `--version` is a question about the compiler, not a request to compile something, so it
+		// is the one flag that stands on its own without an input file.
+		if (!sawInput && !options.showVersion)
 		{
 			printUsage(diagnosticsOut);
 			return std::nullopt;

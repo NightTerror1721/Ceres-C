@@ -1,0 +1,9 @@
+literal:   ceres compiler
+length:    14
+vowels:    5
+escapes:   tab[	] quote["] backslash[\]
+upper:     CERES COMPILER
+reversed:  RELIPMOC SEREC
+copy:      hello (length 5, array of 8)
+mutated:   jello
+compare:   0 -1 1

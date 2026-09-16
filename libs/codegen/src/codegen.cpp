@@ -624,7 +624,20 @@ namespace ceresc::codegen
 					{
 						std::string source = valueIn(p.operand, kScratchA, p.isFloat, loc);
 						std::string dest = defineInto(p.result, kScratchA, p.isFloat);
-						_emitter.instr(std::format("neg {}, {}", dest, source), comment); // pseudo: imul r,r,-1 (int) / FNEG (float)
+						// The float form uses the `neg` pseudo (06-Pseudo-Instructions.md: it expands
+						// to the real FNEG opcode, verified correct). The integer form writes the
+						// documented expansion `imul rd, rs, -1` OUT IN FULL instead of `neg rd, rs`,
+						// because that pseudo is currently miscompiled by the assembler: `neg r2, r1`
+						// assembles to `IMUL r2, r15, r0` (the -1 lands in the rs register field as
+						// r15, and the real source register is dropped), so every negation returns
+						// garbage. `imul rd, rs, -1` written by hand assembles to the right IMULI and
+						// is what the pseudo is documented to mean anyway - see the note in
+						// docs/03-IR-to-CASM.md. Worth revisiting once the assembler's expansion is
+						// fixed; nothing here depends on keeping the workaround.
+						if (p.isFloat)
+							_emitter.instr(std::format("neg {}, {}", dest, source), comment); // FNEG
+						else
+							_emitter.instr(std::format("imul {}, {}, -1", dest, source), comment);
 						storeResult(p.result, dest, loc);
 						break;
 					}

@@ -2,15 +2,14 @@
 #include <ceresc/driver/options.h>
 #include <ceresc/support/optimization.h>
 
+#include "ceres_tool.h"
 #include "framework.h"
 
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -43,59 +42,9 @@ namespace
 {
 	namespace fs = std::filesystem;
 
-	constexpr std::string_view kNoCeres = "<no ceres binary found>";
-
-#if defined(_WIN32)
-	constexpr std::string_view kCeresExecutableName = "ceres.exe";
-#else
-	constexpr std::string_view kCeresExecutableName = "ceres";
-#endif
-
-	std::optional<fs::path> findCeresDirectory()
-	{
-		if (const char* env = std::getenv("CERESC_CERES_PATH"))
-		{
-			fs::path dir = env;
-			if (fs::is_regular_file(dir / kCeresExecutableName))
-				return dir;
-		}
-		// Convenience for a local checkout with CeresASM cloned as a sibling of Ceres-C - CI should
-		// set CERESC_CERES_PATH explicitly rather than relying on this.
-		for (std::string_view candidate : { "../CeresASM", "../../CeresASM", "../../../CeresASM", "../../../../CeresASM" })
-		{
-			fs::path dir = candidate;
-			if (fs::is_regular_file(dir / kCeresExecutableName))
-				return dir;
-		}
-		return std::nullopt;
-	}
-
-	std::string quote(const fs::path& path) { return std::format("\"{}\"", path.string()); }
-
-	// Mirrors driver.cpp's own runSubprocess()/cmd.exe-quoting workaround, plus stdout redirection
-	// to `outputFile` - needed here (and not in libs/driver itself) only so this suite can read
-	// back what the VM actually printed; production `ceresc --run` has no reason to capture its
-	// own child's output instead of just inheriting the terminal it already has.
-	int runSubprocessCapturingStdout(const std::string& command, const fs::path& outputFile)
-	{
-		std::string redirected = std::format("{} > \"{}\" 2>&1", command, outputFile.string());
-#if defined(_WIN32)
-		std::string wrapped = std::format("\"{}\"", redirected);
-		return std::system(wrapped.c_str());
-#else
-		return std::system(redirected.c_str());
-#endif
-	}
-
-	std::string readFile(const fs::path& path)
-	{
-		std::ifstream in(path, std::ios::binary);
-		if (!in)
-			return {};
-		std::ostringstream buffer;
-		buffer << in.rdbuf();
-		return buffer.str();
-	}
+	// Finding `ceres`, launching it with its stdout captured and reading a file back are shared
+	// with tests/examples, so they live in tests/framework/ceres_tool.h rather than twice here.
+	using namespace ceresc::testing;
 
 	// Compiles `source` (a whole .c program) at `level`, assembles it and runs it for real,
 	// returning what `ceres run` printed to stdout - or kNoCeres if this environment has no sibling
@@ -699,4 +648,90 @@ TEST(e2e, a_nested_struct_field_is_reached_through_two_constant_offsets)
 		"    return 0;"
 		"}",
 		"5");
+}
+
+// ---- bugs this suite pins, but does not fix ---------------------------------------------------
+//
+// Found while building examples/ for Fase 8 (§13). All three are front/back-end gaps from earlier
+// phases, not integration problems, so they are recorded here rather than worked around: the
+// marker fails today by design and turns the run RED the moment the behaviour becomes correct,
+// which is the signal to delete it. docs/06-Known-Limitations.md describes each one in prose.
+//
+// The helper below fails on purpose when there is no `ceres` to run against, too. An ordinary TEST
+// skips in that case; a TEST_KNOWN_FAILURE that skipped would report "unexpectedly passed" and go
+// red on a checkout with no sibling CeresASM, which says nothing about the bug.
+
+namespace
+{
+	void pinnedBugIsFixedWhenThisPasses(std::string_view name, std::string_view source, std::string_view correct)
+	{
+		using ceresc::support::OptimizationLevel;
+
+		if (!findCeresDirectory())
+		{
+			CHECK(findCeresDirectory().has_value()); // see the note above: never silently "passes"
+			return;
+		}
+		for (OptimizationLevel level : { OptimizationLevel::O0, OptimizationLevel::O1, OptimizationLevel::O2 })
+		{
+			std::string output = compileAssembleAndRun(name, source, level);
+			CHECK_EQ(std::format("O{}:{}", static_cast<int>(level), output),
+				std::format("O{}:{}", static_cast<int>(level), correct));
+		}
+	}
+}
+
+TEST_KNOWN_FAILURE(e2e, a_negative_signed_char_read_back_from_memory_keeps_its_sign,
+	"narrow loads never sign-extend: `ldrb`/`ldrh` are unsigned, and -O0 disagrees with -O1/-O2")
+{
+	// §10's IR->CASM table says every load is unsigned "en v1", which was consistent with §14's
+	// original "char/short siempre unsigned" decision - but that decision was superseded on
+	// 2026-09-14 and signed char/short are in scope now, while the table was never revisited. The
+	// two levels disagree, which is the part that makes it a bug rather than a documented limit:
+	// at -O0 the value round-trips through a one-byte slot and comes back zero-extended (156),
+	// at -O1/-O2 it stays in a register and keeps its sign (-100).
+	//
+	// The result is checked through a COMPARISON rather than by printing the value: the terminal
+	// register is one byte wide, so `*term = 48 - small` would print the same character whether
+	// `small` came back as -3 or as 253 - the store truncates the difference away. Asking whether
+	// it is negative does not.
+	pinnedBugIsFixedWhenThisPasses("signed_char_roundtrip",
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    signed char small = (signed char)opaque(-3);"
+		"    *term = 48 + (small < 0);" // '1' if it is really -3, '0' if it came back as 253
+		"    return 0;"
+		"}",
+		"1");
+}
+
+TEST_KNOWN_FAILURE(e2e, a_cast_to_a_narrower_integer_type_truncates,
+	"(char)/(short) casts are no-ops: the value keeps all 32 bits at every optimization level")
+{
+	// Unlike the one above, this is wrong the same way at all three levels: the conversion is
+	// dropped entirely rather than lowered to a truncation.
+	pinnedBugIsFixedWhenThisPasses("narrowing_cast",
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int wide = opaque(0x101);"                 // 257: its low byte is 1
+		"    *term = 48 + ((int)(char)wide == 1);"      // compared, not printed - see the note above
+		"    return 0;"
+		"}",
+		"1");
+}
+
+TEST_KNOWN_FAILURE(e2e, converting_an_int_to_bool_normalizes_to_zero_or_one,
+	"an int assigned to a bool keeps its value instead of becoming 0/1")
+{
+	pinnedBugIsFixedWhenThisPasses("bool_normalization",
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    bool flag = opaque(42);"
+		"    *term = 48 + flag;" // '1', since any non-zero value converts to true
+		"    return 0;"
+		"}",
+		"1");
 }

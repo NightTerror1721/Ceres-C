@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Everything goes through the CMake presets, so what CI builds is exactly what a developer builds
+# locally, with the same target names - the same rule CeresASM's own workflow follows.
+#
+# Both jobs check out a second repository: CeresASM, built here so that the `e2e` and `examples`
+# suites have a real `ceres` to assemble and run against. Without it those two suites SKIP (a
+# checkout of Ceres-C alone stays green on purpose - see tests/framework/ceres_tool.h), and a CI run
+# that skipped them would be green while testing nothing that matters. Setting CERESC_CERES_PATH is
+# what turns that skip back into a real check, which is why it is not left to the relative-path
+# fallback.
+#
+# The examples suite is what closes Fase 8: every program under examples/ is compiled, assembled and
+# run at -O0, -O1 and -O2 on every build, and its output compared byte for byte against its sibling
+# .expected file. An example that stops compiling, or stops printing what it should, breaks the
+# build.
+
+jobs:
+  gcc:
+    name: GCC 15 (${{ matrix.config }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { config: Debug,   preset: debug }
+          - { config: Release, preset: release }
+    steps:
+      - name: Check out Ceres-C
+        uses: actions/checkout@v4
+        with:
+          path: Ceres-C
+
+      # Cloned as a sibling, which is also the layout the suites' own fallback search expects when
+      # CERESC_CERES_PATH is not set.
+      - name: Check out CeresASM
+        uses: actions/checkout@v4
+        with:
+          repository: Krampus1721/CeresASM
+          path: CeresASM
+
+      - name: Install GCC 15 and Ninja
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y g++-15 ninja-build
+
+      # Release regardless of this job's own configuration: the assembler is a tool here, not a
+      # subject, and a Debug build of it only makes every subprocess launch slower.
+      - name: Build the ceres assembler and VM
+        working-directory: CeresASM/Ceres
+        run: |
+          cmake --preset gcc -DCMAKE_CXX_COMPILER=g++-15
+          cmake --build --preset gcc-release
+
+      # The preset pins CMAKE_CXX_COMPILER to g++, which on this runner is an older version; the
+      # command line overrides the preset, so naming the one we want is enough.
+      - name: Configure
+        working-directory: Ceres-C
+        run: cmake --preset gcc -DCMAKE_CXX_COMPILER=g++-15 -DCERESC_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        working-directory: Ceres-C
+        run: cmake --build --preset gcc-${{ matrix.preset }}
+
+      - name: Test
+        working-directory: Ceres-C
+        env:
+          CERESC_CERES_PATH: ${{ github.workspace }}/CeresASM/Ceres/build/gcc/bin/Release
+        run: ctest --preset gcc-${{ matrix.preset }}
+
+      # The suites above already compile and run every example through libs/driver. This runs one
+      # through the actual `ceresc` binary as well, which is the only thing that exercises the
+      # command line, the subprocess launcher and --run end to end - and it is the exact command
+      # the plan's exit criterion names.
+      - name: Run an example through the ceresc binary
+        working-directory: Ceres-C
+        run: ./build/gcc/bin/${{ matrix.config }}/ceresc examples/07_structs.c --run --ceres-path ../CeresASM/Ceres/build/gcc/bin/Release
+
+  msvc:
+    name: MSVC (${{ matrix.config }})
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { config: Debug,   preset: debug }
+          - { config: Release, preset: release }
+    steps:
+      - name: Check out Ceres-C
+        uses: actions/checkout@v4
+        with:
+          path: Ceres-C
+
+      - name: Check out CeresASM
+        uses: actions/checkout@v4
+        with:
+          repository: Krampus1721/CeresASM
+          path: CeresASM
+
+      # The msvc preset uses Ninja Multi-Config with cl, so it needs the developer environment.
+      # vswhere locates it without pinning a Visual Studio version, which changes whenever GitHub
+      # updates the runner image - hence the repetition rather than a shared setup step.
+      - name: Build the ceres assembler and VM
+        working-directory: CeresASM/Ceres
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --preset msvc
+          cmake --build --preset msvc-release
+
+      - name: Configure
+        working-directory: Ceres-C
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --preset msvc -DCERESC_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        working-directory: Ceres-C
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build --preset msvc-${{ matrix.preset }}
+
+      - name: Test
+        working-directory: Ceres-C
+        env:
+          CERESC_CERES_PATH: ${{ github.workspace }}\CeresASM\Ceres\build\msvc\bin\Release
+        run: ctest --preset msvc-${{ matrix.preset }}
+
+      - name: Run an example through the ceresc binary
+        working-directory: Ceres-C
+        run: build\msvc\bin\${{ matrix.config }}\ceresc.exe examples\07_structs.c --run --ceres-path ..\CeresASM\Ceres\build\msvc\bin\Release

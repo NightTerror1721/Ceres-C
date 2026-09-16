@@ -1,0 +1,7 @@
+through a pointer:   15
+two results at once: 9 remainder 2
+swap:                2 1
+scaled arithmetic:   30 is 2 elements along
+walking with a ptr:  150
+tail as an array:    30 40 50 
+little-endian bytes: 1 2 3 4 

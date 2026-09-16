@@ -1,0 +1,8 @@
+arithmetic: 9.500 5.500 15.000 3.750
+negate:     -7.500
+compare:    7.5 > 2.0; 2.0 is not below 1.0
+convert:    4.500 -> 4, and -4.75 -> -4
+exponent:   1500.0 0.0250
+average:    3.4000
+sqrt(2):    1.414213
+rounded:    0 1 2 2 3 

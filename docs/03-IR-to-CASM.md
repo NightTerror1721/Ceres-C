@@ -1,0 +1,180 @@
+# From IR to CASM
+
+[← Back to index](README.md)
+
+Between the type-checked syntax tree and the generated assembly sits one more layer: a
+three-address intermediate representation. It is what `--emit-ir` prints, and it exists for three
+reasons — it separates *what to compute* from *which register holds it*, it is observable, and it
+gives optimizations somewhere to live that is not the back end.
+
+There is no SSA form and no dominator tree. An `IrFunction` is a list of basic blocks, each a
+straight run of instructions ending in a jump or a return.
+
+## The IR instruction set
+
+| Opcode | Form | Meaning |
+| --- | --- | --- |
+| `Const` | `%t = const V` | A literal. |
+| `BinOp` | `%t = op %a, %b` | Add/Sub/Mul/Div/Mod/And/Or/Xor/Shl/Shr/Sar, each with a signed and an unsigned variant. |
+| `UnOp` | `%t = op %a` | Neg, Not, LogicalNot, IntToFloat, FloatToInt. |
+| `Cmp` | `%t = cmp.eq/ne/lt/le/gt/ge %a, %b` | Produces 0 or 1 — see the note on `setcc` below. |
+| `Copy` | `%t = %a` | An alias; usually disappears in the back end. |
+| `FrameAddr` | `%t = &local N` | The address of a local or parameter's frame slot. |
+| `GlobalAddr` | `%t = &global "name"` | The address of a global, or of a string literal. |
+| `Load` | `%t = load.<size> [%addr]` | `size` ∈ {byte, half, word}. |
+| `Store` | `store.<size> [%addr], %v` | |
+| `Param` | `param %v` | Queues one outgoing argument. |
+| `Call` | `%t = call f, N` | `N` is how many `Param`s were queued. |
+| `Jump` | `jmp L` | |
+| `CondJump` | `br.<pred> %a, %b, Ltrue, Lfalse` | One of the six predicates, signed or unsigned. |
+| `Return` | `ret %v?` | |
+
+## The instruction mapping
+
+Verified against CeresASM's `docs/05-Instruction-Set.md` and `docs/06-Pseudo-Instructions.md`.
+
+| IR | CASM (signed / unsigned) | Notes |
+| --- | --- | --- |
+| `BinOp Add`/`Sub` | `add` / `sub` (`addi`/`subi` with a constant operand) | The ISA has no signed/unsigned distinction for these. |
+| `BinOp Mul` | `imul` (signed) · `mul` (unsigned) | Both keep the low 32 bits, so a signed overflow wraps silently, as in C. |
+| `BinOp Div`/`Mod` | `idiv`/`imod` · `div`/`mod` | Division by zero does **not** abort — see below. |
+| `BinOp And`/`Or`/`Xor` | `and` / `or` / `xor` | |
+| `BinOp Shl` | `shl` | |
+| `BinOp Shr` | `sar` (signed, arithmetic) · `shr` (unsigned, logical) | A real ISA distinction, not cosmetic. |
+| `UnOp Neg` (int) | `imul rd, rs, -1` | The documented expansion of the `neg` pseudo, written out — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `UnOp Neg` (float) | `neg fd, fs` → `FNEG` | |
+| `UnOp Not` | `not rd, rs` | Register form only; no immediate. |
+| `Cmp eq`/`ne` | `ifeq` / `ifne` | Same for signed and unsigned. |
+| `Cmp lt/le/gt/ge` | `ifls`/`ifle`/`ifgr`/`ifge` (signed) · `ifbl`/`ifbe`/`ifab`/`ifae` (unsigned, pointers, sizes) | |
+| `Load` byte/half/word | `ldrb` / `ldrh` / `ldr` | `[base + N]` with a constant offset, `[base + rIdx]` when the offset is in a register. |
+| `Store` byte/half/word | `strb` / `strh` / `str` | Same two addressing forms. |
+| `FrameAddr` | `la rd, [sp + Frame.slotN]`, or nothing at all if the local lives in a register | |
+| `GlobalAddr` | `la rd, symbol` | String literals become `@rodata` entries (`let ccstr0: u8[15] = "ceres compiler"`). |
+| `Param` / `Call` | first four of each bank in `arg0`–`arg3`/`f0`–`f3`, the rest in the outgoing area, then `call f` | |
+| `Jump` / `CondJump` | `jp` / the `ifXX` above | |
+| `Return` | `mov ret0, %v` then `leave`/`ret` | `main` halts the machine instead — see below. |
+
+### There is no `setcc`
+
+The ISA can compare and branch, but it has no instruction that writes 0 or 1 into a register from a
+condition. When a comparison is used as a *value* (`int b = (x < y);`, or the result of `&&`/`||`),
+the back end has to synthesize it with a short jump:
+
+```casm
+ifls r4, r5, .cmp0_true
+li   r4, 0
+jp   .cmp0_end
+.cmp0_true:
+li   r4, 1
+.cmp0_end:
+```
+
+Four instructions where a machine with `setcc` would spend one. That is a real property of the
+target, which is why it is written down here rather than buried in the emitter.
+
+### Indexing costs one extra instruction
+
+There is no `base + index × scale` addressing mode. The index is scaled first, and the result is
+used as the second register of an indexed access — the assembler picks the indexed opcode by itself,
+from the shape of the operands, the same way it picks `ADD` over `ADDI`:
+
+```
+%off = mul %i, 4                  mul r5, r5, 4
+%v   = load.word [%arr + %off]    ldr r6, [r4 + r5]
+```
+
+### Division by zero does not fault
+
+The VM sets its Trap flag and leaves the destination register alone; nothing reads that flag
+automatically. Ceres-C inherits the behaviour rather than hiding it behind an implicit check.
+
+### `&&` and `||` are control flow
+
+The right-hand side is never evaluated when the left already decides the answer, so they lower to
+blocks and branches rather than to a `BinOp`:
+
+```
+    br.ne %a, 0, L1, Lfalse
+L1: br.ne %b, 0, Ltrue, Lfalse
+Ltrue:  %t = const 1;  jmp Lend
+Lfalse: %t = const 0
+Lend:
+```
+
+`switch` lowers the same way: a chain of comparisons in source order, not a jump table.
+
+## Registers and frames
+
+The allocation rule is deliberately small enough to state in a paragraph.
+
+Every value has one home. A value may sit in a register only while no `call` can clobber it —
+a call destroys `r0`–`r7`, `r12`, `f0`–`f7` and the flags. So a local gets a register only in a
+function that calls nothing at all, and a temporary gets one whenever its own live range is
+call-free. Everything else lives in a field of the function's stack frame. `r8`–`r11` and `f8`–`f15`,
+the callee-saved half, are left unused: using them would mean saving and restoring them around every
+function that touches one.
+
+At `-O0` there is no allocation at all: every local, parameter and temporary gets its own permanent
+frame field. That path stays reachable on purpose — it needs no analysis to be correct, so it is
+what you bisect against when an optimized program misbehaves.
+
+### The frame is a CASM `struct`
+
+Ceres-C does not compute byte offsets. It emits a real `struct` per function and lets the assembler
+lay it out, exactly as a hand-written program following the calling convention would:
+
+```casm
+struct __frame_suma_array
+    slot0: u32
+endstruct
+cc_suma_array:
+    enter __frame_suma_array
+    ...
+    leave
+    ret
+```
+
+Symbolic `[sp + __frame_x.slotN]` references then stay correct by construction, instead of this
+project's layout arithmetic drifting out of sync with the assembler's.
+
+A function that needs nothing from a frame — few enough arguments, no local that has to live in
+memory, nothing held across a call — skips `enter`/`leave` entirely and just returns. "Leaf" is
+shorthand: the real condition is "needs nothing from a frame", which a function that makes a call
+can still satisfy, because `call`/`ret` put the return address on the hardware stack rather than in
+the frame.
+
+### Names
+
+Every user symbol is prefixed with `cc_`. A C identifier is not guaranteed to avoid CASM's own
+reserved words (`const`, `global`, `struct`, `word`, `true`, ...), and a collision would otherwise
+surface as a confusing assembler syntax error instead of a Ceres-C diagnostic. `main` is the one
+exception — the linker looks up that exact spelling to find the entry point.
+
+### How `main` ends
+
+`main` has no caller. Instead of `ret`, the generated code writes the shutdown command to the system
+control device and halts:
+
+```casm
+la   r4, 0xFFFF0000
+li   r5, 1
+strb [r4 + 0], r5
+halt
+```
+
+`ceres run` exits 0 on a clean halt and 1 on a fault, never with a value the program chose, so
+`main`'s return value goes into `ret0` only so it stays inspectable under `ceres debug`.
+
+## Every line cites its source
+
+Each emitted instruction carries the file and line of C it came from:
+
+```casm
+    mul r4, r12, 4        // examples/15_suma_array.c:22
+    str [sp + __frame_suma_array.slot0], r4 // examples/15_suma_array.c:22
+    ldr r5, [sp + __frame_suma_array.slot0] // examples/15_suma_array.c:22
+    ldr r2, [r2 + r5]     // examples/15_suma_array.c:22
+```
+
+That is the whole reason this compiler emits text. [04-Tutorial-C-to-CASM.md](04-Tutorial-C-to-CASM.md)
+follows one program through all of it.

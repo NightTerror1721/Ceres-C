@@ -77,6 +77,65 @@ TEST(options, the_ordinary_switches_are_recognized)
 	CHECK(result.options->warningsAsErrors);
 }
 
+TEST(options, S_and_run_are_opposites_resolved_in_argument_order)
+{
+	// -S is the default, so on its own it changes nothing...
+	ParseResult onlyS = parse({ "main.c", "-S" });
+	CHECK(onlyS.options.has_value());
+	CHECK(!onlyS.options->run);
+
+	// ...but it is not a no-op: written after --run it takes the assembling back off, which is the
+	// case §11 introduces it for ("por si --run se anade despues por costumbre").
+	ParseResult runThenS = parse({ "main.c", "--run", "-S" });
+	CHECK(runThenS.options.has_value());
+	CHECK(!runThenS.options->run);
+
+	// And the other order means what it says too - last one wins, like -O against -f.
+	ParseResult sThenRun = parse({ "main.c", "-S", "--run" });
+	CHECK(sThenRun.options.has_value());
+	CHECK(sThenRun.options->run);
+}
+
+TEST(options, version_is_an_ordinary_flag_and_needs_no_input_file)
+{
+	ParseResult result = parse({ "--version" });
+	CHECK(result.options.has_value());
+	CHECK(result.options->showVersion);
+	CHECK(result.options->inputPath.empty());
+	CHECK(result.output.empty()); // not an error, so nothing is printed to the diagnostics stream
+}
+
+TEST(options, version_is_recognized_wherever_it_appears)
+{
+	// It used to be read off argv[1] by the application entry point, which meant `ceresc main.c
+	// --version` silently compiled instead.
+	ParseResult result = parse({ "main.c", "--version" });
+	CHECK(result.options.has_value());
+	CHECK(result.options->showVersion);
+	CHECK_EQ(result.options->inputPath, std::string("main.c"));
+}
+
+TEST(options, help_prints_the_usage_text_and_parses_nothing)
+{
+	for (const char* flag : { "--help", "-h" })
+	{
+		std::vector<const char*> argv{ flag };
+		std::ostringstream out;
+		std::optional<driver::Options> options = driver::parseOptions(argv, out);
+		CHECK(!options.has_value());
+		CHECK(contains(out.str(), "usage:"));
+	}
+}
+
+TEST(options, the_usage_text_documents_every_option_of_the_plan)
+{
+	std::ostringstream out;
+	driver::printUsage(out);
+	const std::string text = out.str();
+	for (std::string_view option : { "-o ", "--emit-ast", "--emit-ir", "-S", "--run", "--ceres-path", "-Werror", "--version", "--help" })
+		CHECK(contains(text, option));
+}
+
 TEST(options, an_option_that_needs_a_value_and_does_not_get_one_is_an_error)
 {
 	ParseResult result = parse({ "main.c", "-o" });

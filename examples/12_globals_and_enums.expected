@@ -1,0 +1,8 @@
+enum values:  0 1 10 11
+enum names:   silent deafening
+flags:        3 - readable: 1, executable: 0
+@data:        ceres, table = 1 1 2 3 5 
+@bss:         0 0 (zeroed by the loader, never written by the program)
+accumulate:   3 9 18
+state kept:   3 calls, total 18
+written bss:  3 3 6 9 

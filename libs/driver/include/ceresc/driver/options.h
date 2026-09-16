@@ -26,9 +26,15 @@ namespace ceresc::driver
 		std::string outputPath;      // -o <path> - empty means "next to the input, same stem, .casm"
 		bool emitAst = false;        // --emit-ast: dump the annotated AST and stop
 		bool emitIr = false;         // --emit-ir: dump the IR and stop
-		bool run = false;            // --run: also invoke `ceres asm`/`ceres run` as subprocesses
+		// --run: also invoke `ceres asm`/`ceres run` as subprocesses. -S is its opposite and the
+		// default, and the two resolve in COMMAND-LINE ORDER, exactly like -O and -f do below: the
+		// last one written wins. §11 introduces -S as the explicit way to say "stop at .casm text"
+		// for the case where a --run is added later out of habit, which only means anything if the
+		// later flag is the one that counts.
+		bool run = false;
 		std::string ceresPath;       // --ceres-path <dir> - empty means "look up `ceres` on PATH"
 		bool warningsAsErrors = false; // -Werror
+		bool showVersion = false;    // --version: print the version and stop, before anything else
 
 		// -O<n> and the -f switches, already resolved into the individual toggles every stage reads.
 		// A later -f<name>/-fno-<name> overrides what the -O level set, in command-line order, the
@@ -41,5 +47,13 @@ namespace ceresc::driver
 	// should be non-zero in that case; a request for `--help`/no arguments at all also returns
 	// nullopt after printing usage, which is not itself an error (the application entry point
 	// distinguishes those requests from malformed argument lists).
+	//
+	// `--version` is the one flag that parses successfully WITHOUT an input file: it sets
+	// showVersion and the caller prints and stops. It is handled here rather than by peeking at
+	// argv[1] in main() so that it works wherever it appears on the line, like every other flag.
 	std::optional<Options> parseOptions(std::span<const char* const> args, std::ostream& diagnosticsOut);
+
+	// Writes the usage text `parseOptions` prints on `--help`. Exposed so `ceresc --help` and a
+	// malformed command line cannot drift apart.
+	void printUsage(std::ostream& out);
 }

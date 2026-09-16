@@ -1,0 +1,6 @@
+switch:    not a day monday tuesday wednesday thursday friday saturday sunday not a day 
+weights:   -1 10 10 10 -1 -1 -1 -1 -1 100 
+digits:    6
+goto fwd:  0 1 2 stopped at 3
+goto back: 1 3 9 27 81 
+forward:   jumped over the line above

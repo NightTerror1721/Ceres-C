@@ -1,0 +1,13 @@
+a        = 11110000  0x000000f0
+b        = 00111100  0x0000003c
+a & b    = 00110000
+a | b    = 11111100
+a ^ b    = 11001100
+~a       = 00001111  (low 8 bits of 0xffffff0f)
+a << 1   = 111100000
+a >> 4   = 00001111
+bit ops  = 00101000 set, 00100000 cleared, bit 5 is 1
+popcount = 0 1 1 2 1 2 2 3 | fast: 16
+reversed = 11010000 from 00001011
+powers   = 0 1 1 0 1 0 0 0 1 0 
+shifts   = 56 is 7*8, 7 is 56/8

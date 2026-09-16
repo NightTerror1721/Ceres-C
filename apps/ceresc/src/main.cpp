@@ -8,25 +8,46 @@
 #include <string_view>
 #include <vector>
 
-// Fase 0 shipped `--version` as the only job of this binary, to prove the whole tree configures,
-// links and runs end to end. Every other flag from §11 (--emit-ast, --emit-ir, --run, ...) now
-// goes straight to libs/driver, starting Fase 6.
+// The whole binary: parse the command line, hand it to libs/driver, return what it says.
+//
+// Fase 0 shipped `--version` as the only job of this file, to prove the tree configures, links and
+// runs end to end. It is now an ordinary flag like every other one (libs/driver/src/options.cpp),
+// which is why it works anywhere on the line instead of only as argv[1] - the only thing left here
+// is printing it, since the version string is the application's, not the driver library's.
+//
+// Three exit codes, and nothing else decides them: 0 when the pipeline succeeded or the user asked
+// a question (--help/--version), 1 when the command line was malformed, and whatever
+// driver::run() returns otherwise - which passes a `ceres asm`/`ceres run` failure straight
+// through (§11).
 int main(int argc, char** argv)
 {
-	if (argc > 1 && std::string_view(argv[1]) == "--version")
+	std::vector<const char*> args(argv + 1, argv + argc);
+
+	// No arguments at all is a request for help, not an error: print usage and succeed.
+	if (args.empty())
 	{
-		std::printf("ceresc %s\n", ceresc::kVersionString);
+		ceresc::driver::printUsage(std::cout);
 		return 0;
 	}
 
-	std::vector<const char*> args(argv + 1, argv + argc);
+	bool helpRequested = false;
+	for (const char* arg : args)
+		helpRequested = helpRequested || std::string_view(arg) == "--help" || std::string_view(arg) == "-h";
+
+	if (helpRequested)
+	{
+		ceresc::driver::printUsage(std::cout);
+		return 0;
+	}
+
 	std::optional<ceresc::driver::Options> options = ceresc::driver::parseOptions(args, std::cerr);
 	if (!options)
+		return 1;
+
+	if (options->showVersion)
 	{
-		bool helpRequested = false;
-		for (const char* arg : args)
-			helpRequested = helpRequested || std::string_view(arg) == "--help" || std::string_view(arg) == "-h";
-		return (argc <= 1 || helpRequested) ? 0 : 1;
+		std::printf("ceresc %s\n", ceresc::kVersionString);
+		return 0;
 	}
 
 	return ceresc::driver::run(*options);

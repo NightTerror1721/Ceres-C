@@ -1,0 +1,7 @@
+unsorted:   5 3 9 1 7 0 8 2 6 4 
+selection:  0 1 2 3 4 5 6 7 8 9 
+bubble:     0 1 2 3 4 5 6 7 8 9 
+insertion:  0 1 2 3 4 5 6 7 8 9 
+search:     0 1 2 3 4 5 6 7 8 9 -1 -1 (-1 means not found)
+edge cases: 1 2 3 4 5 
+            1 2 3 4 5 

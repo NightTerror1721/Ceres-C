@@ -1,0 +1,10 @@
+sizes:      char 1, short 2, int 4, long 4, float 4, int* 4
+ranges:     200 60000 2000000000 4000000000
+same bits:  signed -1, unsigned 4294967295
+comparison: as int, -1 < 1; as unsigned, 4294967295 > 1
+promotion:  300 - the sum is an int, not a char
+division:   -3 signed (truncates toward zero), 4000 unsigned (no idiv could do this)
+shifts:     -8 arithmetic (sar), 15 logical (shr)
+bool:       1 0, sizeof 1
+chars:      A is 65, and 'A' + 2 is C
+sizeof:     4 for a type, 4 for an expression

@@ -1,0 +1,8 @@
+points:      (0,0) (6,8)
+by value:    manhattan(-3,4) = 7, and the original is still (-3,4)
+assignment:  (1,8) from (6,8)
+nested:      from (0,0) to (6,8)
+returned:    midpoint = (3,4)
+array:       (0,0) (1,1) (2,4) (3,9) 
+dot/arrow:   4 == 4
+layout:      sizeof(Point) = 8, sizeof(Padded) = 12 (6 bytes of fields, padded to 12)

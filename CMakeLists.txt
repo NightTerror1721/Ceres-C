@@ -86,6 +86,7 @@ add_subdirectory(apps/ceresc)
 
 if(CERESC_BUILD_TESTS)
     add_subdirectory(tests/e2e)
+    add_subdirectory(tests/examples)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL)

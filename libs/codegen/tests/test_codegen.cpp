@@ -906,3 +906,26 @@ TEST(codegen, a_struct_of_bytes_is_copied_one_byte_at_a_time)
 	CHECK_EQ(countOf(text, "    ldrb "), usize(3));
 	CHECK_EQ(countOf(text, "    strb "), usize(3));
 }
+
+TEST(codegen, integer_negation_writes_out_the_imul_expansion_instead_of_the_neg_pseudo)
+{
+	// `neg rd, rs` is the documented spelling (06-Pseudo-Instructions.md) and it is what this used
+	// to emit - but the assembler currently expands it wrongly: `neg r2, r1` assembles to
+	// `IMUL r2, r15, r0`, so the source register is dropped and every negation produces garbage.
+	// Writing the expansion out by hand assembles correctly and means exactly the same thing.
+	//
+	// This test is the reason not to "tidy" it back: if it ever goes red because the emitter says
+	// `neg` again, check the assembler first. docs/06-Known-Limitations.md has the reproducer.
+	std::string text = atO0("int negate(int n) { return -n; }");
+	CHECK(contains(text, "imul "));
+	CHECK(contains(text, ", -1"));
+	CHECK(!contains(text, "    neg "));
+}
+
+TEST(codegen, float_negation_still_uses_the_neg_pseudo)
+{
+	// The float form of the same pseudo maps to the real FNEG opcode and assembles correctly, so it
+	// is left alone - the workaround above is as narrow as the bug it works around.
+	std::string text = atO0("float negate(float x) { return -x; }");
+	CHECK(contains(text, "neg f"));
+}

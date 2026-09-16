@@ -1,0 +1,13 @@
+# The examples' golden files are compared against what `ceres run` printed, so their line endings
+# have to be the same on every machine: `eol=lf` keeps them LF in the repository AND in the working
+# tree, whatever `core.autocrlf` is set to locally.
+#
+# The comparison itself would survive CRLF anyway - the harness strips carriage returns out of the
+# VM's own output before diffing, because the terminal device's bytes go through a text-mode stdout
+# on Windows and a program that prints '\n' produces "\r\n" there. What CRLF in the golden file
+# would cost is clarity: the file is supposed to say exactly what the program prints.
+*.expected text eol=lf
+
+# Nothing else is listed on purpose. The existing sources were committed with their line endings as
+# they were, so declaring them `text` now would renormalize every one of them on the next commit
+# that touched it and bury a real change in a whole-file diff.
