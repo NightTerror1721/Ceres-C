@@ -69,11 +69,13 @@ TEST(options, an_unknown_option_is_rejected_rather_than_ignored)
 
 TEST(options, the_ordinary_switches_are_recognized)
 {
-	ParseResult result = parse({ "main.c", "-o", "out.casm", "--emit-ir", "--run", "--ceres-path", "C:/ceres", "-Werror" });
+	ParseResult result = parse({ "main.c", "-o", "out.casm", "--emit-ir", "--run", "--clean", "--ceres-path", "C:/ceres", "-Werror" });
 	CHECK(result.options.has_value());
 	CHECK_EQ(result.options->outputPath, std::string("out.casm"));
 	CHECK(result.options->emitIr);
 	CHECK(result.options->run);
+	CHECK(result.options->clean);
+	CHECK(!result.options->cleanKeepCasm);
 	CHECK_EQ(result.options->ceresPath, std::string("C:/ceres"));
 	CHECK(result.options->warningsAsErrors);
 }
@@ -134,8 +136,25 @@ TEST(options, the_usage_text_documents_every_option_of_the_plan)
 	std::ostringstream out;
 	driver::printUsage(out);
 	const std::string text = out.str();
-	for (std::string_view option : { "-o ", "--emit-ast", "--emit-ir", "-S", "--run", "--ceres-path", "-Werror", "--version", "--help" })
+	for (std::string_view option : { "-o ", "--emit-ast", "--emit-ir", "-S", "--run", "--clean", "--clean-keep-casm", "--ceres-path", "-Werror", "--version", "--help" })
 		CHECK(contains(text, option));
+}
+
+TEST(options, cleanup_modes_require_run_and_the_last_one_wins)
+{
+	ParseResult withoutRun = parse({ "main.c", "--clean" });
+	CHECK(!withoutRun.options.has_value());
+	CHECK(contains(withoutRun.output, "require '--run'"));
+
+	ParseResult keepCasm = parse({ "main.c", "--run", "--clean", "--clean-keep-casm" });
+	CHECK(keepCasm.options.has_value());
+	CHECK(!keepCasm.options->clean);
+	CHECK(keepCasm.options->cleanKeepCasm);
+
+	ParseResult removeAll = parse({ "main.c", "--run", "--clean-keep-casm", "--clean" });
+	CHECK(removeAll.options.has_value());
+	CHECK(removeAll.options->clean);
+	CHECK(!removeAll.options->cleanKeepCasm);
 }
 
 TEST(options, an_option_that_needs_a_value_and_does_not_get_one_is_an_error)

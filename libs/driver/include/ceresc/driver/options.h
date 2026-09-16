@@ -49,6 +49,11 @@ namespace ceresc::driver
 		// later flag is the one that counts.
 		bool run = false;
 
+		// --clean removes every artifact the driver created after a successful --run. --clean-keep-casm
+		// keeps the generated .casm, removing the objects, final program and shared .decls.casm.
+		bool clean = false;
+		bool cleanKeepCasm = false;
+
 		std::string ceresPath;       // --ceres-path <dir> - empty means "look up `ceres` on PATH"
 		bool warningsAsErrors = false; // -Werror
 		bool showVersion = false;    // --version: print the version and stop, before anything else

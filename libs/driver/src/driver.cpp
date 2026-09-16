@@ -142,6 +142,13 @@ namespace ceresc::driver
 			return true;
 		}
 
+		void removeGeneratedFile(const fs::path& path)
+		{
+			std::error_code error;
+			if (!fs::remove(path, error) && error)
+				std::cerr << "ceresc: cannot remove generated file '" << path.string() << "': " << error.message() << '\n';
+		}
+
 		// One C file, from source text to CASM text. Everything about a translation unit that the
 		// driver needs afterwards lives here, so compiling several of them is a loop over this.
 		struct CompiledUnit
@@ -483,6 +490,19 @@ namespace ceresc::driver
 		int runResult = runSubprocess(ceresBinary, { "run", programPath.string() });
 		if (runResult < 0)
 			std::cerr << "ceresc: could not launch `ceres run`\n";
+		if (runResult == 0 && (options.clean || options.cleanKeepCasm))
+		{
+			for (const fs::path& casmFile : casmFiles)
+				removeGeneratedFile(withExtension(casmFile, ".cobj"));
+			removeGeneratedFile(programPath);
+			if (needsDeclarations)
+				removeGeneratedFile(declarationsPath);
+			if (options.clean)
+			{
+				for (const CompiledUnit& unit : units)
+					removeGeneratedFile(unit.casmPath);
+			}
+		}
 		return runResult < 0 ? 1 : runResult;
 	}
 }

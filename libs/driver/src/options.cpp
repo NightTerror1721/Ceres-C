@@ -59,7 +59,8 @@ namespace ceresc::driver
 	{
 		out <<
 			"usage: ceresc <file.c|file.casm>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
-			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--ceres-path <dir>]\n"
+			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
+			"               [--ceres-path <dir>]\n"
 			"               [-Werror] [-O<level>] [-f<opt>]\n"
 			"       ceresc --version | --help\n"
 			"\n"
@@ -73,6 +74,8 @@ namespace ceresc::driver
 			"  -E                  print the preprocessed source and stop\n"
 			"  -S                  stop at the CASM text, do not assemble it (the default)\n"
 			"  --run               assemble, link and run the program with `ceres asm`/`ceres run`\n"
+			"  --clean             after --run, remove generated .casm, .decls.casm, .cobj and .cres files\n"
+			"  --clean-keep-casm   after --run, keep generated .casm but remove .decls.casm, .cobj and .cres\n"
 			"  --ceres-path <dir>  where to find the `ceres` binary (default: look it up on PATH)\n"
 			"  -Werror             treat warnings as errors\n"
 			"  --version           print the version and stop\n"
@@ -115,6 +118,8 @@ namespace ceresc::driver
 			// Opposites, resolved in argument order rather than by precedence - see Options::run.
 			if (arg == "-S") { options.run = false; continue; }
 			if (arg == "--run") { options.run = true; continue; }
+			if (arg == "--clean") { options.clean = true; options.cleanKeepCasm = false; continue; }
+			if (arg == "--clean-keep-casm") { options.clean = false; options.cleanKeepCasm = true; continue; }
 			if (arg == "-Werror") { options.warningsAsErrors = true; continue; }
 			if (arg == "--version") { options.showVersion = true; continue; }
 			if (arg == "--help" || arg == "-h") { printUsage(diagnosticsOut); return std::nullopt; }
@@ -189,6 +194,11 @@ namespace ceresc::driver
 		if (options.inputPaths.empty() && !options.showVersion)
 		{
 			printUsage(diagnosticsOut);
+			return std::nullopt;
+		}
+		if ((options.clean || options.cleanKeepCasm) && !options.run)
+		{
+			diagnosticsOut << "ceresc: '--clean' and '--clean-keep-casm' require '--run'\n";
 			return std::nullopt;
 		}
 		return options;
