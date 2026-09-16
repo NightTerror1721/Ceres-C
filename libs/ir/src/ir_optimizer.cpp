@@ -28,11 +28,17 @@ namespace ceresc::ir
 		// ir_function.h) rather than being repeated here - see their comment there.
 
 		// True for an instruction that can simply be dropped when nothing reads its result.
-		// Load is NOT pure here - see ir_optimizer.h's header comment on device registers and the
-		// missing `volatile`.
-		bool isPure(IrOpcode opcode) noexcept
+		//
+		// Takes the instruction rather than its opcode because of the one case that cannot be
+		// answered from the opcode alone: a Load. Reading a device register has a real side effect
+		// on this machine (07-IO-Devices-and-Ports.md), so for as long as nothing could say which
+		// loads those were, every load had to be kept. `volatile` is what says it, and it is now
+		// recorded on the access itself (IrLoadPayload::isVolatile) precisely so it survives an
+		// access that has no local slot to hang it on. A load NOT so marked reads ordinary memory
+		// and may go when nothing reads its result.
+		bool isPure(const IrInstr& instr) noexcept
 		{
-			switch (opcode)
+			switch (instr.opcode())
 			{
 				case IrOpcode::Const:
 				case IrOpcode::BinOp:
@@ -43,6 +49,8 @@ namespace ceresc::ir
 				case IrOpcode::GlobalAddr:
 				case IrOpcode::VaStart:
 					return true;
+				case IrOpcode::Load:
+					return !instr.as<IrLoadPayload>().isVolatile;
 				default:
 					return false;
 			}
@@ -1070,7 +1078,7 @@ namespace ceresc::ir
 					for (IrInstr* instr : block->instrs())
 					{
 						IrValue result = resultOf(*instr);
-						bool dead = isPure(instr->opcode()) && result.isValid() && useCount[result.id] == 0;
+						bool dead = isPure(*instr) && result.isValid() && useCount[result.id] == 0;
 						if (dead)
 							changed = true;
 						else

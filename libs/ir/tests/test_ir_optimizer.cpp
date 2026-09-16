@@ -262,13 +262,24 @@ TEST(ir_optimizer, dead_code_elimination_drops_an_unread_computation)
 	CHECK(!contains(text, "const 42"));
 }
 
-TEST(ir_optimizer, dead_code_elimination_never_drops_a_load)
+TEST(ir_optimizer, dead_code_elimination_never_drops_a_volatile_load)
 {
-	// Reading a device register can have a side effect, and `volatile` is out of v1 (§3) - so an
-	// unread load stays, unlike an unread arithmetic result. See ir_optimizer.h's header comment.
+	// Reading a device register can have a side effect, so a load the program marked observable
+	// stays even with nothing reading its result. See ir_optimizer.h's header comment.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::deadCodeElimination);
+	std::string text = optimizedIr(
+		"int main() { volatile int* p = (volatile int*)0xFF000004; *p; return 0; }", options);
+	CHECK(contains(text, "load.word.v"));
+}
+
+TEST(ir_optimizer, dead_code_elimination_drops_an_unread_ordinary_load)
+{
+	// The contrast, and the payoff of recording `volatile` on the access itself: EVERY load used to
+	// stay, for want of anything that could tell a device register from ordinary memory. An
+	// unmarked load reads ordinary memory and goes, like any other unread computation.
 	support::OptimizationOptions options = only(&support::OptimizationOptions::deadCodeElimination);
 	std::string text = optimizedIr("int main() { int* p = (int*)0xFF000004; *p; return 0; }", options);
-	CHECK(contains(text, "load"));
+	CHECK(!contains(text, "load"));
 }
 
 TEST(ir_optimizer, dead_code_elimination_keeps_stores_and_calls)

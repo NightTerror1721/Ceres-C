@@ -34,11 +34,12 @@
 // Two deliberate non-optimizations, both for the same reason - the machine this targets is not an
 // abstract one:
 //
-//   - A Load is NEVER treated as dead, even with an unread result. Device registers live at
-//     ordinary addresses in this machine (07-IO-Devices-and-Ports.md) and reading one can have a
-//     real side effect; `volatile`, the thing that would let a program say so, is explicitly out of
-//     v1 (§3). Dropping an unread load is what a C compiler would do and what this one must not,
-//     until there is a `volatile` to honour.
+//   - A VOLATILE Load is never treated as dead, even with an unread result. Device registers live
+//     at ordinary addresses in this machine (07-IO-Devices-and-Ports.md) and reading one can have a
+//     real side effect, so a load the program marked observable stays. Every load used to stay, for
+//     want of anything that could tell the two apart; `volatile` is what tells them apart, and it
+//     is recorded on the access itself (IrLoadPayload::isVolatile) rather than only on a local, so
+//     an indirect access carries it too. An unmarked load reads ordinary memory and goes.
 //   - A division or modulo by a constant zero is never folded. The VM does not fault on it: it
 //     sets the Trap flag and leaves the destination register untouched (05-Instruction-Set.md,
 //     §14's own note). Folding it to any value at all would invent a result the hardware never
