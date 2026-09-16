@@ -26,7 +26,7 @@ straight run of instructions ending in a jump or a return.
 | `Load` | `%t = load.<size>[.s] [%addr]` | `size` ∈ {byte, half, word}; `.s` means the loaded type is signed. |
 | `Store` | `store.<size> [%addr], %v` | |
 | `Param` | `param %v`, or `param.var %v` | Queues one outgoing argument. `.var` marks one in the callee's variadic tail, which is always passed on the stack. |
-| `Call` | `%t = call f, N` | `N` is how many `Param`s were queued. |
+| `Call` | `%t = call f, N` | `N` is how many `Param`s were queued. A call through a function pointer prints the temporary it jumps through instead of a name: `%t = call %a, N`. |
 | `VaStart` | `%t = va_start` | The address of this function's own variadic tail. No operand: the back end resolves it from the signature. |
 | `Jump` | `jmp L` | |
 | `CondJump` | `br.<pred> %a, %b, Ltrue, Lfalse` | One of the six predicates, signed or unsigned. |
@@ -56,7 +56,7 @@ Verified against CeresASM's `docs/05-Instruction-Set.md` and `docs/06-Pseudo-Ins
 | `Store` byte/half/word | `strb` / `strh` / `str` | Same two addressing forms. |
 | `FrameAddr` | `la rd, [sp + Frame.slotN]`, or nothing at all if the local lives in a register | |
 | `GlobalAddr` | `la rd, symbol` | String literals become `@rodata` entries (`let __ccstr0: u8[15] = "ceres compiler"`). |
-| `Param` / `Call` | first four of each bank in `arg0`–`arg3`/`f0`–`f3`, the rest in the outgoing area, then `call f` | A `param.var` skips the register half of that rule entirely. |
+| `Param` / `Call` | first four of each bank in `arg0`–`arg3`/`f0`–`f3`, the rest in the outgoing area, then `call f` | A `param.var` skips the register half of that rule entirely. An indirect call materializes its target into `r12` and emits `call r12` — same mnemonic, register operand, which is how the assembler selects `CALLR`. `r12` is free at that point by the same rule that makes it allocatable: nothing holds an allocatable register across a call. |
 | `VaStart` | `la rd, [fp + 8 + 4*S]` | `S` is how many incoming stack words this function's own fixed parameters took. |
 | `Jump` / `CondJump` | `jp` / the `ifXX` above | |
 | `Return` | `mov ret0, %v` then `leave`/`ret` | `main` halts the machine instead — see below. |

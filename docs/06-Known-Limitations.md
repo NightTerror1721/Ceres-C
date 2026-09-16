@@ -69,10 +69,16 @@ The VM has no double-precision floating point at all. Supporting `double` would 
 emulation — real front-end and runtime work, not a type mapping. `float` (f32) is fully supported
 and has its own register bank.
 
-### No bitfields or function pointers
+### No bitfields
 
-Each is a mechanism with no user yet. Function pointers are the nearer of the two: the ISA already
-has indirect calls.
+A second layout rule to learn, and nothing needs them yet. `union` itself is supported.
+
+Function pointers are no longer on this list. `int (*f)(int)` declares one, `f(1)` calls through it,
+and a function name used as a value decays to a pointer to itself exactly as an array does — so `f`
+and `&f` mean the same thing. The function type itself is real too (`typedef int Handler(int);`),
+which is what makes `Handler*` and `int (*)(int)` the same type rather than two that happen to
+agree. A call through a pointer becomes `call rN` — the ISA's indirect call, which was always there.
+See `examples/19_function_pointers.c`.
 
 Variadic functions are no longer on this list — `...`, `va_list`, `va_start`, `va_arg`, `va_end`
 and `va_copy` all work. What they do not come with is a `<stdarg.h>` (the names are builtin, since

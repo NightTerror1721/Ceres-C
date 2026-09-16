@@ -13,8 +13,9 @@ here is, by definition, a syntax error.
 | Types | `void`, `bool`, `char`, `short`, `int`, `long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. |
 | Qualifiers | `const`, `volatile` and `restrict`, on either side of the type-spec and after a `*`. |
 | Storage classes | `static`, `extern`, `auto`, `register` and the `inline` function specifier. |
-| Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `union`, `enum`, `typedef`. |
-| Functions | Calls, recursion, up to any number of parameters, struct arguments and returns by value, and variadic `...` with `va_list`/`va_start`/`va_arg`/`va_end`/`va_copy`. |
+| Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `union`, `enum`, `typedef`, and function types — so function pointers, including arrays of them and functions that return them. |
+| Functions | Calls (direct and through a pointer), recursion, up to any number of parameters, struct arguments and returns by value, and variadic `...` with `va_list`/`va_start`/`va_arg`/`va_end`/`va_copy`. |
+| Interrupts | `__interrupt` handlers and `__interrupt_vector`, plus `__builtin_sti`/`__builtin_cli`/`__builtin_halt` — see [10-Interrupts.md](10-Interrupts.md). |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
 | Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, `alignof`, explicit casts. |
 | Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. |
@@ -28,7 +29,6 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 | --- | --- |
 | `double` (f64) | The VM has no double-precision support at all. Supporting it would mean software emulation, not a type mapping. It is also why a variadic `float` is not promoted to `double` — see [09-Variadic-Convention.md](09-Variadic-Convention.md). |
 | Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
-| Function pointers | Viable later — the ISA already has indirect calls. |
 | Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef` and macros with arguments. See [08-Preprocessor.md](08-Preprocessor.md). |
 | `malloc`/`free` | There is no allocator to call. |
 
@@ -79,30 +79,40 @@ The EBNF `libs/parser` implements. Uppercase names are token kinds from `libs/le
 
 ```ebnf
 translation-unit       ::= external-decl*
-external-decl          ::= function-def | declaration ";" | typedef-decl
+external-decl          ::= declaration | typedef-decl | interrupt-vector-decl
 
-function-def           ::= decl-specifier* type-name declarator
-                            "(" param-list? ")" compound-stmt
+// One production for a function and a variable alike. Which one it is falls out of the
+// declarator: it declares a function when the derived type IS a function type, exactly as
+// in C - `int f(int)` and `int (*f)(int)` differ in nothing else.
+declaration            ::= decl-specifier* base-type declarator (("=" initializer)? ";" | compound-stmt)
 param-list             ::= param ("," param)* ("," "...")?   // "..." only after a named parameter
                          | "void"                            // an explicitly empty list
-param                  ::= type-qualifier? type-name declarator
+param                  ::= decl-specifier* base-type declarator   // the name may be omitted
 
-declaration            ::= decl-specifier* type-name init-declarator-list
-init-declarator-list   ::= init-declarator ("," init-declarator)*
-init-declarator        ::= declarator ("=" initializer)?
-declarator             ::= "*"* direct-declarator
-direct-declarator      ::= IDENTIFIER ("[" INT_LITERAL? "]")*
+// C's declarator, recursive. The suffixes bind tighter than the leading "*", which is what
+// makes `int *f(void)` a function returning int* and `int (*f)(void)` a pointer to a
+// function returning int. Parentheses are the only thing that tells the two apart.
+declarator             ::= ("*" type-qualifier*)* direct-declarator
+direct-declarator      ::= (IDENTIFIER | "(" declarator ")")? declarator-suffix*
+declarator-suffix      ::= "[" INT_LITERAL? "]"      // size required except on a parameter
+                         | "(" param-list? ")"
 initializer            ::= assignment-expr | "{" initializer-list "}"
 initializer-list       ::= initializer ("," initializer)*
-typedef-decl           ::= "typedef" type-spec declarator ";"
+typedef-decl           ::= "typedef" base-type declarator ";"
+interrupt-vector-decl  ::= "__interrupt_vector" "(" constant-expr "," IDENTIFIER ")" ";"
 
-decl-specifier         ::= storage-class-spec | type-qualifier   // any order, each at most once
+decl-specifier         ::= storage-class-spec | type-qualifier | "__interrupt"
+                                                     // any order, each at most once;
+                                                     // __interrupt only on a function
 storage-class-spec     ::= "static" | "extern" | "auto" | "register" | "inline"
-                                                     // inline only on a function-def,
-                                                     // register only on a local or a parameter
+                                                     // inline only on a function definition,
+                                                     // register only on a local
 type-qualifier         ::= "const" | "volatile" | "restrict"   // restrict only on a pointer
-type-name              ::= type-qualifier* type-spec type-qualifier*
-                            ("*" type-qualifier*)*   // `const char*` vs `char* const`
+base-type              ::= type-qualifier* type-spec type-qualifier*
+                                                     // `const int` and `int const` are one type
+// A type-name is a declarator with the name left out - `int (*)(int)` is `int (*f)(int)`
+// without the `f` - which is what a cast or `sizeof` needs.
+type-name              ::= base-type declarator
 sign-spec              ::= "signed" | "unsigned"
 integer-type-spec      ::= sign-spec? ("char" | "short" "int"? | "int" | "long" "int"?)
                          | sign-spec "int"?          // signed/unsigned alone means int
@@ -111,7 +121,7 @@ type-spec              ::= "void" | "bool" | "float" | integer-type-spec
                                                      // IDENTIFIER: a typedef name, or `va_list`
 struct-spec            ::= "struct" IDENTIFIER ("{" member-decl+ "}")?
 union-spec             ::= "union" IDENTIFIER ("{" member-decl+ "}")?
-member-decl            ::= type-spec declarator ";"
+member-decl            ::= base-type declarator ";"   // not a function: a struct holds objects
 enum-spec              ::= "enum" IDENTIFIER ("{" enumerator-list "}")?
 enumerator-list        ::= enumerator ("," enumerator)*
 enumerator             ::= IDENTIFIER ("=" INT_LITERAL)?
@@ -162,7 +172,7 @@ postfix-op             ::= "[" expression "]" | "(" arg-list? ")"
                          | "." IDENTIFIER | "->" IDENTIFIER | "++" | "--"
 primary-expr           ::= IDENTIFIER | INT_LITERAL | FLOAT_LITERAL | CHAR_LITERAL
                          | STRING_LITERAL | BOOL_LITERAL | "(" expression ")"
-                         | va-builtin
+                         | va-builtin | machine-builtin
 arg-list               ::= assignment-expr ("," assignment-expr)*
 
 // Syntax rather than calls: va_arg's second operand is a type-name, and all four write through
@@ -172,6 +182,10 @@ va-builtin             ::= "va_start" "(" assignment-expr "," IDENTIFIER ")"
                          | "va_arg"   "(" assignment-expr "," type-name ")"
                          | "va_end"   "(" assignment-expr ")"
                          | "va_copy"  "(" assignment-expr "," assignment-expr ")"
+
+// One machine instruction each, for the part of the machine no expression reaches -
+// see 10-Interrupts.md.
+machine-builtin        ::= ("__builtin_sti" | "__builtin_cli" | "__builtin_halt") "(" ")"
 ```
 
 `storage-class-spec` and `type-qualifier` may appear in any order and any combination the language

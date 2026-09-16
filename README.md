@@ -98,7 +98,10 @@ A function can answer a VM interrupt: `__interrupt void f(void)` declares the ha
 `__interrupt_vector(17, f)` points a vector at it, with `__builtin_sti()`/`__builtin_cli()`/
 `__builtin_halt()` to unmask and wait — see [docs/10-Interrupts.md](docs/10-Interrupts.md).
 
-No `double` (the VM has no f64 at all), no bitfields, no function pointers.
+Function pointers work, including arrays of them and functions that return them: `int (*f)(int)`
+is a pointer, `f(1)` calls through it, and a function name used as a value is its own address.
+
+No `double` (the VM has no f64 at all) and no bitfields.
 [docs/02-Grammar.md](docs/02-Grammar.md) is the contract;
 [docs/06-Known-Limitations.md](docs/06-Known-Limitations.md) is the honest list of what this version
 leaves out.
@@ -120,7 +123,7 @@ leaves out.
 
 ## Examples
 
-Eighteen programs in [`examples/`](examples), meant to be read in order — each one introduces one
+Nineteen programs in [`examples/`](examples), meant to be read in order — each one introduces one
 part of the language and prints something you can check.
 
 | | | | |
