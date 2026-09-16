@@ -251,6 +251,9 @@ namespace ceresc::sema
 		// docs/09-Variadic-Convention.md, and Sema's own note on the default argument promotions.
 		void checkVariadicArgument(ast::Expr* arg, bool calleeIsVariadic);
 
+		// The type a FunctionDecl declares - see the definition.
+		const ast::Type* functionTypeOf(const ast::FunctionDecl* decl);
+
 		const ast::Type* decayArray(const ast::Type* type) noexcept;
 		static const ast::Type* integerPromote(const ast::Type* type) noexcept;
 		static const ast::Type* commonArithmeticType(const ast::Type* lhs, const ast::Type* rhs) noexcept;

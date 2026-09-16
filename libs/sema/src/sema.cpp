@@ -171,6 +171,16 @@ namespace ceresc::sema
 			// about an object than you have to is never wrong.
 			const Type* targetPointee = target->arrayElementType();
 			const Type* sourcePointee = source->arrayElementType();
+
+			// A pointer to a function converts to a pointer to a function of the SAME signature and
+			// to nothing else. The qualifier walk below would wave anything through, because a
+			// function type is never const or volatile - and calling through a mismatched signature
+			// is not a portability nicety here, it is the wrong arguments in the wrong registers.
+			bool targetIsFunction = targetPointee && targetPointee->isFunction();
+			bool sourceIsFunction = sourcePointee && sourcePointee->isFunction();
+			if (targetIsFunction || sourceIsFunction)
+				return targetIsFunction && sourceIsFunction && *targetPointee == *sourcePointee;
+
 			while (sourcePointee && targetPointee)
 			{
 				if (sourcePointee->isConst() && !targetPointee->isConst())
@@ -375,11 +385,33 @@ namespace ceresc::sema
 		// travels as the f32 it already is - see docs/09-Variadic-Convention.md.
 	}
 
+	// The type a FunctionDecl declares: `int f(int)` has type `int(int)`. Built on demand rather
+	// than stored on the node, because only the handful of places that use a function as a value
+	// ever need it and the declaration already holds every piece.
+	const Type* Sema::functionTypeOf(const ast::FunctionDecl* decl)
+	{
+		if (!decl)
+			return errorRecoveryType();
+
+		std::vector<const Type*> paramTypes;
+		paramTypes.reserve(decl->params().size());
+		for (const Param& param : decl->params())
+			paramTypes.push_back(param.type);
+		return Type::makeFunction(_arena, decl->returnType(), paramTypes, decl->isVariadic());
+	}
+
 	const Type* Sema::decayArray(const Type* type) noexcept
 	{
-		if (!type || !type->isArray())
+		if (!type)
 			return type;
-		return Type::makePointer(_arena, type->arrayElementType());
+		if (type->isArray())
+			return Type::makePointer(_arena, type->arrayElementType());
+		// A function decays to a pointer to itself in every position but `sizeof` and `&`, and for
+		// the same reason an array does: a function type names no object, so there is nothing a
+		// value of that type could be. `&f` and `f` therefore mean the same thing, as in C.
+		if (type->isFunction())
+			return Type::makePointer(_arena, type);
+		return type;
 	}
 
 	const Type* Sema::integerPromote(const Type* type) noexcept
@@ -602,11 +634,18 @@ namespace ceresc::sema
 		}
 		else if (symbol->kind == SymbolKind::Function)
 		{
-			// This subset has no function-pointer type (see type.h's TypeKind), so a bare function
-			// name outside call position has nothing correct to be typed as - CallExpr resolves
-			// its callee itself and never routes through here (see visit(CallExpr&)), so rejecting
-			// this doesn't affect an ordinary `f(...)` call.
-			_diagnostics.error(node.location(), "using function '{}' as a value is not supported in this version", node.name());
+			if (symbol->funcDecl && symbol->funcDecl->isInterruptHandler())
+			{
+				// Rejected here as well as in call position, because a pointer would be a way round
+				// that check: the vector is the only entry an `iret` can return from.
+				_diagnostics.error(node.location(),
+					"'{}' is an '__interrupt' handler, so its address cannot be taken: it is reached through its vector",
+					node.name());
+			}
+			// The function's own type, which decayArray() turns into a pointer wherever a value is
+			// wanted. Left undecayed here so that `&f` and `sizeof f` - the two positions where C
+			// does not decay - can still see what it really is.
+			resultType = functionTypeOf(symbol->funcDecl);
 		}
 		else
 		{
@@ -663,33 +702,62 @@ namespace ceresc::sema
 	void Sema::visit(ast::CallExpr& node)
 	{
 		const Type* resultType = errorRecoveryType();
+
+		// Two kinds of callee, and only one of them has a declaration behind it. A name that
+		// resolves to a function keeps its FunctionDecl, because the parameter NAMES in the
+		// diagnostics come from there and nothing else has them; everything else is checked against
+		// the signature its type carries, which is all a call ever needed (see checkCallArguments).
 		ast::FunctionDecl* funcDecl = nullptr;
+		std::string calleeName = "the called expression";
+		const ast::FunctionTypeInfo* info = nullptr;
 
 		if (auto* nameExpr = dynamic_cast<ast::NameExpr*>(node.callee()))
 		{
 			Symbol* symbol = currentScope().lookup(nameExpr->name());
 			if (!symbol)
 				_diagnostics.error(node.location(), "use of undeclared identifier '{}'", nameExpr->name());
-			else if (symbol->kind != SymbolKind::Function)
-				_diagnostics.error(node.location(), "called object '{}' is not a function", nameExpr->name());
-			else if (symbol->funcDecl && symbol->funcDecl->isInterruptHandler())
+			else if (symbol->kind == SymbolKind::Function)
 			{
-				// A handler ends in `iret`, which pops a PC and flags the machine pushed on dispatch.
-				// Reached by `call`, it would pop the return address as a PC and whatever sat below it
-				// as flags. The vector is the only way in.
-				_diagnostics.error(node.location(),
-					"'{}' is an '__interrupt' handler and cannot be called: it is reached through its vector",
-					nameExpr->name());
+				if (symbol->funcDecl && symbol->funcDecl->isInterruptHandler())
+				{
+					// A handler ends in `iret`, which pops a PC and flags the machine pushed on
+					// dispatch. Reached by `call`, it would pop the return address as a PC and
+					// whatever sat below it as flags. The vector is the only way in.
+					_diagnostics.error(node.location(),
+						"'{}' is an '__interrupt' handler and cannot be called: it is reached through its vector",
+						nameExpr->name());
+				}
+				else
+					funcDecl = symbol->funcDecl;
 			}
 			else
-				funcDecl = symbol->funcDecl;
+			{
+				// A variable can be the callee too, when what it holds is a pointer to a function.
+				const Type* symbolType = symbol->type;
+				info = symbolType ? symbolType->calleeSignature() : nullptr;
+				if (!info)
+					_diagnostics.error(node.location(), "called object '{}' is not a function", nameExpr->name());
+				else
+					calleeName = std::format("'{}'", nameExpr->name());
+			}
 
-			nameExpr->setType(funcDecl ? funcDecl->returnType() : errorRecoveryType());
+			// The callee's own expression type: the function itself for a name that resolves to one
+			// (decayArray() is what turns it into a pointer where a value is wanted), or whatever
+			// the variable holds.
+			if (funcDecl)
+				nameExpr->setType(functionTypeOf(funcDecl));
+			else if (!info)
+				nameExpr->setType(errorRecoveryType());
 		}
 		else
 		{
-			checkExpr(node.callee());
-			_diagnostics.error(node.location(), "expression is not callable");
+			const Type* calleeType = decayArray(checkExpr(node.callee()));
+			info = calleeType ? calleeType->calleeSignature() : nullptr;
+			if (!info)
+			{
+				_diagnostics.error(node.location(), "called object of type '{}' is not a function or a pointer to one",
+					typeName(calleeType));
+			}
 		}
 
 		if (funcDecl)
@@ -697,6 +765,19 @@ namespace ceresc::sema
 			CallSignature signature{ funcDecl->returnType(), funcDecl->params(), funcDecl->isVariadic() };
 			checkCallArguments(node, signature, std::format("'{}'", funcDecl->name()));
 			resultType = funcDecl->returnType();
+		}
+		else if (info)
+		{
+			// A signature carries parameter TYPES and no names (type.h), so the Params handed to
+			// checkCallArguments() are built here with the names left empty - nothing reads them.
+			std::vector<Param> params;
+			params.reserve(info->paramCount);
+			for (const Type* paramType : info->params())
+				params.push_back(Param{ paramType, {}, node.location() });
+
+			CallSignature signature{ info->returnType, params, info->isVariadic };
+			checkCallArguments(node, signature, calleeName);
+			resultType = info->returnType;
 		}
 		else
 		{
@@ -719,6 +800,13 @@ namespace ceresc::sema
 		switch (node.op())
 		{
 			case UnaryOp::AddressOf:
+				if (operandType && operandType->isFunction())
+				{
+					// `&f` and `f` are the same value in C, and a function is not an lvalue, so this
+					// has to come before the lvalue check rather than after it.
+					resultType = Type::makePointer(_arena, operandType);
+					break;
+				}
 				if (!isLValue(node.operand()))
 					_diagnostics.error(node.location(), "cannot take the address of a non-lvalue expression");
 				else if (auto* name = dynamic_cast<ast::NameExpr*>(node.operand()))

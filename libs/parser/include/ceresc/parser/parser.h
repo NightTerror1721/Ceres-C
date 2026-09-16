@@ -278,7 +278,14 @@ namespace ceresc::parser
 		void parseDeclaratorSuffixes(Declarator& declarator);
 		// Derives the declared type by applying `declarator` to `base` - see the comment above.
 		// `isParameter` applies C's array-parameter decay to the outermost dimension.
-		const Type* applyDeclarator(const Type* base, const Declarator& declarator, bool isParameter);
+		//
+		// `outSignature`, when given, ends up pointing at the function suffix that produced the
+		// final type, or null when the final type is not a function. That is not always the first
+		// suffix written: in `int (*get(void))(int)` the list that makes `get` a function is the
+		// `(void)` inside the parentheses, and `(int)` belongs to what it returns. Only the order
+		// the derivations are APPLIED in knows which, so this records it as it goes.
+		const Type* applyDeclarator(const Type* base, const Declarator& declarator, bool isParameter,
+			const DeclaratorSuffix** outSignature = nullptr);
 
 		// At a '(' in direct-declarator position, does it open a nested declarator rather than a
 		// parameter list? `(*)`, `(f)` and `((...))` are declarators; `()` and `(int)` are lists.

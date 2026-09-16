@@ -772,6 +772,11 @@ namespace ceresc::ir
 		const Type* type = expr->type();
 		if (type && (type->isArray() || type->isAggregate()))
 			return lowerAddress(expr);
+		// A function decays to a pointer to itself, and its address IS its value - there is nothing
+		// to load through. Same shape as the array case above, and the same reason: a function type
+		// names no object, so no load could produce one.
+		if (type && type->isFunction())
+			return lowerAddress(expr);
 		IrValue addr = lowerAddress(expr);
 		return loadOfType(expr->location(), addr, type);
 	}
@@ -1099,16 +1104,28 @@ namespace ceresc::ir
 			argIsFloat.push_back(argType && argType->isFloat());
 		}
 
+		// A name that resolves to a FUNCTION is a direct call; anything else - a variable holding a
+		// pointer, a cast, an array element - is an address to be computed and jumped through. The
+		// test is which of the two the name is, not whether the callee is a name at all: with
+		// function pointers a variable can be the callee under a name too.
+		auto* callee = dynamic_cast<ast::NameExpr*>(node.callee());
+		bool isDirect = callee && _functionDecls.contains(callee->name());
+
+		// Lowered here, after the arguments' own expressions and before the Param run below: codegen
+		// requires the Params to sit immediately before the Call they belong to (it reads them back
+		// by position), so nothing may be emitted between them.
+		IrValue calleeAddress{};
+		if (!isDirect)
+			calleeAddress = lowerExpr(node.callee());
+
 		for (usize i = 0; i < argValues.size(); ++i)
 			emitVoid(loc, IrParamPayload{ argValues[i], argIsFloat[i], i >= fixedArgCount });
-
-		auto* callee = dynamic_cast<ast::NameExpr*>(node.callee());
-		std::string_view calleeName = callee ? callee->name() : std::string_view{}; // sema guarantees this - see the header comment
 
 		IrCallPayload payload;
 		payload.hasResult = hasResult && !returnsStructIndirect;
 		payload.isFloat = hasResult && resultType->isFloat();
-		payload.callee = calleeName;
+		payload.callee = isDirect ? callee->name() : std::string_view{};
+		payload.calleeValue = calleeAddress;
 		payload.argCount = static_cast<u32>(argValues.size());
 		if (payload.hasResult)
 			payload.result = _currentFunction->newTemp();

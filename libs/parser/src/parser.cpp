@@ -1352,7 +1352,8 @@ namespace ceresc::parser
 		if (!declarator.ok)
 			return nullptr;
 
-		const Type* type = applyDeclarator(base, declarator, /*isParameter=*/false);
+		const DeclaratorSuffix* signature = nullptr;
+		const Type* type = applyDeclarator(base, declarator, /*isParameter=*/false, &signature);
 		if (!type)
 			return nullptr;
 
@@ -1365,12 +1366,11 @@ namespace ceresc::parser
 				type = Type::withRestrict(_arena, type);
 		}
 
-		if (type->isFunction())
+		if (type->isFunction() && signature)
 		{
-			// The outermost suffix is the one that made it a function, and the one whose parameter
-			// NAMES the declaration keeps - the type itself holds only their types (type.h).
-			const DeclaratorSuffix& signature = declarator.suffixes.front();
-			return finishFunctionDecl(location, declarator.name, type, signature.params, signature.isVariadic, specifiers);
+			// The parameter NAMES the declaration keeps come from the suffix that made it a function -
+			// the type itself holds only their types (type.h).
+			return finishFunctionDecl(location, declarator.name, type, signature->params, signature->isVariadic, specifiers);
 		}
 		return finishVarDecl(location, declarator.name, type, specifiers);
 	}
@@ -1788,10 +1788,16 @@ namespace ceresc::parser
 		return declarator;
 	}
 
-	const Type* Parser::applyDeclarator(const Type* base, const Declarator& declarator, bool isParameter)
+	const Type* Parser::applyDeclarator(const Type* base, const Declarator& declarator, bool isParameter,
+		const DeclaratorSuffix** outSignature)
 	{
 		if (!base)
 			return nullptr;
+
+		// Set when a function derivation is applied, cleared by anything applied after it - so when
+		// the recursion ends it holds the suffix that produced the final type, and only then.
+		auto note = [&](const DeclaratorSuffix* suffix) { if (outSignature) *outSignature = suffix; };
+		note(nullptr);
 
 		// 1. The leading `*`s. They are the outermost construct whenever no parentheses separate
 		//    them from the name, which is why they go first: in `int *f[3]`, `f` is an array of
@@ -1805,6 +1811,7 @@ namespace ceresc::parser
 				base = Type::withVolatile(_arena, base);
 			if (level.isRestrict)
 				base = Type::withRestrict(_arena, base);
+			note(nullptr);
 		}
 
 		// 2. The suffixes, RIGHT to left. `int f[2][3]` groups as `(f[2])[3]`, so `[3]` is the
@@ -1828,6 +1835,7 @@ namespace ceresc::parser
 				for (const Param& param : suffix.params)
 					paramTypes.push_back(param.type);
 				base = Type::makeFunction(_arena, base, paramTypes, suffix.isVariadic);
+				note(&suffix);
 				continue;
 			}
 
@@ -1846,9 +1854,11 @@ namespace ceresc::parser
 						"array size is required here (this version cannot infer it from an initializer)");
 				}
 				base = Type::makePointer(_arena, base); // decays, or recovers as a pointer
+				note(nullptr);
 				continue;
 			}
 			base = Type::makeArray(_arena, base, suffix.arraySize);
+			note(nullptr);
 		}
 
 		// 3. Whatever the parentheses enclosed, applied to everything built so far. This is the step
@@ -1856,7 +1866,7 @@ namespace ceresc::parser
 		//    pointer: the `(void)` suffix above has already turned `int` into `int(void)`, and only
 		//    now does the nested `*` see it.
 		if (declarator.nested)
-			return applyDeclarator(base, *declarator.nested, isParameter);
+			return applyDeclarator(base, *declarator.nested, isParameter, outSignature);
 
 		// C's parameter decay, applied once here rather than inside the suffix loop so that it also
 		// catches a type that arrived already an array or a function - `typedef int A[3]; void f(A a)`
@@ -1864,9 +1874,15 @@ namespace ceresc::parser
 		// An array parameter is a pointer to its first element and a function parameter is a pointer
 		// to the function, because there is nothing else either could be passed as.
 		if (isParameter && base->isArray())
+		{
+			note(nullptr);
 			return Type::makePointer(_arena, base->arrayElementType());
+		}
 		if (isParameter && base->isFunction())
+		{
+			note(nullptr);
 			return Type::makePointer(_arena, base);
+		}
 		return base;
 	}
 

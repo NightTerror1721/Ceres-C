@@ -946,7 +946,24 @@ namespace ceresc::codegen
 					}
 				}
 
-				_emitter.instr(std::format("call {}", mangledName(p.callee)), comment);
+				if (p.isIndirect())
+				{
+					// `call rN` is the same mnemonic with a register operand - the assembler picks
+					// CALLR from the operand's shape (05-Instruction-Set.md). r12 is the register to
+					// put the address in: it is allocatable (value_placement.cpp's pools), and the
+					// rule that nothing holds an allocatable register across a call is exactly what
+					// makes it free at the moment of one. r4/r5 stay pure scratch and are never
+					// handed out, so shuttling the address through one cannot disturb the arguments
+					// already sitting in r0-r3.
+					std::string target = valueIn(p.calleeValue, kScratchA, false, loc);
+					if (target != intReg(12))
+						_emitter.instr(std::format("mov {}, {}", intReg(12), target), comment);
+					_emitter.instr(std::format("call {}", intReg(12)), comment);
+				}
+				else
+				{
+					_emitter.instr(std::format("call {}", mangledName(p.callee)), comment);
+				}
 				if (p.hasResult)
 				{
 					std::string returned = bankReg(0, p.isFloat);

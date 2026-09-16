@@ -536,11 +536,49 @@ TEST(sema, assigning_to_an_enum_constant_is_an_error)
 	CHECK(containsMessage(outcome, "not assignable"));
 }
 
-TEST(sema, using_a_function_name_as_a_bare_value_is_an_error)
+TEST(sema, a_function_name_used_as_a_value_decays_to_a_pointer_to_it)
 {
-	CheckOutcome outcome = checkSource("int f(); int main() { f; }");
-	CHECK(!outcome.ok);
-	CHECK(containsMessage(outcome, "using function 'f' as a value"));
+	// This used to be an error - there was no function-pointer type for the name to have. It now
+	// has one, and `f` and `&f` mean the same thing, as in C.
+	CHECK(checkSource("int f(int x); int main() { int (*p)(int) = f; return p(1); }").ok);
+	CHECK(checkSource("int f(int x); int main() { int (*p)(int) = &f; return p(1); }").ok);
+
+	// The NAME's own type is the function type; the decay happens where a value is wanted, which
+	// statement position is not. That is C's model rather than an accident of where the conversion
+	// is written - `sizeof f` and `&f` both need to see what it really is.
+	CHECK_EQ(typeOfMainLastExpr("int f(int x); int main() { f; }"), "int (int)");
+}
+
+TEST(sema, a_function_pointer_only_converts_to_one_of_the_same_signature)
+{
+	// The qualifier walk that guards ordinary pointer conversions would wave any of these through,
+	// because a function type is never const or volatile. Calling through a mismatched signature is
+	// not a portability nicety here - it is the wrong arguments in the wrong registers.
+	CHECK(checkSource("int f(int x); int main() { int (*p)(int) = f; return 0; }").ok);
+	CHECK(!checkSource("int f(int x); int main() { int (*p)(void) = f; return 0; }").ok);
+	CHECK(!checkSource("int f(int x); int main() { float (*p)(int) = f; return 0; }").ok);
+	CHECK(!checkSource("int f(int x); int main() { int* p = f; return 0; }").ok);
+
+	// A null pointer constant still assigns, the same way it does for any other pointer.
+	CHECK(checkSource("int main() { int (*p)(int) = 0; return 0; }").ok);
+}
+
+TEST(sema, a_call_through_a_pointer_is_checked_against_the_signature_it_carries)
+{
+	CHECK(checkSource("int main() { int (*p)(int) = 0; return p(1); }").ok);
+
+	CheckOutcome arity = checkSource("int main() { int (*p)(int) = 0; return p(1, 2); }");
+	CHECK(!arity.ok);
+	CHECK(containsMessage(arity, "expects 1 argument(s), got 2"));
+
+	CheckOutcome argType = checkSource("struct S { int a; }; int main() { struct S s; int (*p)(int) = 0; return p(s); }");
+	CHECK(!argType.ok);
+	CHECK(containsMessage(argType, "incompatible type"));
+
+	// Something that is neither a function nor a pointer to one.
+	CheckOutcome notCallable = checkSource("int main() { int x = 0; return x(1); }");
+	CHECK(!notCallable.ok);
+	CHECK(containsMessage(notCallable, "is not a function"));
 }
 
 // ---- pointer/null comparisons -------------------------------------------------------------------------

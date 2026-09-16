@@ -933,6 +933,8 @@ namespace ceresc::ir
 						// it in a Call again. A function pointer is the case that needs it, and an
 						// interrupt handler - reachable only through the vector table - is the same
 						// shape of edge with no instruction at all at the far end of it.
+						// An indirect call names nothing, so it adds no edge of its own - what keeps
+						// its target alive is the GlobalAddr that produced the address, below.
 						if (instr->opcode() == IrOpcode::Call)
 							reach(instr->as<IrCallPayload>().callee);
 						else if (instr->opcode() == IrOpcode::GlobalAddr)
@@ -1370,6 +1372,13 @@ namespace ceresc::ir
 						}
 
 						const auto& call = instr->as<IrCallPayload>();
+						if (call.isIndirect())
+						{
+							// Nothing to look up: the target is an address computed at run time, and
+							// which function it is is exactly what this pass cannot know.
+							rewritten.push_back(instr);
+							continue;
+						}
 						auto candidate = inlinable.find(call.callee);
 						// Never inline a function into itself: isInlinable() already rules out a
 						// callee that calls anything, but a self-call would still be reachable if a

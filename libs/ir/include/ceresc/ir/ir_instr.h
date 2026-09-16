@@ -238,8 +238,16 @@ namespace ceresc::ir
 		IrValue result;   // only meaningful when hasResult is true (the callee's return type is not void)
 		bool hasResult = false;
 		bool isFloat = false; // meaningful only when hasResult: the result comes back in f0/ret0 (§10)
+		// Exactly one of these two says where to jump. A name is the ordinary case and becomes
+		// `call label`; `calleeValue` is an address computed at run time and becomes `call rN`,
+		// which is what a function pointer needs. Kept as two fields rather than one variant so
+		// that a direct call's payload is bit-for-bit what it always was - the golden tests pin
+		// that output, and an indirect call should cost nothing to a program that makes none.
 		std::string_view callee;
+		IrValue calleeValue;
 		u32 argCount = 0; // number of Params queued since the previous Call - see §9
+
+		bool isIndirect() const noexcept { return callee.empty(); }
 	};
 
 	// The address of the first argument in THIS function's variadic tail - the one thing a variadic
@@ -427,7 +435,16 @@ namespace ceresc::ir
 					fn(p.value);
 				break;
 			}
-			default: break; // Const/FrameAddr/GlobalAddr/Call/Jump read no temporary
+			// An indirect call reads the address it jumps to. A direct one reads nothing: its callee
+			// is a name, resolved by the linker rather than computed.
+			case IrOpcode::Call:
+			{
+				const IrCallPayload& payload = instr.as<IrCallPayload>();
+				if (payload.calleeValue.isValid())
+					fn(payload.calleeValue);
+				break;
+			}
+			default: break; // Const/FrameAddr/GlobalAddr/Jump read no temporary
 		}
 	}
 }

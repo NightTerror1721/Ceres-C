@@ -186,12 +186,17 @@ namespace ceresc::ir
 			case IrOpcode::Call:
 			{
 				const auto& payload = instr.as<IrCallPayload>();
+				// An indirect call names no symbol, so it prints the temporary it jumps through:
+				// `call %7, 1` rather than `call f, 1`.
+				std::string target = payload.isIndirect()
+					? std::string(valueName(payload.calleeValue))
+					: std::string(payload.callee);
 				if (payload.hasResult)
 					_output += payload.isFloat
-						? std::format("{} = call.f {}, {}\n", valueName(payload.result), payload.callee, payload.argCount)
-						: std::format("{} = call {}, {}\n", valueName(payload.result), payload.callee, payload.argCount);
+						? std::format("{} = call.f {}, {}\n", valueName(payload.result), target, payload.argCount)
+						: std::format("{} = call {}, {}\n", valueName(payload.result), target, payload.argCount);
 				else
-					_output += std::format("call {}, {}\n", payload.callee, payload.argCount);
+					_output += std::format("call {}, {}\n", target, payload.argCount);
 				break;
 			}
 			case IrOpcode::VaStart:

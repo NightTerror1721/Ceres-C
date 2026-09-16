@@ -1244,3 +1244,49 @@ TEST(ir, a_member_of_an_ordinary_struct_is_not_volatile)
 		"struct R { int a; }; int f(struct R* p) { p->a = 1; return p->a; }", "f");
 	CHECK(!contains(text, ".v"));
 }
+
+// ---- function pointers ---------------------------------------------------------------------------
+
+TEST(ir, a_call_through_a_pointer_lowers_to_an_indirect_call)
+{
+	// A direct call names its callee and the linker resolves it. An indirect one carries an address
+	// instead, computed like any other value - so it prints the temporary it jumps through.
+	std::string text = functionIr(
+		"int f(int x); int main() { int (*p)(int) = f; return p(1); }", "main");
+	CHECK(contains(text, "&global \"f\""));   // the address of the function, taken as a value
+	CHECK(contains(text, "call %"));          // ...and jumped through
+}
+
+TEST(ir, a_call_by_name_is_still_a_direct_call)
+{
+	// The contrast that makes the test above about pointers rather than about every call changing
+	// shape. Nothing about a direct call's lowering moved.
+	std::string text = functionIr("int f(int x); int main() { return f(1); }", "main");
+	CHECK(contains(text, "call f, 1"));
+}
+
+TEST(ir, the_arguments_of_an_indirect_call_stay_contiguous_with_it)
+{
+	// Codegen reads a call's arguments back by position, from the Param instructions immediately
+	// before it - so the callee's own address has to be computed before that run begins, not
+	// between the last Param and the Call.
+	std::string text = functionIr(
+		"int f(int a, int b); int main() { int (*p)(int, int) = f; return p(1, 2); }", "main");
+	// The two instructions before the call are its two Params, with nothing in between.
+	std::vector<std::string> lines;
+	for (usize start = 0; start < text.size();)
+	{
+		usize end = text.find('\n', start);
+		if (end == std::string::npos)
+			break;
+		lines.push_back(text.substr(start, end - start));
+		start = end + 1;
+	}
+	usize callLine = 0;
+	for (usize i = 0; i < lines.size(); ++i)
+		if (lines[i].find("call %") != std::string::npos)
+			callLine = i;
+	CHECK(callLine >= 2);
+	CHECK(lines[callLine - 1].find("param ") != std::string::npos);
+	CHECK(lines[callLine - 2].find("param ") != std::string::npos);
+}

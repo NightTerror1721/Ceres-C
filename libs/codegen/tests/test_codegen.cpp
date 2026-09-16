@@ -1206,3 +1206,33 @@ TEST(codegen, an_interrupt_vector_binding_becomes_one_top_level_interrupt_line)
 	CHECK(contains(casm, "interrupt 17: h"));
 	CHECK(casm.find("interrupt 17: h") < casm.find("@text"));
 }
+
+// ---- function pointers ---------------------------------------------------------------------------
+
+TEST(codegen, an_indirect_call_goes_through_a_register)
+{
+	// `call rN` is the same mnemonic with a register operand - the assembler picks CALLR from the
+	// operand's shape. r12 is free at the point of a call by the same rule that makes it
+	// allocatable: nothing holds an allocatable register across one.
+	std::string casm = atO2("int f(int x); int main() { int (*p)(int) = f; return p(1); }");
+	CHECK(contains(casm, "la r"));        // the function's address, materialized
+	CHECK(contains(casm, "call r12"));
+}
+
+TEST(codegen, a_call_by_name_still_names_its_callee)
+{
+	std::string casm = atO2("int f(int x); int main() { return f(1); }");
+	CHECK(contains(casm, "call f"));
+	CHECK(!contains(casm, "call r"));
+}
+
+TEST(codegen, a_static_function_whose_address_is_taken_survives_unused_function_elimination)
+{
+	// Nothing calls it by name - the only edge is the address itself. removeUnusedFunctions builds
+	// its root set from Call instructions, so without also following a GlobalAddr that names a
+	// function, -O2 deleted the body out from under the pointer.
+	std::string casm = atO2(
+		"static int hidden(int x) { return x + 1; }"
+		"int (*get(void))(int) { return hidden; }");
+	CHECK(contains(casm, "hidden:"));
+}
