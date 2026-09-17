@@ -121,6 +121,14 @@ call-free. Everything else lives in a field of the function's stack frame. `r8`�
 the callee-saved half, are left unused: using them would mean saving and restoring them around every
 function that touches one.
 
+Width is the other half of the rule, and it is simply "does it fit": a `char`, a `bool`, a `short`,
+an `int`, a `float` and a pointer are all candidates, an array or a `struct` is not. A narrow local
+in a register holds exactly what a narrow frame field would have held, because the IR keeps a value
+of narrow type in its already-narrowed representation at all times — so the `strb`/`ldrsb` pair a
+`char` field would have gone through has nothing left to do. The one value that does not come from
+inside the function is a narrow *parameter*, and the prologue narrows it into its register with the
+one instruction (`sxtb`, `sxth` or an `and` mask) the store into a field used to perform for free.
+
 At `-O0` there is no allocation at all: every local, parameter and temporary gets its own permanent
 frame field. That path stays reachable on purpose — it needs no analysis to be correct, so it is
 what you bisect against when an optimized program misbehaves.

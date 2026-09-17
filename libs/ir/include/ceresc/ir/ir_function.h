@@ -82,6 +82,11 @@ namespace ceresc::ir
 		bool isFloat = false;
 		bool isVolatile = false;
 		bool preferRegister = false;
+		// Only ever consulted for a sub-word slot, and only for a PARAMETER: codegen's prologue has
+		// to reproduce, in a register, the truncation the `strb`/`strh` into a frame field used to
+		// perform for free (codegen.cpp's parameter settling). Signed means `sxtb`/`sxth`, unsigned
+		// an `and` mask - the same two forms IrUnOp::Narrow picks between.
+		bool isSigned = false;
 	};
 
 	class IrFunction

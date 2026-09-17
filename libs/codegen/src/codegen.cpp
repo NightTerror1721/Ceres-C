@@ -74,6 +74,17 @@ namespace ceresc::codegen
 			return "str";
 		}
 
+		// `dest = (T)source` for an integer T narrower than a word, in one instruction - the
+		// same two forms IrUnOp::Narrow emits, and for the same reason: sign-extending is
+		// `sxtb`/`sxth`, zero-extending is a mask whose immediate `and` takes unsigned, so
+		// 0xFFFF arrives intact.
+		std::string narrowToWidth(std::string_view dest, std::string_view source, u32 sizeInBytes, bool isSigned)
+		{
+			if (isSigned)
+				return std::format("{} {}, {}", sizeInBytes == 1 ? "sxtb" : "sxth", dest, source);
+			return std::format("and {}, {}, {}", dest, source, sizeInBytes == 1 ? 255 : 65535);
+		}
+
 		// A C symbol keeps its own name in the generated CASM. That is what makes interoperability
 		// work in both directions without a decoder ring: a routine written in CASM is called from C
 		// under the name it was written with, and a C function is called from CASM under the name it
@@ -1248,6 +1259,17 @@ namespace ceresc::codegen
 			if (home.kind == PlacementKind::Register)
 			{
 				std::string target = bankReg(home.index, home.isFloat);
+				// A sub-word parameter is normalized on the way in, because it came from outside
+				// this function. Everything the body itself writes to the local is already in its
+				// narrowed representation (ir_instr.h's invariant), but the caller's word is only
+				// what the caller chose to put there - and the `strb`/`strh` this parameter used to
+				// settle into a frame field truncated it for free. One instruction says the same
+				// thing, and it replaces the move rather than following it.
+				if (!slot.isFloat && slot.sizeInBytes < 4)
+				{
+					_emitter.instr(narrowToWidth(target, arrived, slot.sizeInBytes, slot.isSigned), comment);
+					continue;
+				}
 				if (target != arrived)
 					_emitter.instr(std::format("mov {}, {}", target, arrived), comment);
 				continue;

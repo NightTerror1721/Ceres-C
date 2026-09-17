@@ -270,6 +270,15 @@ namespace ceresc::codegen
 			// wider-than-a-word one does not fit) and `register` does not relax one: C says the
 			// keyword is a request the implementation may decline, never a promise it must keep at
 			// the cost of a wrong answer.
+			//
+			// "Does not fit" means wider than a register, not narrower than one. A `char`, a
+			// `short` and a `bool` all fit with room to spare, and the IR's own narrowing
+			// invariant (ir_instr.h) is what makes holding one in a register mean the same thing
+			// as holding it in a byte or half-word field: a value of narrow type is ALWAYS
+			// already in its narrowed representation, so the strb/ldrsb pair a frame field would
+			// have gone through has nothing left to do. The one place that is not automatic is a
+			// parameter, which arrives from outside this function - codegen's prologue narrows
+			// one on the way into its register, exactly as the store into a field used to.
 			auto assignLocals = [&](bool requested)
 			{
 				for (u32 i = 0; i < localCount; ++i)
@@ -279,7 +288,7 @@ namespace ceresc::codegen
 						continue;
 
 					bool paramOnStack = i < function.paramCount() && _paramArrival[i].kind == ArgSlotKind::Stack;
-					if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.isVolatile || slot.sizeInBytes != 4 || paramOnStack)
+					if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.isVolatile || slot.sizeInBytes > 4 || paramOnStack)
 						continue;
 
 					// A parameter prefers the register it already arrived in: taking it means the

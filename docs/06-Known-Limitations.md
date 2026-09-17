@@ -111,7 +111,9 @@ checked contract rather than an unsafe speculative transformation.
 `register` moves a local to the front of the queue for a machine register, ahead of everything that
 did not ask. It only reorders preferences: every condition that keeps a local out of a register is a
 correctness rule — a call clobbers the pool, an escaped local needs an address, a `volatile` one
-needs a memory home, one wider than a word does not fit — and the keyword relaxes none of them.
+needs a memory home, one wider than a register does not fit — and the keyword relaxes none of them.
+"Wider than a register" is the whole of the width rule: a `char`, a `bool` and a `short` are as
+eligible as an `int` is.
 Where no local would have been spilled anyway it therefore says nothing new, and at `-O0` it says
 nothing at all, because register allocation itself is off (see [the CLI](05-CLI.md)). It may only be
 used for automatic local variables — at file scope or on a function it is rejected, as in C. Also as

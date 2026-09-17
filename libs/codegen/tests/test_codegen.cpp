@@ -636,6 +636,40 @@ TEST(codegen, register_allocation_is_what_keeps_values_out_of_the_frame)
 	CHECK(contains(simplified, "enter __frame_add")); // and therefore a frame, whatever frameless-leaf says
 }
 
+TEST(codegen, a_local_narrower_than_a_word_still_earns_a_register)
+{
+	// A `char` and a `short` fit in a register with room to spare, so nothing about their width
+	// should force a frame field. The IR keeps a narrow value in its narrowed representation at all
+	// times (ir_instr.h), which is what makes the register hold exactly what a byte field would
+	// have held.
+	std::string text = atO2("int f(int n) { char c; short s; c = (char)n; s = (short)n; return c + s; }");
+	CHECK(!contains(text, "struct __frame_f"));
+	CHECK(!contains(text, "enter"));
+}
+
+TEST(codegen, a_sub_word_parameter_in_a_register_is_narrowed_by_the_prologue)
+{
+	// The one value a function does not produce itself. A `strb` into a frame field truncated the
+	// caller's word for free; the register home has to say it, in the same one instruction, or a
+	// caller that passed a wider word (hand-written CASM, say - docs/07-CASM-Interop.md) would be
+	// read back unnarrowed.
+	CHECK(contains(atO2("int f(char c) { char x = c; return x; }"), "sxtb r0, r0"));
+	CHECK(contains(atO2("int f(unsigned char c) { unsigned char x = c; return x; }"), "and r0, r0, 255"));
+	CHECK(contains(atO2("int f(short s) { short x = s; return x; }"), "sxth r0, r0"));
+	CHECK(contains(atO2("int f(unsigned short s) { unsigned short x = s; return x; }"), "and r0, r0, 65535"));
+
+	// And an int-width parameter keeps costing nothing at all.
+	CHECK(!contains(atO2("int f(int v) { int x = v; return x; }"), "sxtb"));
+}
+
+TEST(codegen, a_local_wider_than_a_register_still_takes_a_frame_field)
+{
+	// The rule is "fits in a register", not "is not an int": an array does not fit however few
+	// elements it has.
+	std::string text = atO2("int f() { int a[2]; a[0] = 1; a[1] = 2; return a[0] + a[1]; }");
+	CHECK(contains(text, "struct __frame_f"));
+}
+
 TEST(codegen, local_slot_reuse_shares_one_field_between_disjoint_scopes)
 {
 	// Three locals, never alive at the same time. Reuse is measured on the frame struct rather than

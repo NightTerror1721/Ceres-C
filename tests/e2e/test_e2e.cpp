@@ -760,6 +760,31 @@ TEST(e2e, a_narrow_value_survives_a_round_trip_through_a_struct_field)
 		"5");
 }
 
+TEST(e2e, a_narrow_local_kept_in_a_register_reads_back_exactly_as_a_frame_field_would)
+{
+	// A `char`, a `short` and a `bool` all fit in a register, so none of them needs a frame field -
+	// and none of them may change meaning by not having one. The narrow parameters are the
+	// interesting half: the prologue narrows each one into its register, which is what the
+	// `strb`/`strh` into a field used to do on the way past.
+	runsTheSameAtEveryLevel("narrow_locals_in_registers",
+		"int wide_char(char c) { char x = c; return (int)x; }"
+		"int wide_uchar(unsigned char c) { unsigned char x = c; return (int)x; }"
+		"int wide_short(short s) { short x = s; return (int)x; }"
+		"int wrapped(short s) { short x = s; x = x + 1; return (int)x; }"
+		"int flag(bool b) { bool x = b; return x ? 1 : 0; }"
+		"int opaque(int v) { return v; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (wide_char((char)opaque(200)) == -56)"
+		"               + (wide_uchar((unsigned char)opaque(200)) == 200)"
+		"               + (wide_short((short)opaque(-300)) == -300)"
+		"               + (wrapped((short)opaque(32767)) == -32768)"
+		"               + (flag(true) == 1) + (flag(false) == 0) + 1;" // 48 + 7
+		"    return 0;"
+		"}",
+		"7");
+}
+
 // ---- storage classes and const ------------------------------------------------------------------
 
 TEST(e2e, a_static_local_keeps_its_value_between_calls)
