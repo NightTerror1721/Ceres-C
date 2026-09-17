@@ -285,7 +285,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E4003` | A global's initializer that is not a compile-time constant. |
 | `E4004` | A C name that is a reserved word in CeresASM — see [07-CASM-Interop.md](07-CASM-Interop.md). |
 | `E4005` | Internal: a generated function with no declaration behind it. |
-| `E4006` | A static initializer that is an address constant — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `E4006` | A static initializer that is an address constant **with an offset** (like `&a[i]`) — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 
 ### `5xxx` — ir
 

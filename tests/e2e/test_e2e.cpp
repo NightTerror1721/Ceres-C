@@ -166,6 +166,61 @@ TEST(e2e, global_variables_persist_across_calls)
 		"5");
 }
 
+TEST(e2e, a_static_string_pointer_holds_the_literals_address)
+{
+	// `char* msg = "hi";` at file scope: msg is a pointer whose initializer is the literal's
+	// address, which is not known until the link. Reading through it must reach the bytes.
+	runsTheSameAtEveryLevel("static_string_pointer",
+		"char* msg = \"hi\";"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = msg[0];"
+		"    *term = msg[1];"
+		"    return 0;"
+		"}",
+		"hi");
+}
+
+TEST(e2e, an_array_of_static_string_pointers_holds_each_literals_address)
+{
+	runsTheSameAtEveryLevel("static_string_pointer_array",
+		"char* names[2] = { \"a\", \"b\" };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = names[0][0];"
+		"    *term = names[1][0];"
+		"    return 0;"
+		"}",
+		"ab");
+}
+
+TEST(e2e, a_struct_pointer_field_holds_the_literals_address)
+{
+	runsTheSameAtEveryLevel("struct_string_pointer",
+		"struct S { char* s; };"
+		"struct S s = { \"hi\" };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = s.s[0];"
+		"    *term = s.s[1];"
+		"    return 0;"
+		"}",
+		"hi");
+}
+
+TEST(e2e, a_static_pointer_to_a_global_holds_its_address)
+{
+	runsTheSameAtEveryLevel("static_pointer_to_global",
+		"int g = 5;"
+		"int* p = &g;"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + *p;"
+		"    return 0;"
+		"}",
+		"5");
+}
+
 TEST(e2e, a_for_loop_produces_the_right_value)
 {
 	runsTheSameAtEveryLevel("for_loop",

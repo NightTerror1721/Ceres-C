@@ -966,47 +966,55 @@ TEST(codegen, a_global_structs_word_image_places_narrow_fields_at_their_real_off
 	CHECK(contains(text, "global let m: u32[3] = [0x00000001, 0x00000002, 0x00000003]   // struct Mixed (12 bytes)"));
 }
 
-TEST(codegen, a_string_literal_initializing_a_POINTER_is_refused_rather_than_written_as_a_byte)
+TEST(codegen, a_string_literal_initializing_a_POINTER_writes_the_literals_address)
 {
-	// The bug this rules out: the string-literal branch wrote the literal's BYTES wherever it was
-	// asked to, array or not - so `char* n[2] = {"a", "b"}` came out as {97, 98}, two pointers to
-	// addresses 97 and 98, with nothing said about it. A pointer initializer asks for the
-	// literal's ADDRESS, which is a different thing and one this back end cannot place.
-	BackEndOutcome pointerArray = generateExpectingDiagnostics("char* names[2] = { \"a\", \"b\" };");
-	CHECK_EQ(pointerArray.errors.size(), usize{ 1 });
-	CHECK(contains(pointerArray.errors[0], "E4006"));
-	CHECK(contains(pointerArray.errors[0], "the address of a string literal"));
-	CHECK(!contains(pointerArray.casm, "97"));
+	// A pointer initializer asks for the literal's ADDRESS, not its bytes - so `char* n[2] =
+	// {"a", "b"}` comes out as two symbol names, never {97, 98}. Each literal gets its own .rodata
+	// label, minted here because the IR only sees string literals that appear in a function body.
+	std::string pointerArray = atO2("char* names[2] = { \"a\", \"b\" };");
+	CHECK(contains(pointerArray, "global let names: u32[2] = [__cclit0, __cclit1]"));
+	CHECK(contains(pointerArray, "let __cclit0: u8[2] = \"a\""));
+	CHECK(contains(pointerArray, "let __cclit1: u8[2] = \"b\""));
+	CHECK(!contains(pointerArray, "97"));
+	CHECK(!contains(pointerArray, "98"));
 
-	BackEndOutcome pointerField = generateExpectingDiagnostics(
-		"struct S { char* s; }; struct S s = { \"x\" };");
-	CHECK_EQ(pointerField.errors.size(), usize{ 1 });
-	CHECK(contains(pointerField.errors[0], "E4006"));
+	std::string pointerField = atO2("struct S { char* s; }; struct S s = { \"x\" };");
+	CHECK(contains(pointerField, "global let s: u32[1] = [__cclit0]"));
+	CHECK(contains(pointerField, "let __cclit0: u8[2] = \"x\""));
 
-	BackEndOutcome plainPointer = generateExpectingDiagnostics("char* p = \"abc\";");
-	CHECK_EQ(plainPointer.errors.size(), usize{ 1 });
-	CHECK(contains(plainPointer.errors[0], "E4006"));
+	std::string plainPointer = atO2("char* p = \"abc\";");
+	CHECK(contains(plainPointer, "global let p: u32 = __cclit0"));
+	CHECK(contains(plainPointer, "let __cclit0: u8[4] = \"abc\""));
 }
 
-TEST(codegen, any_other_address_constant_is_refused_with_the_same_reason)
+TEST(codegen, an_address_constant_initializer_names_the_symbol_it_points_at)
 {
-	// C calls all of these address constants and allows them as static initializers. Saying "must
-	// be a compile-time constant" told the program it was wrong about its own language; E4006 says
-	// which side the limitation is on.
-	BackEndOutcome addressOf = generateExpectingDiagnostics("int g; int* p = &g;");
-	CHECK_EQ(addressOf.errors.size(), usize{ 1 });
-	CHECK(contains(addressOf.errors[0], "E4006"));
-	CHECK(contains(addressOf.errors[0], "an address constant"));
+	// `&g` and an array's name both decay to the object's address, which is now a symbol the
+	// assembler relocates - not "must be a compile-time constant", and not the object's first byte.
+	std::string addressOf = atO2("int g; int* p = &g;");
+	CHECK(contains(addressOf, "global let p: u32 = g"));
 
-	BackEndOutcome decayedArray = generateExpectingDiagnostics("int a[2]; int* p = a;");
-	CHECK_EQ(decayedArray.errors.size(), usize{ 1 });
-	CHECK(contains(decayedArray.errors[0], "E4006"));
+	std::string decayedArray = atO2("int a[2]; int* p = a;");
+	CHECK(contains(decayedArray, "global let p: u32 = a"));
 
 	// And something that really is not constant keeps the message that fits it.
 	BackEndOutcome notConstant = generateExpectingDiagnostics("int n; int a[2] = { n, 1 };");
 	CHECK_EQ(notConstant.errors.size(), usize{ 1 });
 	CHECK(contains(notConstant.errors[0], "E4003"));
 	CHECK(contains(notConstant.errors[0], "must be a compile-time constant"));
+}
+
+TEST(codegen, an_address_constant_with_an_offset_is_still_refused)
+{
+	// `a` decays to the array's address and works; `&a[3]` is that address plus a displacement,
+	// which nothing can spell into a .data initializer - it is still a diagnostic, and a precise one.
+	std::string base = atO2("int a[4]; int* p = a;");
+	CHECK(contains(base, "global let p: u32 = a"));
+
+	BackEndOutcome offset = generateExpectingDiagnostics("int a[4]; int* p = &a[3];");
+	CHECK_EQ(offset.errors.size(), usize{ 1 });
+	CHECK(contains(offset.errors[0], "E4006"));
+	CHECK(contains(offset.errors[0], "an address with an offset"));
 }
 
 TEST(codegen, a_string_literal_still_fills_a_char_array_at_every_depth)

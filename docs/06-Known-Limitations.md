@@ -86,30 +86,31 @@ mapping.
 The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
 NAME is then an ordinary name for the capped type and says nothing further.
 
-### No address constants in a static initializer
+### No address constant with an offset in a static initializer
 
-C lets a file-scope object be initialized with the address of another one — a string literal,
-`&x`, or an array's name. All four of these are legal C and all four are refused here:
+C lets a file-scope object be initialized with the address of another object — a string literal,
+`&x`, or an array's or function's name. All of these are legal C and all of them work here now:
 
 ```c
-char*  message = "hi";          /* error[E4006] */
-char*  names[] = { "a", "b" };  /* error[E4006] */
+char*  message = "hi";                /* a string literal's address */
+char*  names[] = { "a", "b" };        /* an array of them */
 int    g;
-int*   p = &g;                  /* error[E4006] */
-struct S { char* s; } s = { "x" };  /* error[E4006] */
+int*   p = &g;                        /* &x */
+struct S { char* s; } s = { "x" };    /* a pointer field */
 ```
 
-The limitation is CeresASM's rather than this compiler's, and it is structural: a relocation
-patches a word in `.text` and records nothing else — see
-[25-Separate-Compilation.md](https://github.com/Krampus1721/CeresASM/blob/main/docs/25-Separate-Compilation.md).
-An address is not known until the link, so there is no way to write one into `.data` or `.rodata`,
-and the assembler refuses `let p: u32 = msg` for the same reason: *'msg' is not a constant*.
+CeresASM relocations patch a word in `.data` and `.rodata`, not just `.text` — see
+[25-Separate-Compilation.md](https://github.com/Krampus1721/CeresASM/blob/main/docs/25-Separate-Compilation.md) —
+so the address is left for the link to fill in, exactly like an instruction operand's is.
 
-Assign it inside a function instead, where the address is an ordinary `la` like any other:
+What is still refused is an address **with an offset**: `&a[i]` is an address constant in C, but it is
+the address of `a` plus a displacement, and there is no way to spell that displacement into the
+initializer. Write the base pointer and add the offset at run time instead:
 
 ```c
-char* message;
-void start(void) { message = "hi"; }
+int a[4];
+int* base = a;              /* fine: a's address, no offset */
+int* fourth = &a[3];        /* error[E4006]: a's address plus an offset */
 ```
 
 A `char` **array** is unaffected, because the bytes are the value and no address is involved:

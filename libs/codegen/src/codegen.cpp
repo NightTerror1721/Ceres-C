@@ -1368,6 +1368,57 @@ namespace ceresc::codegen
 		}
 	}
 
+	std::optional<std::string> CodeGen::addressConstantSymbol(const Expr* expr) const
+	{
+		if (!expr)
+			return std::nullopt;
+
+		// A string literal in an initializer has no IR entry, so its label is minted here. The
+		// `.lit` prefix stays out of the IR's `.str` numbering (see mangledName()).
+		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(expr))
+		{
+			auto [it, inserted] = _initializerStringNames.try_emplace(literal, std::string{});
+			if (inserted)
+			{
+				it->second = mangledName(std::format(".lit{}", _nextInitializerStringId++));
+				_initializerStringOrder.push_back(literal);
+			}
+			return it->second;
+		}
+
+		if (const auto* unary = dynamic_cast<const UnaryExpr*>(expr); unary && unary->op() == UnaryOp::AddressOf)
+		{
+			if (const auto* name = dynamic_cast<const NameExpr*>(unary->operand()))
+				return symbolForName(name->name());
+			return std::nullopt;
+		}
+
+		if (const auto* name = dynamic_cast<const NameExpr*>(expr))
+		{
+			if (name->type() && (name->type()->isArray() || name->type()->isFunction()))
+				return symbolForName(name->name());
+		}
+
+		return std::nullopt;
+	}
+
+	void CodeGen::emitInitializerStringLiterals()
+	{
+		for (const StringLiteralExpr* literal : _initializerStringOrder)
+		{
+			std::string_view value = literal->value().view();
+			_emitter.raw(std::format("let {}: u8[{}] = \"{}\"",
+				_initializerStringNames.at(literal), value.size() + 1, escapeCasmString(value)));
+		}
+	}
+
+	std::string CodeGen::symbolForName(std::string_view name) const
+	{
+		if (const auto it = _staticLocalSymbols.find(name); it != _staticLocalSymbols.end())
+			return it->second;
+		return mangledName(name);
+	}
+
 	std::optional<std::string> CodeGen::scalarArrayInitText(const Type* type, const Expr* init, const Expr*& outOffender) const
 	{
 		if (!type || !init)
@@ -1383,10 +1434,7 @@ namespace ceresc::codegen
 		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
 		{
 			if (!type->isArray())
-			{
-				outOffender = init;
-				return std::nullopt;
-			}
+				return addressConstantSymbol(init); // a POINTER takes the literal's address
 			if (type->arrayElementType() && type->arrayElementType()->sizeInBytes() == 1)
 				return std::format("\"{}\"", escapeCasmString(literal->value().view()));
 
@@ -1427,6 +1475,10 @@ namespace ceresc::codegen
 			return text + "]";
 		}
 
+		// `&x`, an array's name, a function's name - the address of a symbol, not a value.
+		if (auto address = addressConstantSymbol(init))
+			return address;
+
 		if (type->isFloat())
 		{
 			std::optional<f32> value = foldGlobalFloat(init);
@@ -1437,7 +1489,7 @@ namespace ceresc::codegen
 	}
 
 	bool CodeGen::buildGlobalImage(const Type* type, const Expr* init, u32 offset, std::vector<u8>& image,
-		const Expr*& outOffender) const
+		std::vector<WordReference>& words, const Expr*& outOffender) const
 	{
 		if (!type)
 			return false;
@@ -1448,19 +1500,37 @@ namespace ceresc::codegen
 		if (offset + size > image.size())
 			return false; // sema already reported the overflow
 
+		// A string literal fills a char ARRAY as bytes; it fills a POINTER with its own address, which
+		// is a symbol the assembler relocates, not a byte value.
 		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
 		{
-			// An ARRAY takes the bytes; a POINTER asks for the literal's address, which is not a
-			// value this back end can put in .data - see the note in scalarArrayInitText().
 			if (!type->isArray())
 			{
-				outOffender = init;
-				return false;
+				if (type->sizeInBytes() != 4)
+				{
+					outOffender = init;
+					return false;
+				}
+				words.push_back(WordReference{ offset / 4, addressConstantSymbol(init).value() });
+				return true;
 			}
 			std::string_view text = literal->value().view();
 			for (usize i = 0; i < text.size() && i < size; ++i)
 				image[offset + i] = static_cast<u8>(text[i]);
 			return true; // the terminating zero and any padding are already zero
+		}
+
+		// `&x`, an array's name, a function's name - the address of a symbol, not a value. The word
+		// is left zero here and recorded so the caller can spell the symbol's name in its place.
+		if (auto address = addressConstantSymbol(init); address.has_value())
+		{
+			if (type->sizeInBytes() != 4)
+			{
+				outOffender = init;
+				return false;
+			}
+			words.push_back(WordReference{ offset / 4, std::move(address.value()) });
+			return true;
 		}
 
 		if (const auto* list = dynamic_cast<const InitListExpr*>(init))
@@ -1474,7 +1544,7 @@ namespace ceresc::codegen
 				{
 					if (index >= type->arraySize())
 						break;
-					if (!buildGlobalImage(element, value, offset + index * elementSize, image, outOffender))
+					if (!buildGlobalImage(element, value, offset + index * elementSize, image, words, outOffender))
 						return false;
 					++index;
 				}
@@ -1492,7 +1562,7 @@ namespace ceresc::codegen
 					if (index >= fields.size())
 						break;
 					if (!buildGlobalImage(fields[index].type, value,
-						offset + sema::fieldOffset(*structDecl, static_cast<u32>(index)), image, outOffender))
+						offset + sema::fieldOffset(*structDecl, static_cast<u32>(index)), image, words, outOffender))
 						return false;
 					++index;
 				}
@@ -1500,7 +1570,7 @@ namespace ceresc::codegen
 			}
 			// A scalar with braces - `int x = { 5 }`; sema already required exactly one value.
 			return list->elements().empty() ||
-				buildGlobalImage(type, list->elements().front(), offset, image, outOffender);
+				buildGlobalImage(type, list->elements().front(), offset, image, words, outOffender);
 		}
 
 		// One scalar, written little-endian (02-Memory.md) in its own declared width.
@@ -1539,14 +1609,14 @@ namespace ceresc::codegen
 			return;
 		}
 		// C calls this an address constant and allows it, so "must be a compile-time constant" is
-		// the wrong thing to tell the program: it IS one. What is missing is on this side. A
-		// CeresASM relocation patches a word in .text and nowhere else (25-Separate-Compilation.md),
-		// so an address - which is not known until the link - has no way of reaching .data or
-		// .rodata, and `let p: u32 = msg` is refused by the assembler for the same reason.
+		// the wrong thing to tell the program: it IS one. A whole object's address - a string
+		// literal, `&name`, an array's or function's name - is written as a symbol and relocated, but
+		// what reaches here is an address with an OFFSET (`&a[i]`), which nothing on this side can
+		// spell as a relocation. It is still rare and still worth naming rather than guessing at.
 		_diagnostics.error(DiagId::AddressConstantInStaticInitializer, decl.location(),
-			"cannot initialize '{}' with {}: an address is not known until link time, and CeresASM "
-			"relocations only patch .text - so there is no way to write one into .data or .rodata "
-			"(docs/06-Known-Limitations.md). Assign it inside a function instead.",
+			"cannot initialize '{}' with {}: only the address of a whole object can be written into "
+			"a static initializer - an address with an offset (like '&a[i]') has to be computed at "
+			"run time. Assign it inside a function instead.",
 			decl.name(),
 			dynamic_cast<const StringLiteralExpr*>(offender) ? "the address of a string literal"
 				: "an address constant");
@@ -1593,21 +1663,30 @@ namespace ceresc::codegen
 		}
 
 		std::vector<u8> image(static_cast<usize>(words) * 4, 0);
+		std::vector<WordReference> wordReferences;
 		const Expr* offender = nullptr;
-		if (!buildGlobalImage(type, decl.initializer(), 0, image, offender))
+		if (!buildGlobalImage(type, decl.initializer(), 0, image, wordReferences, offender))
 		{
 			reportUnrepresentableInitializer(decl, offender);
 			return;
 		}
 
+		// Each word is spelled as hex, except a pointer field's word, which is a symbol's name the
+		// assembler relocates into the address.
+		std::vector<std::string> wordTexts(words, std::string{});
+		for (u32 w = 0; w < words; ++w)
+			wordTexts[w] = std::format("0x{:08X}",
+				static_cast<u32>(image[w * 4]) | (static_cast<u32>(image[w * 4 + 1]) << 8) |
+				(static_cast<u32>(image[w * 4 + 2]) << 16) | (static_cast<u32>(image[w * 4 + 3]) << 24));
+		for (const WordReference& reference : wordReferences)
+			wordTexts[reference.wordIndex] = reference.symbol;
+
 		std::string values;
 		for (u32 w = 0; w < words; ++w)
 		{
-			u32 value = static_cast<u32>(image[w * 4]) | (static_cast<u32>(image[w * 4 + 1]) << 8) |
-				(static_cast<u32>(image[w * 4 + 2]) << 16) | (static_cast<u32>(image[w * 4 + 3]) << 24);
 			if (w != 0)
 				values += ", ";
-			values += std::format("0x{:08X}", value);
+			values += wordTexts[w];
 		}
 		_emitter.raw(std::format("{} {}: u32[{}] = [{}]   // {}", let, name, words, values, typeComment));
 	}
@@ -1646,6 +1725,13 @@ namespace ceresc::codegen
 		}
 		else
 		{
+			// A pointer initialized with an address constant - `char* p = "hi"`, `int* q = &g`,
+			// `int* r = a` - writes the symbol's name, which the assembler relocates into the address.
+			if (auto address = addressConstantSymbol(decl.initializer()))
+			{
+				_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *address));
+				return;
+			}
 			std::optional<i64> value = foldGlobalInt(decl.initializer());
 			if (!value)
 			{
@@ -1743,6 +1829,12 @@ namespace ceresc::codegen
 	{
 		checkSymbolNames(unit, module);
 
+		// String literals that appear only in static initializers get their .rodata labels minted
+		// while the globals are emitted below; start each compilation from an empty table.
+		_initializerStringNames.clear();
+		_initializerStringOrder.clear();
+		_nextInitializerStringId = 0;
+
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the
 		// program's first instruction (CeresASM 26-Interrupt-Vector-Binding.md) - so it is valid
@@ -1801,8 +1893,12 @@ namespace ceresc::codegen
 		// function - same three buckets, never `global`. Its CASM name is not its C name, so the
 		// two are kept side by side for the emission loop below.
 		std::unordered_map<const VarDecl*, std::string_view> staticLocalNames;
+		_staticLocalSymbols.clear();
 		for (const IrStaticLocal& local : module.staticLocals())
+		{
 			staticLocalNames.emplace(local.decl, local.name);
+			_staticLocalSymbols.emplace(local.decl->name(), local.name);
+		}
 		for (const IrStaticLocal& local : module.staticLocals())
 		{
 			if (!local.decl->initializer())
@@ -1832,7 +1928,7 @@ namespace ceresc::codegen
 
 		emitBucket("@data", dataGlobals);
 		emitBucket("@bss", bssGlobals);
-		if (!rodataGlobals.empty() || !module.stringLiterals().empty())
+		if (!rodataGlobals.empty() || !module.stringLiterals().empty() || !_initializerStringOrder.empty())
 		{
 			_emitter.raw("@rodata");
 			for (const VarDecl* g : rodataGlobals)
@@ -1843,6 +1939,7 @@ namespace ceresc::codegen
 					!isStaticLocal && g->storageClass() != ast::StorageClass::Static);
 			}
 			generateStringLiterals(module);
+			emitInitializerStringLiterals();
 			_emitter.blank();
 		}
 

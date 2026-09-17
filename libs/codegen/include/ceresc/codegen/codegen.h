@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ceresc/ast/decl.h>
+#include <ceresc/ast/expr.h>
 #include <ceresc/codegen/casm_emitter.h>
 #include <ceresc/codegen/frame_layout.h>
 #include <ceresc/codegen/value_placement.h>
@@ -157,8 +158,24 @@ namespace ceresc::codegen
 		// into `image` at `offset`. The only way to get a struct into .data: field offsets come from
 		// sema's own layout (type_layout.h), so the image is exactly the memory the running program
 		// will address. False when some element is not a compile-time constant.
+		//
+		// A pointer field is not a byte value: it is the ADDRESS of a symbol, which nothing knows
+		// until the link. Such a field is recorded in `words` (which 4-byte word of the image, and
+		// which symbol) and left as zero here; the caller writes the symbol's name into that word of
+		// the emitted `u32[N]` initializer instead of the hex the bytes would have spelled.
+		struct WordReference { u32 wordIndex; std::string symbol; };
 		bool buildGlobalImage(const ast::Type* type, const ast::Expr* init, u32 offset, std::vector<u8>& image,
-			const ast::Expr*& outOffender) const;
+			std::vector<WordReference>& words, const ast::Expr*& outOffender) const;
+		// The CASM symbol name an address-constant expression means - a string literal's synthesized
+		// label, an explicit `&x` target's name, or an array/function name that decays to one. Empty
+		// when `expr` is not an address constant.
+		std::optional<std::string> addressConstantSymbol(const ast::Expr* expr) const;
+		// The CASM symbol a C name means in a static initializer: the function-qualified symbol for a
+		// `static` local, or the mangled name otherwise.
+		std::string symbolForName(std::string_view name) const;
+		// Emits the .rodata `let` for every string literal that appeared only in a static
+		// initializer, in first-sight order. The IR's own string literals are emitted separately.
+		void emitInitializerStringLiterals();
 		// The one diagnostic both of the above feed: what `outOffender` was, said as precisely as
 		// this back end can say it.
 		void reportUnrepresentableInitializer(const ast::VarDecl& decl, const ast::Expr* offender);
@@ -290,6 +307,19 @@ namespace ceresc::codegen
 		support::DiagnosticEngine& _diagnostics;
 		support::OptimizationOptions _options;
 		CasmEmitter _emitter;
+
+		// String literals that appear only in a static initializer, never in a function body. The
+		// IR has no entry for them (IrBuilder only lowers function bodies), so codegen mints the
+		// .rodata labels itself on first sight and emits the bytes alongside the IR's own literals.
+		// Mutable: the map is a cache populated while a const pass reads an initializer.
+		mutable std::unordered_map<const ast::StringLiteralExpr*, std::string> _initializerStringNames;
+		mutable std::vector<const ast::StringLiteralExpr*> _initializerStringOrder;
+		mutable u32 _nextInitializerStringId = 0;
+
+		// A `static` local's C name maps to its function-qualified CASM symbol ("count" ->
+		// "main.count"). Populated in generate(), read by addressConstantSymbol() so that
+		// `static int* p = &x;` names the real symbol rather than the bare C name.
+		std::unordered_map<std::string_view, std::string> _staticLocalSymbols;
 
 		// Per-function state, valid only while generateFunction() is on the stack.
 		const ir::IrFunction* _function = nullptr;
