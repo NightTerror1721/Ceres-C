@@ -86,6 +86,35 @@ mapping.
 The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
 NAME is then an ordinary name for the capped type and says nothing further.
 
+### No address constants in a static initializer
+
+C lets a file-scope object be initialized with the address of another one — a string literal,
+`&x`, or an array's name. All four of these are legal C and all four are refused here:
+
+```c
+char*  message = "hi";          /* error[E4006] */
+char*  names[] = { "a", "b" };  /* error[E4006] */
+int    g;
+int*   p = &g;                  /* error[E4006] */
+struct S { char* s; } s = { "x" };  /* error[E4006] */
+```
+
+The limitation is CeresASM's rather than this compiler's, and it is structural: a relocation
+patches a word in `.text` and records nothing else — see
+[25-Separate-Compilation.md](https://github.com/Krampus1721/CeresASM/blob/main/docs/25-Separate-Compilation.md).
+An address is not known until the link, so there is no way to write one into `.data` or `.rodata`,
+and the assembler refuses `let p: u32 = msg` for the same reason: *'msg' is not a constant*.
+
+Assign it inside a function instead, where the address is an ordinary `la` like any other:
+
+```c
+char* message;
+void start(void) { message = "hi"; }
+```
+
+A `char` **array** is unaffected, because the bytes are the value and no address is involved:
+`char message[8] = "hi";` has always worked, at every depth of array and struct.
+
 ### No bitfields
 
 A second layout rule to learn, and nothing needs them yet. `union` itself is supported.

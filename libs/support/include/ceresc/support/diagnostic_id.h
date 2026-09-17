@@ -221,6 +221,7 @@ namespace ceresc::support
 		GlobalInitializerNotConstant   = 4003,
 		ReservedCasmWord               = 4004,
 		MissingDeclarationForFunction  = 4005,
+		AddressConstantInStaticInitializer = 4006,
 
 		// ---- 5xxx  ir -------------------------------------------------------------------------
 		CompoundAssignToStruct = 5001

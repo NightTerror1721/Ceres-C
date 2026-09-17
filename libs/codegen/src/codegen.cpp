@@ -1347,7 +1347,28 @@ namespace ceresc::codegen
 		return name;
 	}
 
-	std::optional<std::string> CodeGen::scalarArrayInitText(const Type* type, const Expr* init) const
+	namespace
+	{
+		// An expression whose value is the ADDRESS of something with static storage: a string
+		// literal, an explicit `&x`, or a name that decays to one (an array, a function). C calls
+		// these address constants and allows them as static initializers; this back end cannot
+		// place one, which is a limitation worth naming precisely rather than calling the program
+		// wrong. See docs/06-Known-Limitations.md.
+		bool isAddressConstant(const Expr* expr)
+		{
+			if (!expr)
+				return false;
+			if (dynamic_cast<const StringLiteralExpr*>(expr))
+				return true;
+			if (const auto* unary = dynamic_cast<const ast::UnaryExpr*>(expr))
+				return unary->op() == ast::UnaryOp::AddressOf;
+			if (const auto* name = dynamic_cast<const ast::NameExpr*>(expr))
+				return name->type() && (name->type()->isArray() || name->type()->isFunction());
+			return false;
+		}
+	}
+
+	std::optional<std::string> CodeGen::scalarArrayInitText(const Type* type, const Expr* init, const Expr*& outOffender) const
 	{
 		if (!type || !init)
 			return std::nullopt;
@@ -1355,9 +1376,18 @@ namespace ceresc::codegen
 		// A string literal fills a char array as bytes, terminating zero and all - CASM's own
 		// `let greeting: u8[16] = "Hello, CeresVM!"` (11-Data-Types-and-Literals.md), which pads the
 		// rest with zeros exactly like a short value list does.
+		//
+		// Only an ARRAY. Initializing a POINTER with one asks for the literal's address, which is a
+		// different thing entirely - and used to fall through to the byte list below and write the
+		// first character's code into the pointer, so `char* n[2] = {"a", "b"}` became {97, 98}.
 		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
 		{
-			if (type->isArray() && type->arrayElementType() && type->arrayElementType()->sizeInBytes() == 1)
+			if (!type->isArray())
+			{
+				outOffender = init;
+				return std::nullopt;
+			}
+			if (type->arrayElementType() && type->arrayElementType()->sizeInBytes() == 1)
 				return std::format("\"{}\"", escapeCasmString(literal->value().view()));
 
 			// CASM documents string syntax only for the complete character array. Nested character
@@ -1378,14 +1408,14 @@ namespace ceresc::codegen
 			{
 				if (list->elements().empty())
 					return std::optional<std::string>("0");
-				return scalarArrayInitText(type, list->elements().front());
+				return scalarArrayInitText(type, list->elements().front(), outOffender);
 			}
 			const Type* element = type->arrayElementType();
 			std::string text = "[";
 			bool first = true;
 			for (const Expr* value : list->elements())
 			{
-				std::optional<std::string> part = scalarArrayInitText(element, value);
+				std::optional<std::string> part = scalarArrayInitText(element, value, outOffender);
 				if (!part)
 					return std::nullopt;
 				if (!first)
@@ -1406,7 +1436,8 @@ namespace ceresc::codegen
 		return value ? std::optional<std::string>(std::format("{}", *value)) : std::nullopt;
 	}
 
-	bool CodeGen::buildGlobalImage(const Type* type, const Expr* init, u32 offset, std::vector<u8>& image) const
+	bool CodeGen::buildGlobalImage(const Type* type, const Expr* init, u32 offset, std::vector<u8>& image,
+		const Expr*& outOffender) const
 	{
 		if (!type)
 			return false;
@@ -1419,6 +1450,13 @@ namespace ceresc::codegen
 
 		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
 		{
+			// An ARRAY takes the bytes; a POINTER asks for the literal's address, which is not a
+			// value this back end can put in .data - see the note in scalarArrayInitText().
+			if (!type->isArray())
+			{
+				outOffender = init;
+				return false;
+			}
 			std::string_view text = literal->value().view();
 			for (usize i = 0; i < text.size() && i < size; ++i)
 				image[offset + i] = static_cast<u8>(text[i]);
@@ -1436,7 +1474,7 @@ namespace ceresc::codegen
 				{
 					if (index >= type->arraySize())
 						break;
-					if (!buildGlobalImage(element, value, offset + index * elementSize, image))
+					if (!buildGlobalImage(element, value, offset + index * elementSize, image, outOffender))
 						return false;
 					++index;
 				}
@@ -1453,14 +1491,16 @@ namespace ceresc::codegen
 				{
 					if (index >= fields.size())
 						break;
-					if (!buildGlobalImage(fields[index].type, value, offset + sema::fieldOffset(*structDecl, static_cast<u32>(index)), image))
+					if (!buildGlobalImage(fields[index].type, value,
+						offset + sema::fieldOffset(*structDecl, static_cast<u32>(index)), image, outOffender))
 						return false;
 					++index;
 				}
 				return true;
 			}
 			// A scalar with braces - `int x = { 5 }`; sema already required exactly one value.
-			return list->elements().empty() || buildGlobalImage(type, list->elements().front(), offset, image);
+			return list->elements().empty() ||
+				buildGlobalImage(type, list->elements().front(), offset, image, outOffender);
 		}
 
 		// One scalar, written little-endian (02-Memory.md) in its own declared width.
@@ -1469,19 +1509,47 @@ namespace ceresc::codegen
 		{
 			std::optional<f32> value = foldGlobalFloat(init);
 			if (!value)
+			{
+				outOffender = init;
 				return false;
+			}
 			bits = std::bit_cast<u32>(*value);
 		}
 		else
 		{
 			std::optional<i64> value = foldGlobalInt(init);
 			if (!value)
+			{
+				outOffender = init;
 				return false;
+			}
 			bits = static_cast<u64>(*value);
 		}
 		for (u32 i = 0; i < size && i < 8; ++i)
 			image[offset + i] = static_cast<u8>((bits >> (8 * i)) & 0xFF);
 		return true;
+	}
+
+	void CodeGen::reportUnrepresentableInitializer(const VarDecl& decl, const Expr* offender)
+	{
+		if (!isAddressConstant(offender))
+		{
+			_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(),
+				"initializer for global '{}' must be a compile-time constant", decl.name());
+			return;
+		}
+		// C calls this an address constant and allows it, so "must be a compile-time constant" is
+		// the wrong thing to tell the program: it IS one. What is missing is on this side. A
+		// CeresASM relocation patches a word in .text and nowhere else (25-Separate-Compilation.md),
+		// so an address - which is not known until the link - has no way of reaching .data or
+		// .rodata, and `let p: u32 = msg` is refused by the assembler for the same reason.
+		_diagnostics.error(DiagId::AddressConstantInStaticInitializer, decl.location(),
+			"cannot initialize '{}' with {}: an address is not known until link time, and CeresASM "
+			"relocations only patch .text - so there is no way to write one into .data or .rodata "
+			"(docs/06-Known-Limitations.md). Assign it inside a function instead.",
+			decl.name(),
+			dynamic_cast<const StringLiteralExpr*>(offender) ? "the address of a string literal"
+				: "an address constant");
 	}
 
 	void CodeGen::generateAggregateGlobal(const VarDecl& decl, std::string_view symbolName, bool exported)
@@ -1502,10 +1570,11 @@ namespace ceresc::codegen
 				_emitter.raw(std::format("{} {}: {}", let, name, arrayType));
 				return;
 			}
-			std::optional<std::string> values = scalarArrayInitText(type, decl.initializer());
+			const Expr* offender = nullptr;
+			std::optional<std::string> values = scalarArrayInitText(type, decl.initializer(), offender);
 			if (!values)
 			{
-				_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				reportUnrepresentableInitializer(decl, offender);
 				return;
 			}
 			_emitter.raw(std::format("{} {}: {} = {}", let, name, arrayType, *values));
@@ -1524,9 +1593,10 @@ namespace ceresc::codegen
 		}
 
 		std::vector<u8> image(static_cast<usize>(words) * 4, 0);
-		if (!buildGlobalImage(type, decl.initializer(), 0, image))
+		const Expr* offender = nullptr;
+		if (!buildGlobalImage(type, decl.initializer(), 0, image, offender))
 		{
-			_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+			reportUnrepresentableInitializer(decl, offender);
 			return;
 		}
 
@@ -1569,7 +1639,7 @@ namespace ceresc::codegen
 			std::optional<f32> value = foldGlobalFloat(decl.initializer());
 			if (!value)
 			{
-				_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				reportUnrepresentableInitializer(decl, decl.initializer());
 				return;
 			}
 			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));
@@ -1579,7 +1649,7 @@ namespace ceresc::codegen
 			std::optional<i64> value = foldGlobalInt(decl.initializer());
 			if (!value)
 			{
-				_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				reportUnrepresentableInitializer(decl, decl.initializer());
 				return;
 			}
 			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));

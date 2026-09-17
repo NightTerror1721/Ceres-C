@@ -148,12 +148,20 @@ namespace ceresc::codegen
 		// The `[...]` initializer text for an array of scalars, built straight from the AST so the
 		// output keeps the shape the C initializer had. Empty when some element is not a
 		// compile-time constant - the caller diagnoses that, since only it knows the variable's name.
-		std::optional<std::string> scalarArrayInitText(const ast::Type* type, const ast::Expr* init) const;
+		// `outOffender` is the sub-expression that could not be written, so the caller - which is
+		// the one that knows the variable's name - can say whether the program asked for something
+		// impossible (an address) or for something that is simply not constant.
+		std::optional<std::string> scalarArrayInitText(const ast::Type* type, const ast::Expr* init,
+			const ast::Expr*& outOffender) const;
 		// The little-endian byte image of a constant initializer for an object of `type`, written
 		// into `image` at `offset`. The only way to get a struct into .data: field offsets come from
 		// sema's own layout (type_layout.h), so the image is exactly the memory the running program
 		// will address. False when some element is not a compile-time constant.
-		bool buildGlobalImage(const ast::Type* type, const ast::Expr* init, u32 offset, std::vector<u8>& image) const;
+		bool buildGlobalImage(const ast::Type* type, const ast::Expr* init, u32 offset, std::vector<u8>& image,
+			const ast::Expr*& outOffender) const;
+		// The one diagnostic both of the above feed: what `outOffender` was, said as precisely as
+		// this back end can say it.
+		void reportUnrepresentableInitializer(const ast::VarDecl& decl, const ast::Expr* offender);
 		void generateFunction(const ast::FunctionDecl& decl, const ir::IrFunction& function);
 		void generateStringLiterals(const ir::IrModule& module);
 

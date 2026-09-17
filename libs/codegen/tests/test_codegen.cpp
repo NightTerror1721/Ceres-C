@@ -92,6 +92,42 @@ namespace
 			++count;
 		return count;
 	}
+
+	// The mirror of generateCasm(): the same pipeline, but the diagnostics are the RESULT rather
+	// than something asserted away. For the handful of things only the back end can refuse.
+	struct BackEndOutcome
+	{
+		std::string casm;
+		std::vector<std::string> errors;
+	};
+
+	BackEndOutcome generateExpectingDiagnostics(std::string_view source)
+	{
+		support::SourceManager sourceManager;
+		support::SourceId sourceId = sourceManager.registerBuffer("test.c", std::string(source));
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
+
+		lexer::Lexer lexer(source, sourceId, diagnostics, pool);
+		parser::Parser parser(lexer, arena, diagnostics);
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+		CHECK(unit != nullptr);
+		sema::Sema sema(arena, diagnostics);
+		CHECK(sema.check(*unit));
+
+		ir::IrBuilder builder(arena, diagnostics, options);
+		ir::IrModule module = builder.build(*unit);
+		codegen::CodeGen codeGen(sourceManager, diagnostics, options);
+
+		BackEndOutcome outcome;
+		outcome.casm = codeGen.generate(*unit, module);
+		for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+			if (diagnostic.severity == support::DiagnosticSeverity::Error)
+				outcome.errors.push_back(support::diagnosticCode(diagnostic.id) + ": " + diagnostic.message);
+		return outcome;
+	}
 }
 
 TEST(codegen, a_trailing_comment_names_the_file_the_line_was_written_in)
@@ -928,6 +964,62 @@ TEST(codegen, a_global_structs_word_image_places_narrow_fields_at_their_real_off
 		"struct Mixed m = { 1, 2, 3 };"
 		"int first() { return m.b; }");
 	CHECK(contains(text, "global let m: u32[3] = [0x00000001, 0x00000002, 0x00000003]   // struct Mixed (12 bytes)"));
+}
+
+TEST(codegen, a_string_literal_initializing_a_POINTER_is_refused_rather_than_written_as_a_byte)
+{
+	// The bug this rules out: the string-literal branch wrote the literal's BYTES wherever it was
+	// asked to, array or not - so `char* n[2] = {"a", "b"}` came out as {97, 98}, two pointers to
+	// addresses 97 and 98, with nothing said about it. A pointer initializer asks for the
+	// literal's ADDRESS, which is a different thing and one this back end cannot place.
+	BackEndOutcome pointerArray = generateExpectingDiagnostics("char* names[2] = { \"a\", \"b\" };");
+	CHECK_EQ(pointerArray.errors.size(), usize{ 1 });
+	CHECK(contains(pointerArray.errors[0], "E4006"));
+	CHECK(contains(pointerArray.errors[0], "the address of a string literal"));
+	CHECK(!contains(pointerArray.casm, "97"));
+
+	BackEndOutcome pointerField = generateExpectingDiagnostics(
+		"struct S { char* s; }; struct S s = { \"x\" };");
+	CHECK_EQ(pointerField.errors.size(), usize{ 1 });
+	CHECK(contains(pointerField.errors[0], "E4006"));
+
+	BackEndOutcome plainPointer = generateExpectingDiagnostics("char* p = \"abc\";");
+	CHECK_EQ(plainPointer.errors.size(), usize{ 1 });
+	CHECK(contains(plainPointer.errors[0], "E4006"));
+}
+
+TEST(codegen, any_other_address_constant_is_refused_with_the_same_reason)
+{
+	// C calls all of these address constants and allows them as static initializers. Saying "must
+	// be a compile-time constant" told the program it was wrong about its own language; E4006 says
+	// which side the limitation is on.
+	BackEndOutcome addressOf = generateExpectingDiagnostics("int g; int* p = &g;");
+	CHECK_EQ(addressOf.errors.size(), usize{ 1 });
+	CHECK(contains(addressOf.errors[0], "E4006"));
+	CHECK(contains(addressOf.errors[0], "an address constant"));
+
+	BackEndOutcome decayedArray = generateExpectingDiagnostics("int a[2]; int* p = a;");
+	CHECK_EQ(decayedArray.errors.size(), usize{ 1 });
+	CHECK(contains(decayedArray.errors[0], "E4006"));
+
+	// And something that really is not constant keeps the message that fits it.
+	BackEndOutcome notConstant = generateExpectingDiagnostics("int n; int a[2] = { n, 1 };");
+	CHECK_EQ(notConstant.errors.size(), usize{ 1 });
+	CHECK(contains(notConstant.errors[0], "E4003"));
+	CHECK(contains(notConstant.errors[0], "must be a compile-time constant"));
+}
+
+TEST(codegen, a_string_literal_still_fills_a_char_array_at_every_depth)
+{
+	// The other side of the same guard: an ARRAY takes the bytes, and that must not have changed.
+	std::string text = atO2(
+		"char greet[8] = \"hola\";"
+		"char rows[2][4] = { \"ab\", \"cd\" };"
+		"struct S { char name[4]; int n; };"
+		"struct S s = { \"ab\", 7 };");
+	CHECK(contains(text, "global let greet: u8[8] = \"hola\""));
+	CHECK(contains(text, "global let rows: u8[2][4] = [\"ab\", \"cd\"]"));
+	CHECK(contains(text, "global let s: u32[2] = [0x00006261, 0x00000007]"));
 }
 
 TEST(codegen, a_non_constant_global_initializer_is_diagnosed_rather_than_guessed_at)
