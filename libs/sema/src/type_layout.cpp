@@ -5,6 +5,10 @@
 
 namespace ceresc::sema
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	namespace
 	{
 		// True if `type` is, or (recursively, by value - through a struct field or an array
@@ -111,7 +115,7 @@ namespace ceresc::sema
 		{
 			if (!field.type || field.type->isVoid())
 			{
-				diagnostics.error(field.location, "field '{}' declared with incomplete type 'void'", field.name);
+				diagnostics.error(DiagId::FieldTypeVoid, field.location, "field '{}' declared with incomplete type 'void'", field.name);
 				ok = false;
 				continue;
 			}
@@ -125,7 +129,7 @@ namespace ceresc::sema
 				ast::EnumDecl* nestedEnum = elementType->enumDecl();
 				if (!nestedEnum || !nestedEnum->isComplete())
 				{
-					diagnostics.error(field.location, "field '{}' has incomplete type 'enum {}'", field.name,
+					diagnostics.error(DiagId::FieldIncompleteEnum, field.location, "field '{}' has incomplete type 'enum {}'", field.name,
 						nestedEnum ? nestedEnum->name() : std::string_view("<anonymous>"));
 					ok = false;
 				}
@@ -138,7 +142,7 @@ namespace ceresc::sema
 			ast::StructDecl* nested = elementType->structDecl();
 			if (!nested || !nested->isComplete())
 			{
-				diagnostics.error(field.location, "field '{}' has incomplete type 'struct {}'", field.name,
+				diagnostics.error(DiagId::FieldIncompleteStruct, field.location, "field '{}' has incomplete type 'struct {}'", field.name,
 					nested ? nested->name() : std::string_view("<anonymous>"));
 				ok = false;
 				continue;
@@ -146,7 +150,7 @@ namespace ceresc::sema
 
 			if (containsByValue(field.type, &decl, onPath, noCycleMemo))
 			{
-				diagnostics.error(field.location, "field '{}' creates an illegal by-value cycle in 'struct {}' (use a pointer instead)",
+				diagnostics.error(DiagId::FieldByValueCycle, field.location, "field '{}' creates an illegal by-value cycle in 'struct {}' (use a pointer instead)",
 					field.name, decl.name());
 				ok = false;
 			}

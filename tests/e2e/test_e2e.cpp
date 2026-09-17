@@ -806,6 +806,9 @@ TEST(e2e, a_capped_wide_type_computes_as_the_32_bit_type_it_really_is)
 	// under another spelling (docs/06-Known-Limitations.md). What that has to mean at run time is
 	// that mixing the two spellings changes nothing at all.
 	runsTheSameAtEveryLevel("capped_wide_types",
+		// And the program says once, with a pragma, that it knows - which is what that pragma is
+		// for and keeps this suite's output about what it ran rather than about what it wrote.
+		"#pragma warning(disable: 2001)\n"
 		"long long widen(long long v) { return v + 1; }"
 		"int main() {"
 		"    char* term = (char*)0xFF000004;"

@@ -16,6 +16,7 @@ line of C it came from, which is the whole reason this compiler emits text inste
 | [08-Preprocessor.md](08-Preprocessor.md) | `#include`, `#define`, headers, and what is missing. |
 | [09-Variadic-Convention.md](09-Variadic-Convention.md) | `...`, `__builtin_va_list` and the four builtins: where a variadic argument is passed and how the callee finds it. |
 | [10-Interrupts.md](10-Interrupts.md) | `__interrupt` handlers, binding a vector, and the three builtins that mask and wait. |
+| [11-Diagnostics.md](11-Diagnostics.md) | Every error and warning code, and the `#pragma warning(...)` that turns a warning off, on, or into an error. |
 
 ## The pipeline
 

@@ -18,6 +18,7 @@ into one buffer.
 | `#error message` | Emits an error and stops a successful compilation. |
 | `#warning message` | Emits a warning without failing preprocessing. |
 | `#pragma once` | This file contributes nothing if it is included again. |
+| `#pragma warning(...)` | Turns one of this compiler's own warnings off, back on, or into an error. See [11-Diagnostics.md](11-Diagnostics.md). |
 
 `#if` expressions support integer literals, parentheses, unary `+ - ! ~`, arithmetic, shifts,
 comparisons, equality, bitwise operators and `&&`/`||`, with C precedence. Undefined identifiers

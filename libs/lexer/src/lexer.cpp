@@ -5,6 +5,10 @@
 
 namespace ceresc::lexer
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	SourceLocation Lexer::currentLocation() const noexcept
 	{
 		return SourceLocation(_sourceId, _cursor.line(), _cursor.column(), static_cast<Offset>(_cursor.position()));
@@ -30,7 +34,7 @@ namespace ceresc::lexer
 				_cursor.advance(2);
 				_cursor.skipUntil("*/");
 				if (!_cursor.match("*/"))
-					_diagnostics.error(startLoc, "unterminated block comment");
+					_diagnostics.error(DiagId::UnterminatedBlockComment, startLoc, "unterminated block comment");
 				continue;
 			}
 
@@ -90,7 +94,7 @@ namespace ceresc::lexer
 		TokenValue::IntegralValue value = 0;
 		auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
 		if (result.ec == std::errc::result_out_of_range)
-			_diagnostics.error(loc, "integer literal is too large to represent");
+			_diagnostics.error(DiagId::IntegerLiteralTooLarge, loc, "integer literal is too large to represent");
 
 		return Token::makeLiteralInt(lexeme, value, loc);
 	}
@@ -100,7 +104,7 @@ namespace ceresc::lexer
 		TokenValue::FloatingValue value = 0.0;
 		auto result = std::from_chars(lexeme.data(), lexeme.data() + lexeme.size(), value);
 		if (result.ec == std::errc::result_out_of_range)
-			_diagnostics.error(loc, "floating-point literal is out of range");
+			_diagnostics.error(DiagId::FloatLiteralOutOfRange, loc, "floating-point literal is out of range");
 
 		return Token::makeLiteralFloat(lexeme, value, loc);
 	}
@@ -127,9 +131,9 @@ namespace ceresc::lexer
 		if (digits.empty())
 		{
 			if (base == 16)
-				_diagnostics.error(startLoc, "hexadecimal literal has no digits");
+				_diagnostics.error(DiagId::HexLiteralHasNoDigits, startLoc, "hexadecimal literal has no digits");
 			else
-				_diagnostics.error(startLoc, "binary literal has no digits");
+				_diagnostics.error(DiagId::BinaryLiteralHasNoDigits, startLoc, "binary literal has no digits");
 			return Token::makeLiteralInt(lexeme, 0, startLoc);
 		}
 
@@ -188,7 +192,7 @@ namespace ceresc::lexer
 
 		if (_cursor.isAtEnd() || _cursor.peek() == '\n')
 		{
-			_diagnostics.error(loc, "unterminated escape sequence");
+			_diagnostics.error(DiagId::UnterminatedEscapeSequence, loc, "unterminated escape sequence");
 			return '\0';
 		}
 
@@ -218,13 +222,13 @@ namespace ceresc::lexer
 
 				if (digitCount == 0)
 				{
-					_diagnostics.error(loc, "\\x used with no following hex digits");
+					_diagnostics.error(DiagId::HexEscapeHasNoDigits, loc, "\\x used with no following hex digits");
 					return '\0';
 				}
 				return static_cast<char>(value);
 			}
 			default:
-				_diagnostics.error(loc, "unknown escape sequence '\\{}'", c);
+				_diagnostics.error(DiagId::UnknownEscapeSequence, loc, "unknown escape sequence '\\{}'", c);
 				return c;
 		}
 	}
@@ -239,12 +243,12 @@ namespace ceresc::lexer
 
 		if (_cursor.peek() == '\'')
 		{
-			_diagnostics.error(startLoc, "empty character literal");
+			_diagnostics.error(DiagId::EmptyCharacterLiteral, startLoc, "empty character literal");
 			_cursor.advance();
 		}
 		else if (_cursor.isAtEnd() || _cursor.peek() == '\n')
 		{
-			_diagnostics.error(startLoc, "unterminated character literal");
+			_diagnostics.error(DiagId::UnterminatedCharacterLiteral, startLoc, "unterminated character literal");
 		}
 		else
 		{
@@ -264,11 +268,11 @@ namespace ceresc::lexer
 			}
 			else if (_cursor.isAtEnd() || _cursor.peek() == '\n')
 			{
-				_diagnostics.error(startLoc, "unterminated character literal");
+				_diagnostics.error(DiagId::UnterminatedCharacterLiteral, startLoc, "unterminated character literal");
 			}
 			else
 			{
-				_diagnostics.error(startLoc, "character literal contains more than one character");
+				_diagnostics.error(DiagId::MultiCharacterLiteral, startLoc, "character literal contains more than one character");
 				_cursor.skipUntilAny("'\n");
 				_cursor.match('\'');
 			}
@@ -309,12 +313,12 @@ namespace ceresc::lexer
 		}
 
 		if (!terminated)
-			_diagnostics.error(startLoc, "unterminated string literal");
+			_diagnostics.error(DiagId::UnterminatedStringLiteral, startLoc, "unterminated string literal");
 
 		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
 		support::PooledString interned = _stringPool.intern(decoded);
 		if (!interned)
-			_diagnostics.error(startLoc, "out of memory interning string literal");
+			_diagnostics.error(DiagId::StringPoolExhausted, startLoc, "out of memory interning string literal");
 
 		return Token::makeLiteralString(lexeme, interned, startLoc);
 	}
@@ -407,7 +411,7 @@ namespace ceresc::lexer
 
 		std::string_view lexeme = _cursor.buffer().substr(_cursor.position() - 1, 1);
 		char c = lexeme.front();
-		_diagnostics.error(loc, "unexpected character '{}'", c);
+		_diagnostics.error(DiagId::UnexpectedCharacter, loc, "unexpected character '{}'", c);
 		return Token::makeInvalid(lexeme, loc);
 	}
 

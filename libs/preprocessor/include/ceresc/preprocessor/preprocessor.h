@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ceresc/support/diagnostic_policy.h>
 #include <ceresc/support/diagnostics.h>
 #include <ceresc/support/line_map.h>
 #include <ceresc/support/source_location.h>
@@ -25,6 +26,8 @@
 //   #if/#elif/#else/#endif and #ifdef/#ifndef conditional compilation.
 //   #error/#warning diagnostics from the source.
 //   #pragma once        This file contributes nothing if it is included again.
+//   #pragma warning(...) Turns one of this compiler's own warnings off, back on, or into an error
+//                        over the lines that follow - see docs/11-Diagnostics.md.
 //
 // Plus the macros the language predefines rather than the program: __LINE__, __FILE__, __DATE__,
 // __TIME__, __STDC__, __STDC_HOSTED__ and a few extensions beside them - see
@@ -63,6 +66,10 @@ namespace ceresc::preprocessor
 	{
 		std::string text;   // the whole translation unit, includes expanded, macros substituted
 		LineMap lineMap;
+		// What the program's own `#pragma warning(...)` directives asked for, positioned by line of
+		// `text` - so a later phase's warning about a line is governed by whatever was in force at
+		// that line, without that phase knowing pragmas exist. Empty for a file that wrote none.
+		support::DiagnosticPolicy diagnosticPolicy;
 		bool ok = true;     // false when a directive failed; the text is still usable for recovery
 	};
 
@@ -141,6 +148,35 @@ namespace ceresc::preprocessor
 		std::string expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment);
 		bool evaluateIfExpression(std::string_view expression, support::SourceLocation location, i64& value);
 
+		// One `#pragma warning(...)` - the body between the parentheses, already trimmed. Records
+		// what it asked for against `outputLine` of the expanded text, which is the coordinate every
+		// later phase's SourceLocation uses. Anything it cannot read is a warning of its own rather
+		// than an error: a pragma is advice, and a compiler that does not understand a piece of it
+		// should still compile the program.
+		void applyWarningPragma(std::string_view body, support::SourceLocation location, u32 outputLine,
+			support::DiagnosticPolicy& policy);
+
+		// Reports `id` unless the policy in force at `outputLine` says otherwise. The preprocessor
+		// is the one phase that cannot leave this to the DiagnosticEngine: its own diagnostics point
+		// at the ORIGINAL file, not at the expanded text the policy is indexed by, so it is the only
+		// one that knows which output line it is on.
+		template <typename... Args>
+		void policedWarning(support::DiagnosticId id, support::SourceLocation location, u32 outputLine,
+			const support::DiagnosticPolicy& policy, std::format_string<Args...> format, Args&&... args)
+		{
+			switch (policy.actionFor(id, outputLine))
+			{
+				case support::DiagnosticAction::Ignored:
+					return;
+				case support::DiagnosticAction::Error:
+					_diagnostics.error(id, location, format, std::forward<Args>(args)...);
+					return;
+				default:
+					_diagnostics.warning(id, location, format, std::forward<Args>(args)...);
+					return;
+			}
+		}
+
 		// Seeds the macro table with everything the language predefines, before the command line's
 		// own -D macros go in on top - so `-D __STDC_HOSTED__=1` is a program's own decision to
 		// make rather than an error. Called once per run().
@@ -155,6 +191,7 @@ namespace ceresc::preprocessor
 		std::unordered_map<std::string, std::string> _predefines;
 		std::unordered_map<std::string, Macro> _macros;
 		std::vector<std::string> _pragmaOnce; // canonical paths that asked not to be included again
+		u32 _warningPragmaDepth = 0;          // open `#pragma warning(push)`es, for the unmatched-pop check
 		std::string _basePath;                // what run() was given - __BASE_FILE__
 		u32 _includeLevel = 0;                // __INCLUDE_LEVEL__, maintained by expandFile()
 		u32 _counter = 0;                     // __COUNTER__'s next value

@@ -122,6 +122,7 @@ leaves out.
 | [The preprocessor](docs/08-Preprocessor.md) | `#include`, `#define`, headers, conditionals. |
 | [Variadic functions](docs/09-Variadic-Convention.md) | `...`, `__builtin_va_list`, and where a variadic argument is passed. |
 | [Interrupts](docs/10-Interrupts.md) | `__interrupt` handlers, vector binding, and waiting for one. |
+| [Diagnostics](docs/11-Diagnostics.md) | Every error and warning code, and the pragma that controls one. |
 
 ## Examples
 

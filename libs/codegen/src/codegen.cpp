@@ -21,6 +21,10 @@
 
 namespace ceresc::codegen
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	using namespace ast;
 	using namespace ir;
 	using support::SourceLocation;
@@ -324,7 +328,7 @@ namespace ceresc::codegen
 			// A FrameAddr naming a register-resident local has no address to hand out. Every
 			// legitimate reader of one is a Load/Store, which handle it directly (see their cases in
 			// generateInstr) - reaching here means the escape analysis and this file disagree.
-			_diagnostics.error(loc, "internal error: the address of a register-resident local escaped code generation");
+			_diagnostics.error(DiagId::RegisterAddressEscaped, loc, "internal error: the address of a register-resident local escaped code generation");
 			return bankReg(scratch, isFloat);
 		}
 
@@ -912,7 +916,7 @@ namespace ceresc::codegen
 				const auto& p = instr.as<IrCallPayload>();
 				if (p.argCount > index)
 				{
-					_diagnostics.error(loc, "malformed IR: call has more arguments than preceding parameter instructions");
+					_diagnostics.error(DiagId::MalformedIrCall, loc, "malformed IR: call has more arguments than preceding parameter instructions");
 					break;
 				}
 				u32 argCount = p.argCount;
@@ -924,7 +928,7 @@ namespace ceresc::codegen
 					const IrInstr& paramInstr = *instrs[index - argCount + k];
 					if (paramInstr.opcode() != IrOpcode::Param)
 					{
-						_diagnostics.error(loc, "malformed IR: call arguments are not contiguous parameter instructions");
+						_diagnostics.error(DiagId::MalformedIrCall, loc, "malformed IR: call arguments are not contiguous parameter instructions");
 						return;
 					}
 					const auto& param = paramInstr.as<IrParamPayload>();
@@ -1501,7 +1505,7 @@ namespace ceresc::codegen
 			std::optional<std::string> values = scalarArrayInitText(type, decl.initializer());
 			if (!values)
 			{
-				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 				return;
 			}
 			_emitter.raw(std::format("{} {}: {} = {}", let, name, arrayType, *values));
@@ -1522,7 +1526,7 @@ namespace ceresc::codegen
 		std::vector<u8> image(static_cast<usize>(words) * 4, 0);
 		if (!buildGlobalImage(type, decl.initializer(), 0, image))
 		{
-			_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+			_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 			return;
 		}
 
@@ -1565,7 +1569,7 @@ namespace ceresc::codegen
 			std::optional<f32> value = foldGlobalFloat(decl.initializer());
 			if (!value)
 			{
-				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 				return;
 			}
 			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));
@@ -1575,7 +1579,7 @@ namespace ceresc::codegen
 			std::optional<i64> value = foldGlobalInt(decl.initializer());
 			if (!value)
 			{
-				_diagnostics.error(decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
+				_diagnostics.error(DiagId::GlobalInitializerNotConstant, decl.location(), "initializer for global '{}' must be a compile-time constant", decl.name());
 				return;
 			}
 			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));
@@ -1599,7 +1603,7 @@ namespace ceresc::codegen
 		{
 			if (!isReservedCasmWord(name))
 				return;
-			_diagnostics.error(location,
+			_diagnostics.error(DiagId::ReservedCasmWord, location,
 				"'{}' cannot be used as the name of a {}: it is a reserved word in CeresASM, and a C symbol "
 				"keeps its own name in the generated assembly (see docs/07-CASM-Interop.md). Rename it.",
 				name, what);
@@ -1779,7 +1783,7 @@ namespace ceresc::codegen
 			if (decl)
 				generateFunction(*decl, *function);
 			else
-				_diagnostics.error({}, "internal error: no declaration found for generated function '{}'", function->name());
+				_diagnostics.error(DiagId::MissingDeclarationForFunction, {}, "internal error: no declaration found for generated function '{}'", function->name());
 		}
 
 		return _emitter.take();

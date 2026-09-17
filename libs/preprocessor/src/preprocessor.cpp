@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <optional>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -10,6 +11,10 @@
 
 namespace ceresc::preprocessor
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	namespace
 	{
 		namespace fs = std::filesystem;
@@ -81,7 +86,7 @@ namespace ceresc::preprocessor
 			support::DiagnosticEngine& _diagnostics; support::SourceLocation _location; usize _pos = 0; bool _ok = true;
 			void skip() { while (_pos < _text.size() && (_text[_pos] == ' ' || _text[_pos] == '\t')) ++_pos; }
 			bool take(std::string_view token) { skip(); if (_text.substr(_pos).starts_with(token)) { _pos += token.size(); return true; } return false; }
-			void fail(std::string_view message) { if (_ok) _diagnostics.error(_location, "{}", message); _ok = false; }
+			void fail(std::string_view message) { if (_ok) _diagnostics.error(DiagId::IfExpressionSyntax, _location, "{}", message); _ok = false; }
 			i64 primary()
 			{
 				skip();
@@ -195,6 +200,7 @@ namespace ceresc::preprocessor
 		_basePath = path;
 		_includeLevel = 0;
 		_counter = 0;
+		_warningPragmaDepth = 0;
 		definePredefinedMacros();
 		// Assignment rather than emplace: the command line's own -D goes in on TOP of a predefined
 		// macro of the same name, so `-D __STDC_HOSTED__=1` is a decision a program gets to make.
@@ -275,28 +281,141 @@ namespace ceresc::preprocessor
 				for (; pos < current.size(); ++pos) { char ch = current[pos]; if (ch == '(') ++depth; else if (ch == ')' && depth-- == 0) { args.emplace_back(trim(current.substr(argStart, pos - argStart))); closed = true; ++pos; break; } else if (ch == ',' && depth == 0) { args.emplace_back(trim(current.substr(argStart, pos - argStart))); argStart = pos + 1; } }
 				if (closed && args.size() == 1 && args.front().empty())
 					args.clear();
-				if (!closed || (!args.empty() && macro.parameters.empty() && !macro.variadic)) { _diagnostics.error(location, "malformed invocation of macro '{}'", name); next += name; continue; }
-				usize fixed = macro.parameters.size(); if ((!macro.variadic && args.size() != fixed) || (macro.variadic && args.size() < fixed)) { _diagnostics.error(location, "macro '{}' expects {} argument(s), got {}", name, fixed + (macro.variadic ? 1 : 0), args.size()); next += name; continue; }
+				if (!closed || (!args.empty() && macro.parameters.empty() && !macro.variadic)) { _diagnostics.error(DiagId::MalformedMacroInvocation, location, "malformed invocation of macro '{}'", name); next += name; continue; }
+				usize fixed = macro.parameters.size(); if ((!macro.variadic && args.size() != fixed) || (macro.variadic && args.size() < fixed)) { _diagnostics.error(DiagId::MacroArgumentCount, location, "macro '{}' expects {} argument(s), got {}", name, fixed + (macro.variadic ? 1 : 0), args.size()); next += name; continue; }
 				std::string replacement = macro.replacement;
 				auto substitute = [&](std::string_view parameter, std::string_view value) { std::string r; for (usize j = 0; j < replacement.size();) { if (isIdentifierStart(replacement[j])) { usize s = j++; while (j < replacement.size() && isIdentifierChar(replacement[j])) ++j; std::string_view word(replacement.data() + s, j - s); r += word == parameter ? value : word; } else r += replacement[j++]; } replacement = std::move(r); };
 				for (usize a = 0; a < fixed; ++a) substitute(macro.parameters[a], args[a]);
 				if (macro.variadic) { std::string joined; for (usize a = fixed; a < args.size(); ++a) { if (!joined.empty()) joined += ", "; joined += args[a]; } substitute("__VA_ARGS__", joined); }
 				next += replacement; i = pos; changed = true;
 			}
-			current = std::move(next); if (current.size() > kMaxExpandedLineBytes) { _diagnostics.warning(location, "gave up expanding macros after {} bytes", kMaxExpandedLineBytes); return current; }
+			current = std::move(next); if (current.size() > kMaxExpandedLineBytes) { _diagnostics.warning(DiagId::MacroExpansionByteLimit, location, "gave up expanding macros after {} bytes", kMaxExpandedLineBytes); return current; }
 			if (pass == 0)
 				inBlockComment = commentState;
 			if (!changed)
 				return current;
 		}
-		_diagnostics.warning(location, "gave up expanding macros after {} passes", kMaxMacroPasses); return current;
+		_diagnostics.warning(DiagId::MacroExpansionPassLimit, location, "gave up expanding macros after {} passes", kMaxMacroPasses); return current;
 	}
+	void Preprocessor::applyWarningPragma(std::string_view body, support::SourceLocation location,
+		u32 outputLine, support::DiagnosticPolicy& policy)
+	{
+		using support::DiagnosticAction;
+
+		// `warning(...)`: the parentheses are the whole of the syntax, so a body without them is
+		// the one shape worth naming separately - it is almost always a missing pair rather than a
+		// different idea.
+		if (body.size() < 2 || body.front() != '(' || body.back() != ')')
+		{
+			policedWarning(DiagId::InvalidWarningPragma, location, outputLine, policy,
+				"ignoring '#pragma warning {}': it takes a parenthesized body, as in "
+				"'#pragma warning(disable: 2001)'", body);
+			return;
+		}
+		std::string_view inner = trim(body.substr(1, body.size() - 2));
+		if (inner == "push")
+		{
+			++_warningPragmaDepth;
+			policy.push(outputLine);
+			return;
+		}
+		if (inner == "pop")
+		{
+			// A pop with nothing pushed restores nothing, which is harmless but never what anyone
+			// meant - it is a push deleted, or one that never made it out of a header.
+			if (_warningPragmaDepth == 0)
+			{
+				policedWarning(DiagId::InvalidWarningPragma, location, outputLine, policy,
+					"ignoring '#pragma warning(pop)': there is no matching '#pragma warning(push)'");
+				return;
+			}
+			--_warningPragmaDepth;
+			policy.pop(outputLine);
+			return;
+		}
+
+		// Everything else is `<verb>: <number> <number> ...`. The verb is what MSVC calls it, and
+		// means what MSVC means by it, with one addition of its own: `default` here restores what
+		// the COMMAND LINE said, which is the only baseline this compiler has.
+		usize colon = inner.find(':');
+		std::string_view verb = trim(inner.substr(0, colon == std::string_view::npos ? inner.size() : colon));
+		DiagnosticAction action = DiagnosticAction::Default;
+		if (verb == "disable")      action = DiagnosticAction::Ignored;
+		else if (verb == "default") action = DiagnosticAction::Default;
+		else if (verb == "enable")  action = DiagnosticAction::Warning;
+		else if (verb == "error")   action = DiagnosticAction::Error;
+		else
+		{
+			policedWarning(DiagId::InvalidWarningPragma, location, outputLine, policy,
+				"ignoring '#pragma warning({})': expected 'disable', 'default', 'enable', 'error', "
+				"'push' or 'pop'", inner);
+			return;
+		}
+		if (colon == std::string_view::npos)
+		{
+			policedWarning(DiagId::InvalidWarningPragma, location, outputLine, policy,
+				"ignoring '#pragma warning({})': '{}' needs a ':' and at least one warning number",
+				inner, verb);
+			return;
+		}
+
+		// A list, separated by spaces or commas or both - `disable: 1002 2001` and
+		// `disable: 1002, 2001` are the same thing, because both spellings are what people write.
+		std::string_view list = inner.substr(colon + 1);
+		for (usize i = 0; i < list.size();)
+		{
+			if (list[i] == ' ' || list[i] == '\t' || list[i] == ',')
+			{
+				++i;
+				continue;
+			}
+			usize start = i;
+			// An optional `W`, so both the code as it is PRINTED (W2001) and the bare number work.
+			if (list[i] == 'W' || list[i] == 'w')
+				++i;
+			usize digits = i;
+			while (i < list.size() && list[i] >= '0' && list[i] <= '9')
+				++i;
+			std::string_view word = list.substr(start, i - start);
+			if (digits == i)
+			{
+				// Not a number at all. `all` is the one word allowed here.
+				while (i < list.size() && list[i] != ' ' && list[i] != '\t' && list[i] != ',')
+					++i;
+				word = list.substr(start, i - start);
+				if (word == "all")
+				{
+					policy.set(outputLine, support::DiagnosticPolicy::kAll, action);
+					continue;
+				}
+				policedWarning(DiagId::InvalidWarningPragma, location, outputLine, policy,
+					"ignoring '{}' in '#pragma warning({})': expected a warning number or 'all'", word, inner);
+				continue;
+			}
+
+			u16 number = 0;
+			std::string_view text = list.substr(digits, i - digits);
+			std::from_chars(text.data(), text.data() + text.size(), number);
+			if (std::optional<support::DiagnosticId> id = support::warningWithNumber(number))
+			{
+				policy.set(outputLine, support::diagnosticNumber(*id), action);
+				continue;
+			}
+			// A number that names an error, or nothing at all. Saying which of the two it is would
+			// mean a second table; saying that it is not a warning is what the program needs to
+			// hear either way, because that is the whole of what this pragma can do.
+			policedWarning(DiagId::UncontrollableDiagnostic, location, outputLine, policy,
+				"'{}' does not name a warning, so '#pragma warning({}: {})' does nothing - "
+				"only warnings can be turned off, and an error is not one", word, verb, word);
+		}
+	}
+
 	bool Preprocessor::expandFile(const std::string& path, PreprocessedSource& out, std::vector<std::string>& includeStack)
 	{
 		std::string canonical = canonicalPath(path); if (std::find(_pragmaOnce.begin(), _pragmaOnce.end(), canonical) != _pragmaOnce.end()) return true;
-		if (std::find(includeStack.begin(), includeStack.end(), canonical) != includeStack.end()) { _diagnostics.error({}, "include cycle: '{}' includes itself", path); return false; }
-		if (includeStack.size() >= kMaxIncludeDepth) { _diagnostics.error({}, "#include nested more than {} deep, starting at '{}'", kMaxIncludeDepth, path); return false; }
-		std::ifstream input(path, std::ios::binary); if (!input) { _diagnostics.error({}, "cannot open '{}'", path); return false; }
+		if (std::find(includeStack.begin(), includeStack.end(), canonical) != includeStack.end()) { _diagnostics.error(DiagId::IncludeCycle, {}, "include cycle: '{}' includes itself", path); return false; }
+		if (includeStack.size() >= kMaxIncludeDepth) { _diagnostics.error(DiagId::IncludeTooDeep, {}, "#include nested more than {} deep, starting at '{}'", kMaxIncludeDepth, path); return false; }
+		std::ifstream input(path, std::ios::binary); if (!input) { _diagnostics.error(DiagId::CannotOpenFile, {}, "cannot open '{}'", path); return false; }
 		std::string contents{ std::istreambuf_iterator<char>(input), {} }; support::SourceId sourceId = _sourceManager.registerBuffer(path, std::move(contents)); const auto* buffer = _sourceManager.getBuffer(sourceId); if (!buffer) return false;
 		includeStack.push_back(canonical); u32 previousIncludeLevel = _includeLevel; _includeLevel = static_cast<u32>(includeStack.size()) - 1;
 		bool ok = true, inBlockComment = false; std::vector<Conditional> conditionals; u32 sourceLine = 0; std::string_view text = buffer->buffer();
@@ -311,22 +430,53 @@ namespace ceresc::preprocessor
 				std::string_view directive = withoutDirectiveComment(trim(trimmed.substr(1)));
 				auto condition = [&](bool value) { bool parent = active(); conditionals.push_back({ parent, parent && value, value, false, here }); };
 				if (isDirective(directive, "if")) { i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(2)), here, value); condition(valid && value != 0); blank(); continue; }
-				if (isDirective(directive, "ifdef") || isDirective(directive, "ifndef")) { bool negated = isDirective(directive, "ifndef"); std::string_view name = trim(directive.substr(negated ? 6 : 5)); if (name.empty() || !isIdentifierStart(name.front()) || std::any_of(name.begin()+1, name.end(), [](char c){ return !isIdentifierChar(c); })) { _diagnostics.error(here, "#{} expects a macro name", negated ? "ifndef" : "ifdef"); ok = false; condition(false); } else condition(_macros.contains(std::string(name)) != negated); blank(); continue; }
-				if (isDirective(directive, "elif")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(here, "#elif without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(4)), here, value); c.active = c.parentActive && !c.branchTaken && valid && value != 0; c.branchTaken = c.branchTaken || (valid && value != 0); } blank(); continue; }
-				if (isDirective(directive, "else")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(here, "#else without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); c.active = c.parentActive && !c.branchTaken; c.branchTaken = true; c.sawElse = true; } blank(); continue; }
-				if (isDirective(directive, "endif")) { if (conditionals.empty()) { _diagnostics.error(here, "#endif without a matching #if"); ok = false; } else conditionals.pop_back(); blank(); continue; }
+				if (isDirective(directive, "ifdef") || isDirective(directive, "ifndef")) { bool negated = isDirective(directive, "ifndef"); std::string_view name = trim(directive.substr(negated ? 6 : 5)); if (name.empty() || !isIdentifierStart(name.front()) || std::any_of(name.begin()+1, name.end(), [](char c){ return !isIdentifierChar(c); })) { _diagnostics.error(DiagId::ConditionalExpectsMacroName, here, "#{} expects a macro name", negated ? "ifndef" : "ifdef"); ok = false; condition(false); } else condition(_macros.contains(std::string(name)) != negated); blank(); continue; }
+				if (isDirective(directive, "elif")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(DiagId::ElifWithoutIf, here, "#elif without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(4)), here, value); c.active = c.parentActive && !c.branchTaken && valid && value != 0; c.branchTaken = c.branchTaken || (valid && value != 0); } blank(); continue; }
+				if (isDirective(directive, "else")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(DiagId::ElseWithoutIf, here, "#else without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); c.active = c.parentActive && !c.branchTaken; c.branchTaken = true; c.sawElse = true; } blank(); continue; }
+				if (isDirective(directive, "endif")) { if (conditionals.empty()) { _diagnostics.error(DiagId::EndifWithoutIf, here, "#endif without a matching #if"); ok = false; } else conditionals.pop_back(); blank(); continue; }
 				if (!active()) { blank(); continue; }
-				if (isDirective(directive, "include")) { std::string_view target = trim(directive.substr(7)); bool angled = !target.empty() && target.front() == '<'; char close = angled ? '>' : '"'; if (target.size() < 2 || (target.front() != '<' && target.front() != '"') || target.back() != close) { _diagnostics.error(here, "#include expects \"file.h\" or <file.h>"); ok = false; blank(); continue; } std::string resolved = resolveInclude(target.substr(1, target.size()-2), angled, path); if (resolved.empty()) { _diagnostics.error(here, "cannot find include file '{}'", target); ok = false; blank(); } else ok = expandFile(resolved, out, includeStack) && ok; continue; }
-				if (isDirective(directive, "define")) { std::string_view rest = trim(directive.substr(6)); usize end = 0; while (end < rest.size() && isIdentifierChar(rest[end])) ++end; if (!end || !isIdentifierStart(rest[0])) { _diagnostics.error(here, "#define expects a name"); ok = false; blank(); continue; } Macro macro; std::string name(rest.substr(0, end)); if (end < rest.size() && rest[end] == '(') { macro.functionLike = true; usize p = end + 1; while (p < rest.size() && rest[p] != ')') { while (p < rest.size() && (rest[p] == ' ' || rest[p] == '\t' || rest[p] == ',')) ++p; if (rest.substr(p).starts_with("...")) { macro.variadic = true; p += 3; break; } usize s = p; while (p < rest.size() && isIdentifierChar(rest[p])) ++p; if (s == p || !isIdentifierStart(rest[s])) { _diagnostics.error(here, "invalid macro parameter list"); ok = false; break; } macro.parameters.emplace_back(rest.substr(s, p-s)); } if (p >= rest.size() || rest[p] != ')') { _diagnostics.error(here, "unterminated macro parameter list"); ok = false; } else end = p + 1; } macro.replacement = std::string(withoutDirectiveComment(trim(rest.substr(end)))); _macros[std::move(name)] = std::move(macro); blank(); continue; }
-				if (isDirective(directive, "undef")) { std::string_view name = trim(directive.substr(5)); if (name.empty() || !isIdentifierStart(name.front()) || std::any_of(name.begin()+1, name.end(), [](char c){ return !isIdentifierChar(c); })) { _diagnostics.error(here, "#undef expects a name"); ok = false; } else _macros.erase(std::string(name)); blank(); continue; }
-				if (isDirective(directive, "error") || isDirective(directive, "warning")) { std::string_view message = trim(directive.substr(isDirective(directive, "error") ? 5 : 7)); if (isDirective(directive, "error")) { _diagnostics.error(here, "{}", message); ok = false; } else _diagnostics.warning(here, "{}", message); blank(); continue; }
-				if (isDirective(directive, "pragma")) { if (trim(directive.substr(6)) == "once") _pragmaOnce.push_back(canonical); else _diagnostics.warning(here, "ignoring unknown pragma '{}'", trim(directive.substr(6))); blank(); continue; }
+				if (isDirective(directive, "include")) { std::string_view target = trim(directive.substr(7)); bool angled = !target.empty() && target.front() == '<'; char close = angled ? '>' : '"'; if (target.size() < 2 || (target.front() != '<' && target.front() != '"') || target.back() != close) { _diagnostics.error(DiagId::IncludeExpectsTarget, here, "#include expects \"file.h\" or <file.h>"); ok = false; blank(); continue; } std::string resolved = resolveInclude(target.substr(1, target.size()-2), angled, path); if (resolved.empty()) { _diagnostics.error(DiagId::IncludeNotFound, here, "cannot find include file '{}'", target); ok = false; blank(); } else ok = expandFile(resolved, out, includeStack) && ok; continue; }
+				if (isDirective(directive, "define")) { std::string_view rest = trim(directive.substr(6)); usize end = 0; while (end < rest.size() && isIdentifierChar(rest[end])) ++end; if (!end || !isIdentifierStart(rest[0])) { _diagnostics.error(DiagId::DefineExpectsName, here, "#define expects a name"); ok = false; blank(); continue; } Macro macro; std::string name(rest.substr(0, end)); if (end < rest.size() && rest[end] == '(') { macro.functionLike = true; usize p = end + 1; while (p < rest.size() && rest[p] != ')') { while (p < rest.size() && (rest[p] == ' ' || rest[p] == '\t' || rest[p] == ',')) ++p; if (rest.substr(p).starts_with("...")) { macro.variadic = true; p += 3; break; } usize s = p; while (p < rest.size() && isIdentifierChar(rest[p])) ++p; if (s == p || !isIdentifierStart(rest[s])) { _diagnostics.error(DiagId::InvalidMacroParameterList, here, "invalid macro parameter list"); ok = false; break; } macro.parameters.emplace_back(rest.substr(s, p-s)); } if (p >= rest.size() || rest[p] != ')') { _diagnostics.error(DiagId::UnterminatedMacroParameterList, here, "unterminated macro parameter list"); ok = false; } else end = p + 1; } macro.replacement = std::string(withoutDirectiveComment(trim(rest.substr(end)))); _macros[std::move(name)] = std::move(macro); blank(); continue; }
+				if (isDirective(directive, "undef")) { std::string_view name = trim(directive.substr(5)); if (name.empty() || !isIdentifierStart(name.front()) || std::any_of(name.begin()+1, name.end(), [](char c){ return !isIdentifierChar(c); })) { _diagnostics.error(DiagId::UndefExpectsName, here, "#undef expects a name"); ok = false; } else _macros.erase(std::string(name)); blank(); continue; }
+				if (isDirective(directive, "error") || isDirective(directive, "warning"))
+				{
+					bool fatal = isDirective(directive, "error");
+					std::string_view message = trim(directive.substr(fatal ? 5 : 7));
+					if (fatal)
+					{
+						_diagnostics.error(DiagId::UserError, here, "{}", message);
+						ok = false;
+					}
+					else
+					{
+						policedWarning(DiagId::UserWarning, here,
+							static_cast<u32>(out.lineMap.entries().size() + 1), out.diagnosticPolicy, "{}", message);
+					}
+					blank();
+					continue;
+				}
+						if (isDirective(directive, "pragma"))
+				{
+					std::string_view body = trim(directive.substr(6));
+					// The line this pragma governs from is the NEXT one it writes, which is the one
+					// the blank() below is about to become.
+					u32 outputLine = static_cast<u32>(out.lineMap.entries().size() + 1);
+					if (body == "once")
+						_pragmaOnce.push_back(canonical);
+					else if (isDirective(body, "warning"))
+						applyWarningPragma(trim(body.substr(7)), here, outputLine, out.diagnosticPolicy);
+					else
+						policedWarning(DiagId::UnknownPragma, here, outputLine, out.diagnosticPolicy,
+							"ignoring unknown pragma '{}'", body);
+					blank();
+					continue;
+				}
 				if (directive.empty()) { blank(); continue; }
-				std::string_view word = directive.substr(0, directive.find_first_of(" \t")); _diagnostics.error(here, "'#{}' is not supported", word); ok = false; blank(); continue;
+				std::string_view word = directive.substr(0, directive.find_first_of(" \t")); _diagnostics.error(DiagId::UnsupportedDirective, here, "'#{}' is not supported", word); ok = false; blank(); continue;
 			}
 			if (active()) { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size()+1), sourceId, sourceLine); out.text += expandMacros(line, here, inBlockComment); out.text += '\n'; } else blank();
 		}
-		for (const Conditional& c : conditionals) { _diagnostics.error(c.location, "unterminated conditional directive"); ok = false; }
+		for (const Conditional& c : conditionals) { _diagnostics.error(DiagId::UnterminatedConditional, c.location, "unterminated conditional directive"); ok = false; }
 		includeStack.pop_back(); _includeLevel = previousIncludeLevel; return ok;
 	}
 }

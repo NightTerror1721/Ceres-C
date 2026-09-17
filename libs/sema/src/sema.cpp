@@ -8,6 +8,10 @@
 
 namespace ceresc::sema
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	using ast::Type;
 	using ast::TypeKind;
 	using ast::Expr;
@@ -75,7 +79,7 @@ namespace ceresc::sema
 	{
 		if (!currentScope().declare(symbol))
 		{
-			_diagnostics.error(symbol.location, "redefinition of '{}'", symbol.name);
+			_diagnostics.error(DiagId::Redefinition, symbol.location, "redefinition of '{}'", symbol.name);
 			return false;
 		}
 		return true;
@@ -222,14 +226,14 @@ namespace ceresc::sema
 			checkExpr(init); // still annotate the literal - libs/ir reads its PooledString, not its type
 			if (!isCharType(type->arrayElementType()))
 			{
-				_diagnostics.error(init->location(), "initializing '{}' with a string literal requires an array of 'char'", typeName(type));
+				_diagnostics.error(DiagId::StringInitializerNeedsCharArray, init->location(), "initializing '{}' with a string literal requires an array of 'char'", typeName(type));
 				return;
 			}
 			auto* literal = static_cast<ast::StringLiteralExpr*>(init);
 			usize needed = literal->value().view().size() + 1; // + the terminating zero
 			if (needed > type->arraySize())
 			{
-				_diagnostics.error(init->location(), "string literal needs {} byte(s) including its terminating zero, but '{}' holds {}",
+				_diagnostics.error(DiagId::StringInitializerTooLong, init->location(), "string literal needs {} byte(s) including its terminating zero, but '{}' holds {}",
 					needed, typeName(type), type->arraySize());
 			}
 			return;
@@ -242,13 +246,13 @@ namespace ceresc::sema
 			// An array is never assignable from a plain expression in C - it has no assignment at
 			// all - so this cannot fall through to isAssignable() and say "incompatible type", which
 			// would suggest the right-hand side is the problem rather than the form.
-			_diagnostics.error(init->location(), "an array like '{}' must be initialized with an initializer list or a string literal", typeName(type));
+			_diagnostics.error(DiagId::ArrayNeedsListInitializer, init->location(), "an array like '{}' must be initialized with an initializer list or a string literal", typeName(type));
 			return;
 		}
 
 		if (!isAssignable(type, initType))
 		{
-			_diagnostics.error(init->location(), "initializing '{}' with an expression of incompatible type '{}'",
+			_diagnostics.error(DiagId::IncompatibleInitializer, init->location(), "initializing '{}' with an expression of incompatible type '{}'",
 				typeName(type), typeName(initType));
 		}
 	}
@@ -270,7 +274,7 @@ namespace ceresc::sema
 			}
 			if (elements.size() > type->arraySize())
 			{
-				_diagnostics.error(list.location(), "{} value(s) in an initializer list for '{}', which holds {}",
+				_diagnostics.error(DiagId::InitializerListSize, list.location(), "{} value(s) in an initializer list for '{}', which holds {}",
 					elements.size(), typeName(type), type->arraySize());
 			}
 			for (Expr* element : elements)
@@ -282,7 +286,7 @@ namespace ceresc::sema
 					if (isAssignable(elementType, elementExprType))
 						continue; // an aggregate value, not brace elision
 					// Brace elision - see sema.h's own note on why this is reported, not guessed at.
-					_diagnostics.error(element->location(), "expected '{{' to initialize a '{}' here - omitting the inner braces is not accepted in this version",
+					_diagnostics.error(DiagId::MissingInnerBraces, element->location(), "expected '{{' to initialize a '{}' here - omitting the inner braces is not accepted in this version",
 						typeName(elementType));
 					continue;
 				}
@@ -296,7 +300,7 @@ namespace ceresc::sema
 			ast::StructDecl* decl = type->structDecl();
 			if (!decl || !decl->isComplete())
 			{
-				_diagnostics.error(list.location(), "cannot initialize an incomplete type '{}'", typeName(type));
+				_diagnostics.error(DiagId::IncompleteTypeInitializer, list.location(), "cannot initialize an incomplete type '{}'", typeName(type));
 				for (Expr* element : elements)
 				{
 					if (auto* nested = dynamic_cast<ast::InitListExpr*>(element))
@@ -314,7 +318,7 @@ namespace ceresc::sema
 			std::span<const FieldDecl> fields = decl->fields();
 			if (elements.size() > fields.size())
 			{
-				_diagnostics.error(list.location(), "{} value(s) in an initializer list for '{}', which has {} field(s)",
+				_diagnostics.error(DiagId::InitializerListSize, list.location(), "{} value(s) in an initializer list for '{}', which has {} field(s)",
 					elements.size(), typeName(type), fields.size());
 			}
 			for (usize i = 0; i < elements.size(); ++i)
@@ -338,7 +342,7 @@ namespace ceresc::sema
 					const Type* elementExprType = decayArray(checkExpr(elements[i]));
 					if (isAssignable(fieldType, elementExprType))
 						continue; // an aggregate value, not brace elision
-					_diagnostics.error(elements[i]->location(), "expected '{{' to initialize field '{}' of type '{}' here - omitting the inner braces is not accepted in this version",
+					_diagnostics.error(DiagId::MissingInnerBraces, elements[i]->location(), "expected '{{' to initialize field '{}' of type '{}' here - omitting the inner braces is not accepted in this version",
 						fields[i].name, typeName(fieldType));
 					continue;
 				}
@@ -350,7 +354,7 @@ namespace ceresc::sema
 		// A scalar/pointer with braces - real C's `int x = { 5 }`. One value, no more.
 		if (elements.size() != 1)
 		{
-			_diagnostics.error(list.location(), "an initializer list for the scalar type '{}' takes exactly one value, not {}",
+			_diagnostics.error(DiagId::InitializerListSize, list.location(), "an initializer list for the scalar type '{}' takes exactly one value, not {}",
 				typeName(type), elements.size());
 		}
 		for (Expr* element : elements)
@@ -369,13 +373,13 @@ namespace ceresc::sema
 		// the callee read whatever it guesses, this is refused outright.
 		if (argType->isAggregate())
 		{
-			_diagnostics.error(arg->location(),
+			_diagnostics.error(DiagId::AggregateThroughEllipsis, arg->location(),
 				"cannot pass '{}' through '...': struct and union arguments have no variadic representation",
 				typeName(argType));
 			return;
 		}
 		if (argType->isVoid())
-			_diagnostics.error(arg->location(), "cannot pass a void value through '...'");
+			_diagnostics.error(DiagId::VoidThroughEllipsis, arg->location(), "cannot pass a void value through '...'");
 
 		// The default argument promotions are not applied by rewriting the type here: a narrow
 		// value is ALREADY in its promoted representation by the time it becomes a value at all
@@ -562,7 +566,7 @@ namespace ceresc::sema
 		if (auto* label = dynamic_cast<ast::LabelStmt*>(stmt))
 		{
 			if (std::find(out.begin(), out.end(), label->label()) != out.end())
-				_diagnostics.error(label->location(), "redefinition of label '{}'", label->label());
+				_diagnostics.error(DiagId::RedefinitionOfLabel, label->location(), "redefinition of label '{}'", label->label());
 			else
 				out.push_back(label->label());
 			collectLabels(label->body(), out);
@@ -630,7 +634,7 @@ namespace ceresc::sema
 		Symbol* symbol = currentScope().lookup(node.name());
 		if (!symbol)
 		{
-			_diagnostics.error(node.location(), "use of undeclared identifier '{}'", node.name());
+			_diagnostics.error(DiagId::UndeclaredIdentifier, node.location(), "use of undeclared identifier '{}'", node.name());
 		}
 		else if (symbol->kind == SymbolKind::Function)
 		{
@@ -638,7 +642,7 @@ namespace ceresc::sema
 			{
 				// Rejected here as well as in call position, because a pointer would be a way round
 				// that check: the vector is the only entry an `iret` can return from.
-				_diagnostics.error(node.location(),
+				_diagnostics.error(DiagId::InterruptHandlerAddressTaken, node.location(),
 					"'{}' is an '__interrupt' handler, so its address cannot be taken: it is reached through its vector",
 					node.name());
 			}
@@ -671,12 +675,12 @@ namespace ceresc::sema
 		if (signature.isVariadic)
 		{
 			if (args.size() < params.size())
-				_diagnostics.error(node.location(), "{} expects at least {} argument(s), got {}",
+				_diagnostics.error(DiagId::ArgumentCount, node.location(), "{} expects at least {} argument(s), got {}",
 					calleeName, params.size(), args.size());
 		}
 		else if (args.size() != params.size())
 		{
-			_diagnostics.error(node.location(), "{} expects {} argument(s), got {}",
+			_diagnostics.error(DiagId::ArgumentCount, node.location(), "{} expects {} argument(s), got {}",
 				calleeName, params.size(), args.size());
 		}
 
@@ -686,13 +690,13 @@ namespace ceresc::sema
 			const Type* argType = decayArray(checkExpr(args[i]));
 			if (!isAssignable(params[i].type, argType))
 			{
-				_diagnostics.error(args[i]->location(), "passing '{}' to parameter of incompatible type '{}'",
+				_diagnostics.error(DiagId::IncompatibleArgument, args[i]->location(), "passing '{}' to parameter of incompatible type '{}'",
 					typeName(argType), typeName(params[i].type));
 			}
 			else if (isArithmeticType(argType) && isArithmeticType(params[i].type) &&
 				(argType->isFloat() != params[i].type->isFloat()))
 			{
-				_diagnostics.error(args[i]->location(), "implicit conversion between integer and float call arguments is not supported");
+				_diagnostics.error(DiagId::IntegerFloatArgument, args[i]->location(), "implicit conversion between integer and float call arguments is not supported");
 			}
 		}
 		for (usize i = checkCount; i < args.size(); ++i)
@@ -715,7 +719,7 @@ namespace ceresc::sema
 		{
 			Symbol* symbol = currentScope().lookup(nameExpr->name());
 			if (!symbol)
-				_diagnostics.error(node.location(), "use of undeclared identifier '{}'", nameExpr->name());
+				_diagnostics.error(DiagId::UndeclaredIdentifier, node.location(), "use of undeclared identifier '{}'", nameExpr->name());
 			else if (symbol->kind == SymbolKind::Function)
 			{
 				if (symbol->funcDecl && symbol->funcDecl->isInterruptHandler())
@@ -723,7 +727,7 @@ namespace ceresc::sema
 					// A handler ends in `iret`, which pops a PC and flags the machine pushed on
 					// dispatch. Reached by `call`, it would pop the return address as a PC and
 					// whatever sat below it as flags. The vector is the only way in.
-					_diagnostics.error(node.location(),
+					_diagnostics.error(DiagId::InterruptHandlerCalled, node.location(),
 						"'{}' is an '__interrupt' handler and cannot be called: it is reached through its vector",
 						nameExpr->name());
 				}
@@ -736,7 +740,7 @@ namespace ceresc::sema
 				const Type* symbolType = symbol->type;
 				info = symbolType ? symbolType->calleeSignature() : nullptr;
 				if (!info)
-					_diagnostics.error(node.location(), "called object '{}' is not a function", nameExpr->name());
+					_diagnostics.error(DiagId::CalledObjectNotAFunction, node.location(), "called object '{}' is not a function", nameExpr->name());
 				else
 					calleeName = std::format("'{}'", nameExpr->name());
 			}
@@ -755,7 +759,7 @@ namespace ceresc::sema
 			info = calleeType ? calleeType->calleeSignature() : nullptr;
 			if (!info)
 			{
-				_diagnostics.error(node.location(), "called object of type '{}' is not a function or a pointer to one",
+				_diagnostics.error(DiagId::CalledObjectNotAFunction, node.location(), "called object of type '{}' is not a function or a pointer to one",
 					typeName(calleeType));
 			}
 		}
@@ -808,14 +812,14 @@ namespace ceresc::sema
 					break;
 				}
 				if (!isLValue(node.operand()))
-					_diagnostics.error(node.location(), "cannot take the address of a non-lvalue expression");
+					_diagnostics.error(DiagId::AddressOfNonLValue, node.location(), "cannot take the address of a non-lvalue expression");
 				else if (auto* name = dynamic_cast<ast::NameExpr*>(node.operand()))
 				{
 					Symbol* symbol = currentScope().lookup(name->name());
 					bool isRegister = symbol && ((symbol->varDecl && symbol->varDecl->storageClass() == ast::StorageClass::Register)
 						|| symbol->isRegister);
 					if (isRegister)
-						_diagnostics.error(node.location(), "cannot take the address of register variable '{}'", name->name());
+						_diagnostics.error(DiagId::AddressOfRegisterVariable, node.location(), "cannot take the address of register variable '{}'", name->name());
 				}
 				resultType = Type::makePointer(_arena, operandType ? operandType : errorRecoveryType());
 				break;
@@ -824,19 +828,19 @@ namespace ceresc::sema
 				if (operandType && (operandType->isPointer() || operandType->isArray()))
 					resultType = operandType->arrayElementType();
 				else
-					_diagnostics.error(node.location(), "indirection requires a pointer operand ('{}' invalid)", typeName(operandType));
+					_diagnostics.error(DiagId::IndirectionRequiresPointer, node.location(), "indirection requires a pointer operand ('{}' invalid)", typeName(operandType));
 				break;
 
 			case UnaryOp::Negate:
 				if (isArithmeticType(operandType))
 					resultType = integerPromote(operandType);
 				else
-					_diagnostics.error(node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
+					_diagnostics.error(DiagId::InvalidUnaryOperand, node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
 				break;
 
 			case UnaryOp::LogicalNot:
 				if (!isScalarType(decayedOperandType))
-					_diagnostics.error(node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
+					_diagnostics.error(DiagId::InvalidUnaryOperand, node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
 				resultType = &Type::Bool;
 				break;
 
@@ -844,7 +848,7 @@ namespace ceresc::sema
 				if (isIntegerType(operandType))
 					resultType = integerPromote(operandType);
 				else
-					_diagnostics.error(node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
+					_diagnostics.error(DiagId::InvalidUnaryOperand, node.location(), "invalid argument type '{}' to unary expression", typeName(operandType));
 				break;
 
 			case UnaryOp::PreIncrement:
@@ -852,11 +856,11 @@ namespace ceresc::sema
 			case UnaryOp::PostIncrement:
 			case UnaryOp::PostDecrement:
 				if (!isLValue(node.operand()))
-					_diagnostics.error(node.location(), "expression is not assignable");
+					_diagnostics.error(DiagId::NotAssignable, node.location(), "expression is not assignable");
 				else if (operandType && operandType->isConst())
-					_diagnostics.error(node.location(), "cannot modify '{}': it is const", typeName(operandType));
+					_diagnostics.error(DiagId::AssignToConst, node.location(), "cannot modify '{}': it is const", typeName(operandType));
 				if (!isScalarType(operandType))
-					_diagnostics.error(node.location(), "cannot increment/decrement a value of type '{}'", typeName(operandType));
+					_diagnostics.error(DiagId::IncrementInvalidType, node.location(), "cannot increment/decrement a value of type '{}'", typeName(operandType));
 				resultType = operandType ? operandType : errorRecoveryType();
 				break;
 		}
@@ -885,7 +889,7 @@ namespace ceresc::sema
 			case BinaryOp::LogicalOr:
 			case BinaryOp::LogicalAnd:
 				if (!isScalarType(lhsType) || !isScalarType(rhsType))
-					_diagnostics.error(node.location(), "invalid operands to logical expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::InvalidLogicalOperands, node.location(), "invalid operands to logical expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				resultType = &Type::Bool;
 				break;
 
@@ -903,7 +907,7 @@ namespace ceresc::sema
 					  (lhsType && rhsType && lhsType->isPointer() && rhsType->isPointer()) ||
 					  nullConstant))
 				{
-					_diagnostics.error(node.location(), "comparison of incompatible operand types ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::IncompatibleComparison, node.location(), "comparison of incompatible operand types ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				}
 				resultType = &Type::Bool;
 				break;
@@ -913,14 +917,14 @@ namespace ceresc::sema
 				if (isIntegerType(lhsType) && isIntegerType(rhsType))
 					resultType = commonArithmeticType(lhsType, rhsType);
 				else
-					_diagnostics.error(node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::InvalidBinaryOperands, node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				break;
 
 			case BinaryOp::Shl: case BinaryOp::Shr:
 				if (isIntegerType(lhsType) && isIntegerType(rhsType))
 					resultType = integerPromote(lhsType); // the rhs never affects the shift's result type
 				else
-					_diagnostics.error(node.location(), "invalid operands to shift expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::InvalidShiftOperands, node.location(), "invalid operands to shift expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				break;
 
 			case BinaryOp::Add:
@@ -934,21 +938,21 @@ namespace ceresc::sema
 				else if (isArithmeticType(lhsType) && isArithmeticType(rhsType))
 					resultType = commonArithmeticType(lhsType, rhsType);
 				else
-					_diagnostics.error(node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::InvalidBinaryOperands, node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				break;
 
 			case BinaryOp::Mul: case BinaryOp::Div:
 				if (isArithmeticType(lhsType) && isArithmeticType(rhsType))
 					resultType = commonArithmeticType(lhsType, rhsType);
 				else
-					_diagnostics.error(node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::InvalidBinaryOperands, node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				break;
 
 			case BinaryOp::Mod:
 				if (isIntegerType(lhsType) && isIntegerType(rhsType))
 					resultType = commonArithmeticType(lhsType, rhsType);
 				else
-					_diagnostics.error(node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
+					_diagnostics.error(DiagId::InvalidBinaryOperands, node.location(), "invalid operands to binary expression ('{}' and '{}')", typeName(lhsType), typeName(rhsType));
 				break;
 		}
 
@@ -962,13 +966,13 @@ namespace ceresc::sema
 		const Type* valueType = decayArray(checkExpr(node.value()));
 
 		if (!isLValue(node.target()))
-			_diagnostics.error(node.location(), "expression is not assignable");
+			_diagnostics.error(DiagId::NotAssignable, node.location(), "expression is not assignable");
 		else if (targetType && targetType->isConst())
-			_diagnostics.error(node.location(), "cannot assign to '{}': it is const", typeName(targetType));
+			_diagnostics.error(DiagId::AssignToConst, node.location(), "cannot assign to '{}': it is const", typeName(targetType));
 		else if (targetType && targetType->isAggregate() && node.op() != ast::AssignOp::Assign)
-			_diagnostics.error(node.location(), "compound assignment is not valid for struct type '{}'", typeName(targetType));
+			_diagnostics.error(DiagId::CompoundAssignToStructType, node.location(), "compound assignment is not valid for struct type '{}'", typeName(targetType));
 		else if (!isAssignable(targetType, valueType))
-			_diagnostics.error(node.location(), "assigning to '{}' from incompatible type '{}'", typeName(targetType), typeName(valueType));
+			_diagnostics.error(DiagId::IncompatibleAssignment, node.location(), "assigning to '{}' from incompatible type '{}'", typeName(targetType), typeName(valueType));
 
 		const Type* resultType = targetType ? targetType : errorRecoveryType();
 		node.setType(resultType);
@@ -984,10 +988,10 @@ namespace ceresc::sema
 		if (arrayType && (arrayType->isPointer() || arrayType->isArray()))
 			resultType = arrayType->arrayElementType();
 		else
-			_diagnostics.error(node.location(), "subscripted value ('{}') is not a pointer or array", typeName(arrayType));
+			_diagnostics.error(DiagId::SubscriptOnNonPointer, node.location(), "subscripted value ('{}') is not a pointer or array", typeName(arrayType));
 
 		if (!isIntegerType(indexType))
-			_diagnostics.error(node.location(), "array subscript ('{}') is not an integer", typeName(indexType));
+			_diagnostics.error(DiagId::SubscriptNotInteger, node.location(), "array subscript ('{}') is not an integer", typeName(indexType));
 
 		node.setType(resultType);
 		_lastExprType = resultType;
@@ -1004,14 +1008,14 @@ namespace ceresc::sema
 			if (objectType && objectType->isPointer() && objectType->arrayElementType() && objectType->arrayElementType()->isAggregate())
 				structType = objectType->arrayElementType();
 			else
-				_diagnostics.error(node.location(), "member reference type '{}' is not a pointer to struct", typeName(objectType));
+				_diagnostics.error(DiagId::MemberBaseNotPointerToStruct, node.location(), "member reference type '{}' is not a pointer to struct", typeName(objectType));
 		}
 		else
 		{
 			if (objectType && objectType->isAggregate())
 				structType = objectType;
 			else
-				_diagnostics.error(node.location(), "member reference base type '{}' is not a struct", typeName(objectType));
+				_diagnostics.error(DiagId::MemberBaseNotStruct, node.location(), "member reference base type '{}' is not a struct", typeName(objectType));
 		}
 
 		if (structType)
@@ -1045,7 +1049,7 @@ namespace ceresc::sema
 			}
 			if (!found)
 			{
-				_diagnostics.error(node.location(), "no member named '{}' in '{}'", node.memberName(), typeName(structType));
+				_diagnostics.error(DiagId::NoSuchMember, node.location(), "no member named '{}' in '{}'", node.memberName(), typeName(structType));
 			}
 		}
 
@@ -1061,7 +1065,7 @@ namespace ceresc::sema
 		bool operandIsStruct = operandType && operandType->isAggregate();
 		bool targetIsStruct = targetType && targetType->isAggregate();
 		if (operandIsStruct != targetIsStruct || (operandIsStruct && targetIsStruct && !(*operandType == *targetType)))
-			_diagnostics.error(node.location(), "cannot cast from '{}' to '{}'", typeName(operandType), typeName(targetType));
+			_diagnostics.error(DiagId::InvalidCast, node.location(), "cannot cast from '{}' to '{}'", typeName(operandType), typeName(targetType));
 
 		_lastExprType = targetType;
 	}
@@ -1099,9 +1103,9 @@ namespace ceresc::sema
 		const Type* listType = checkExpr(node.list());
 		const Type* vaListType = Type::makePointer(_arena, &Type::Char); // what `__builtin_va_list` is - see the parser
 		if (!isLValue(node.list()))
-			_diagnostics.error(node.list()->location(), "the first argument to '{}' must be an lvalue of type '__builtin_va_list'", ast::vaOpName(node.op()));
+			_diagnostics.error(DiagId::VaListOperandType, node.list()->location(), "the first argument to '{}' must be an lvalue of type '__builtin_va_list'", ast::vaOpName(node.op()));
 		else if (!listType || !(*listType == *vaListType))
-			_diagnostics.error(node.list()->location(), "the first argument to '{}' must have type '__builtin_va_list', not '{}'",
+			_diagnostics.error(DiagId::VaListOperandType, node.list()->location(), "the first argument to '{}' must have type '__builtin_va_list', not '{}'",
 				ast::vaOpName(node.op()), typeName(listType));
 
 		const Type* resultType = &Type::Void;
@@ -1112,7 +1116,7 @@ namespace ceresc::sema
 				std::span<const Param> params = _currentFunction ? _currentFunction->params() : std::span<const Param>{};
 				if (!_currentFunction || !_currentFunction->isVariadic())
 				{
-					_diagnostics.error(node.location(), "'__builtin_va_start' is only allowed inside a function declared with '...'");
+					_diagnostics.error(DiagId::VaStartOutsideVariadic, node.location(), "'__builtin_va_start' is only allowed inside a function declared with '...'");
 					break;
 				}
 				// The second operand must name the LAST fixed parameter. That is not a formality
@@ -1121,10 +1125,10 @@ namespace ceresc::sema
 				// describe a different starting point than the one __builtin_va_start actually produces.
 				auto* name = dynamic_cast<ast::NameExpr*>(node.second());
 				if (!name)
-					_diagnostics.error(node.second() ? node.second()->location() : node.location(),
+					_diagnostics.error(DiagId::VaStartLastParameter, node.second() ? node.second()->location() : node.location(),
 						"the second argument to '__builtin_va_start' must name the last named parameter");
 				else if (params.empty() || name->name() != params.back().name)
-					_diagnostics.error(name->location(),
+					_diagnostics.error(DiagId::VaStartLastParameter, name->location(),
 						"'__builtin_va_start' must name the last named parameter ('{}'), not '{}'",
 						params.empty() ? std::string_view("<none>") : params.back().name, name->name());
 				if (node.second())
@@ -1143,10 +1147,10 @@ namespace ceresc::sema
 				if (!argumentType)
 					break;
 				if (!isScalarType(argumentType) || argumentType->isVoid())
-					_diagnostics.error(node.location(), "'__builtin_va_arg' cannot read type '{}': only scalar types are passed through '...'",
+					_diagnostics.error(DiagId::VaArgType, node.location(), "'__builtin_va_arg' cannot read type '{}': only scalar types are passed through '...'",
 						typeName(argumentType));
 				else if (argumentType->sizeInBytes() != 4)
-					_diagnostics.error(node.location(),
+					_diagnostics.error(DiagId::VaArgType, node.location(),
 						"'__builtin_va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
 						typeName(argumentType));
 				else
@@ -1158,7 +1162,7 @@ namespace ceresc::sema
 			{
 				const Type* sourceType = node.second() ? checkExpr(node.second()) : nullptr;
 				if (node.second() && (!sourceType || !(*sourceType == *vaListType)))
-					_diagnostics.error(node.second()->location(), "the second argument to '__builtin_va_copy' must have type '__builtin_va_list', not '{}'",
+					_diagnostics.error(DiagId::VaListOperandType, node.second()->location(), "the second argument to '__builtin_va_copy' must have type '__builtin_va_list', not '{}'",
 						typeName(sourceType));
 				break;
 			}
@@ -1178,7 +1182,7 @@ namespace ceresc::sema
 		const Type* elseType = decayArray(checkExpr(node.elseExpr()));
 
 		if (!isScalarType(condType))
-			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
+			_diagnostics.error(DiagId::ConditionNotScalar, node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 
 		const Type* resultType = errorRecoveryType();
 		if (thenType && elseType && *thenType == *elseType)
@@ -1186,7 +1190,7 @@ namespace ceresc::sema
 		else if (isArithmeticType(thenType) && isArithmeticType(elseType))
 			resultType = commonArithmeticType(thenType, elseType);
 		else
-			_diagnostics.error(node.location(), "incompatible operand types ('{}' and '{}') in ternary expression", typeName(thenType), typeName(elseType));
+			_diagnostics.error(DiagId::IncompatibleTernaryOperands, node.location(), "incompatible operand types ('{}' and '{}') in ternary expression", typeName(thenType), typeName(elseType));
 
 		node.setType(resultType);
 		_lastExprType = resultType;
@@ -1201,7 +1205,7 @@ namespace ceresc::sema
 		// well-formed input this never runs - it exists so a future caller that forgets to route an
 		// initializer through checkInitializer() gets a real diagnostic instead of an unchecked
 		// subtree with null types reaching libs/ir.
-		_diagnostics.error(node.location(), "an initializer list is only valid as a variable's initializer");
+		_diagnostics.error(DiagId::InitializerListOutsideVariable, node.location(), "an initializer list is only valid as a variable's initializer");
 		for (Expr* element : node.elements())
 			checkExpr(element);
 		node.setType(errorRecoveryType());
@@ -1233,7 +1237,7 @@ namespace ceresc::sema
 	{
 		const Type* condType = decayArray(checkExpr(node.cond()));
 		if (!isScalarType(condType))
-			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
+			_diagnostics.error(DiagId::ConditionNotScalar, node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 
 		checkStmt(node.thenStmt());
 		checkStmt(node.elseStmt());
@@ -1243,7 +1247,7 @@ namespace ceresc::sema
 	{
 		const Type* condType = decayArray(checkExpr(node.cond()));
 		if (!isScalarType(condType))
-			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
+			_diagnostics.error(DiagId::ConditionNotScalar, node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 
 		++_loopDepth;
 		checkStmt(node.body());
@@ -1258,7 +1262,7 @@ namespace ceresc::sema
 
 		const Type* condType = decayArray(checkExpr(node.cond()));
 		if (!isScalarType(condType))
-			_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
+			_diagnostics.error(DiagId::ConditionNotScalar, node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 	}
 
 	void Sema::visit(ast::ForStmt& node)
@@ -1270,7 +1274,7 @@ namespace ceresc::sema
 		{
 			const Type* condType = decayArray(checkExpr(node.cond()));
 			if (!isScalarType(condType))
-				_diagnostics.error(node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
+				_diagnostics.error(DiagId::ConditionNotScalar, node.location(), "used type '{}' where arithmetic or pointer type is required", typeName(condType));
 		}
 		checkExpr(node.increment());
 
@@ -1288,33 +1292,33 @@ namespace ceresc::sema
 		{
 			const Type* valueType = decayArray(checkExpr(node.value()));
 			if (returnType->isVoid())
-				_diagnostics.error(node.location(), "void function should not return a value");
+				_diagnostics.error(DiagId::ReturnValueFromVoid, node.location(), "void function should not return a value");
 			else if (!isAssignable(returnType, valueType))
-				_diagnostics.error(node.location(), "returning '{}' from a function with incompatible result type '{}'", typeName(valueType), typeName(returnType));
+				_diagnostics.error(DiagId::IncompatibleReturnType, node.location(), "returning '{}' from a function with incompatible result type '{}'", typeName(valueType), typeName(returnType));
 		}
 		else if (!returnType->isVoid())
 		{
-			_diagnostics.error(node.location(), "non-void function should return a value");
+			_diagnostics.error(DiagId::MissingReturnValue, node.location(), "non-void function should return a value");
 		}
 	}
 
 	void Sema::visit(ast::BreakStmt& node)
 	{
 		if (_loopDepth == 0 && _switchStack.empty())
-			_diagnostics.error(node.location(), "'break' statement not in a loop or switch statement");
+			_diagnostics.error(DiagId::BreakOutsideLoopOrSwitch, node.location(), "'break' statement not in a loop or switch statement");
 	}
 
 	void Sema::visit(ast::ContinueStmt& node)
 	{
 		if (_loopDepth == 0)
-			_diagnostics.error(node.location(), "'continue' statement not in a loop");
+			_diagnostics.error(DiagId::ContinueOutsideLoop, node.location(), "'continue' statement not in a loop");
 	}
 
 	void Sema::visit(ast::SwitchStmt& node)
 	{
 		const Type* condType = checkExpr(node.cond());
 		if (!isIntegerType(condType))
-			_diagnostics.error(node.location(), "switch condition type '{}' is not an integer", typeName(condType));
+			_diagnostics.error(DiagId::SwitchConditionNotInteger, node.location(), "switch condition type '{}' is not an integer", typeName(condType));
 
 		_switchStack.emplace_back();
 		checkStmt(node.body());
@@ -1324,19 +1328,19 @@ namespace ceresc::sema
 	void Sema::visit(ast::CaseStmt& node)
 	{
 		if (_switchStack.empty())
-			_diagnostics.error(node.location(), "'case' statement not in a switch statement");
+			_diagnostics.error(DiagId::CaseOutsideSwitch, node.location(), "'case' statement not in a switch statement");
 
 		checkExpr(node.value());
 		std::optional<i64> value = evalConstantExpr(node.value());
 		if (!value)
 		{
-			_diagnostics.error(node.location(), "case label does not reduce to an integer constant");
+			_diagnostics.error(DiagId::CaseNotConstant, node.location(), "case label does not reduce to an integer constant");
 		}
 		else if (!_switchStack.empty())
 		{
 			SwitchContext& context = _switchStack.back();
 			if (std::find(context.seenCaseValues.begin(), context.seenCaseValues.end(), *value) != context.seenCaseValues.end())
-				_diagnostics.error(node.location(), "duplicate case value '{}'", *value);
+				_diagnostics.error(DiagId::DuplicateCaseValue, node.location(), "duplicate case value '{}'", *value);
 			else
 				context.seenCaseValues.push_back(*value);
 		}
@@ -1348,13 +1352,13 @@ namespace ceresc::sema
 	{
 		if (_switchStack.empty())
 		{
-			_diagnostics.error(node.location(), "'default' statement not in a switch statement");
+			_diagnostics.error(DiagId::DefaultOutsideSwitch, node.location(), "'default' statement not in a switch statement");
 		}
 		else
 		{
 			SwitchContext& context = _switchStack.back();
 			if (context.defaultSeen)
-				_diagnostics.error(node.location(), "multiple default labels in one switch statement");
+				_diagnostics.error(DiagId::MultipleDefaultLabels, node.location(), "multiple default labels in one switch statement");
 			else
 				context.defaultSeen = true;
 		}
@@ -1365,7 +1369,7 @@ namespace ceresc::sema
 	void Sema::visit(ast::GotoStmt& node)
 	{
 		if (std::find(_currentFunctionLabels.begin(), _currentFunctionLabels.end(), node.label()) == _currentFunctionLabels.end())
-			_diagnostics.error(node.location(), "use of undeclared label '{}'", node.label());
+			_diagnostics.error(DiagId::UndeclaredLabel, node.location(), "use of undeclared label '{}'", node.label());
 	}
 
 	void Sema::visit(ast::LabelStmt& node)
@@ -1387,7 +1391,7 @@ namespace ceresc::sema
 			// `auto` means automatic storage, which is what a block gives a variable and a file
 			// scope cannot. It is also the default in a block, so it never says anything new there -
 			// but it is legal C, and rejecting it at file scope is the only rule it carries.
-			_diagnostics.error(node.location(), "'auto' is only allowed on a variable declared inside a block");
+			_diagnostics.error(DiagId::AutoOutsideBlock, node.location(), "'auto' is only allowed on a variable declared inside a block");
 		}
 
 		if (storageClass == ast::StorageClass::Register && atFileScope)
@@ -1396,7 +1400,7 @@ namespace ceresc::sema
 			// register, and a file-scope object has static storage duration whatever it is asked
 			// for. Its one real consequence - that the address cannot be taken - would also be a
 			// promise this compiler could not keep for something a whole other unit may refer to.
-			_diagnostics.error(node.location(), "'register' is only allowed on a variable declared inside a block");
+			_diagnostics.error(DiagId::RegisterOutsideBlock, node.location(), "'register' is only allowed on a variable declared inside a block");
 		}
 
 		if (storageClass == ast::StorageClass::Register && node.type() && node.type()->isArray())
@@ -1406,7 +1410,7 @@ namespace ceresc::sema
 			// array breaks the one promise the keyword makes. The `&` check in visit(UnaryExpr&)
 			// cannot see it, because there is no `&` written anywhere; rejecting the declaration is
 			// the whole rule rather than chasing each use.
-			_diagnostics.error(node.location(),
+			_diagnostics.error(DiagId::RegisterOnArray, node.location(),
 				"'register' is not allowed on array '{}': using an array takes its address", node.name());
 		}
 
@@ -1415,7 +1419,7 @@ namespace ceresc::sema
 			// At file scope `extern int x = 1;` is a definition with external linkage, which is
 			// legal and means exactly what `int x = 1;` means. Inside a block there is nothing for
 			// it to define - the object belongs to whatever unit declares it at file scope.
-			_diagnostics.error(node.location(), "'extern' variable '{}' cannot have an initializer inside a block", node.name());
+			_diagnostics.error(DiagId::ExternInitializerInBlock, node.location(), "'extern' variable '{}' cannot have an initializer inside a block", node.name());
 		}
 
 		if (storageClass == ast::StorageClass::Static && node.initializer() && !isConstantInitializer(node.initializer()))
@@ -1423,7 +1427,7 @@ namespace ceresc::sema
 			// A static's initializer runs once, at load time, so it becomes bytes in the image -
 			// there is no moment at which a run-time expression could be evaluated for it. Reported
 			// here rather than by codegen so the message names the variable and its declaration.
-			_diagnostics.error(node.initializer()->location(),
+			_diagnostics.error(DiagId::StaticInitializerNotConstant, node.initializer()->location(),
 				"the initializer of '{}' must be a compile-time constant, because it has static storage", node.name());
 		}
 
@@ -1433,7 +1437,7 @@ namespace ceresc::sema
 			// Nothing may ever write it, so a const object with no initializer can only ever hold
 			// whatever it was loaded with - zero, in practice. An `extern` one is exempt: the
 			// initializer is somewhere else by definition.
-			_diagnostics.warning(node.location(), "const variable '{}' has no initializer, so it can only ever be zero", node.name());
+			_diagnostics.warning(DiagId::ConstWithoutInitializer, node.location(), "const variable '{}' has no initializer, so it can only ever be zero", node.name());
 		}
 	}
 
@@ -1475,7 +1479,7 @@ namespace ceresc::sema
 	void Sema::visit(ast::VarDecl& node)
 	{
 		if (node.type() && node.type()->isVoid())
-			_diagnostics.error(node.location(), "variable '{}' declared with type 'void'", node.name());
+			_diagnostics.error(DiagId::VoidVariable, node.location(), "variable '{}' declared with type 'void'", node.name());
 
 		checkStorageClass(node);
 
@@ -1502,19 +1506,19 @@ namespace ceresc::sema
 			bool sameType = previous->type && node.type() && *previous->type == *node.type();
 			if (!sameType)
 			{
-				_diagnostics.error(node.location(), "redeclaration of '{}' with a different type ('{}' after '{}')",
+				_diagnostics.error(DiagId::ConflictingTypes, node.location(), "redeclaration of '{}' with a different type ('{}' after '{}')",
 					node.name(), typeName(node.type()), typeName(previous->type));
 			}
 			else if (previous->varDecl && previous->varDecl->initializer() && node.initializer())
 			{
 				// Two initializers is the one case that really is a redefinition: there is no way to
 				// tell which value the object should start with.
-				_diagnostics.error(node.location(), "redefinition of '{}'", node.name());
+				_diagnostics.error(DiagId::Redefinition, node.location(), "redefinition of '{}'", node.name());
 			}
 			else if (previous->varDecl &&
 				((previous->varDecl->storageClass() == ast::StorageClass::Static) != (node.storageClass() == ast::StorageClass::Static)))
 			{
-				_diagnostics.error(node.location(), "redeclaration of '{}' has conflicting linkage", node.name());
+				_diagnostics.error(DiagId::ConflictingLinkage, node.location(), "redeclaration of '{}' has conflicting linkage", node.name());
 			}
 			else if (node.initializer())
 			{
@@ -1543,20 +1547,20 @@ namespace ceresc::sema
 
 		if (node.returnType() && !node.returnType()->isVoid())
 		{
-			_diagnostics.error(node.location(),
+			_diagnostics.error(DiagId::InterruptHandlerReturnType, node.location(),
 				"an '__interrupt' handler must return 'void', not '{}': nothing is there to receive a result",
 				typeName(node.returnType()));
 		}
 		if (!node.params().empty() || node.isVariadic())
 		{
-			_diagnostics.error(node.location(),
+			_diagnostics.error(DiagId::InterruptHandlerTakesNoParameters, node.location(),
 				"an '__interrupt' handler takes no parameters: nothing is there to pass one");
 		}
 		if (node.name() == "main")
 		{
 			// The reset vector is the entry point, and the linker finds it by this name. A handler
 			// ending in `iret` would return to a PC and flags nothing ever pushed.
-			_diagnostics.error(node.location(), "'main' cannot be an '__interrupt' handler");
+			_diagnostics.error(DiagId::MainCannotBeInterrupt, node.location(), "'main' cannot be an '__interrupt' handler");
 		}
 	}
 
@@ -1567,7 +1571,7 @@ namespace ceresc::sema
 		Symbol* existing = _globalScope->lookupInThisScope(node.name());
 		bool kindConflict = existing && existing->kind != SymbolKind::Function;
 		if (kindConflict)
-			_diagnostics.error(node.location(), "redefinition of '{}' as a different kind of symbol", node.name());
+			_diagnostics.error(DiagId::RedefinitionAsDifferentKind, node.location(), "redefinition of '{}' as a different kind of symbol", node.name());
 
 		if (existing && !kindConflict)
 		{
@@ -1589,9 +1593,9 @@ namespace ceresc::sema
 				}
 			}
 			if (!signatureMatches)
-				_diagnostics.error(node.location(), "conflicting types for '{}'", node.name());
+				_diagnostics.error(DiagId::ConflictingTypes, node.location(), "conflicting types for '{}'", node.name());
 			else if (previous && previous->isDefinition() && node.isDefinition())
-				_diagnostics.error(node.location(), "redefinition of function '{}'", node.name());
+				_diagnostics.error(DiagId::RedefinitionOfFunction, node.location(), "redefinition of function '{}'", node.name());
 
 			if (node.isDefinition() || !previous || !previous->isDefinition())
 				existing->funcDecl = &node;
@@ -1627,7 +1631,7 @@ namespace ceresc::sema
 			{
 				// A prototype may leave a parameter unnamed, and a type-name has nowhere to put a
 				// name at all - but a definition's body would have no way to refer to it.
-				_diagnostics.error(param.location, "a parameter of a function definition must be named");
+				_diagnostics.error(DiagId::UnnamedParameterInDefinition, param.location, "a parameter of a function definition must be named");
 				continue;
 			}
 			Symbol paramSymbol;
@@ -1687,7 +1691,7 @@ namespace ceresc::sema
 				checkExpr(enumerator.value);
 				std::optional<i64> evaluated = evalConstantExpr(enumerator.value);
 				if (!evaluated)
-					_diagnostics.error(enumerator.location, "enumerator value for '{}' is not a constant expression", enumerator.name);
+					_diagnostics.error(DiagId::EnumeratorNotConstant, enumerator.location, "enumerator value for '{}' is not a constant expression", enumerator.name);
 				else
 					nextValue = *evaluated;
 			}
@@ -1721,7 +1725,7 @@ namespace ceresc::sema
 		std::optional<i64> vector = evalConstantExpr(node.number());
 		if (!vector)
 		{
-			_diagnostics.error(node.numberLocation(), "an interrupt number must be a constant expression");
+			_diagnostics.error(DiagId::InterruptNumberNotConstant, node.numberLocation(), "an interrupt number must be a constant expression");
 			return;
 		}
 
@@ -1729,13 +1733,13 @@ namespace ceresc::sema
 		//    table.
 		if (*vector == 0)
 		{
-			_diagnostics.error(node.numberLocation(),
+			_diagnostics.error(DiagId::InterruptVectorIsReset, node.numberLocation(),
 				"interrupt 0 is the reset vector: it is where the program starts, which is what 'main' already is");
 			return;
 		}
 		if (*vector < 0 || *vector > 63)
 		{
-			_diagnostics.error(node.numberLocation(),
+			_diagnostics.error(DiagId::InterruptNumberOutOfRange, node.numberLocation(),
 				"interrupt number {} is out of range: the vector table holds 1 to 63", *vector);
 			return;
 		}
@@ -1746,12 +1750,12 @@ namespace ceresc::sema
 		Symbol* symbol = _globalScope->lookupInThisScope(node.name());
 		if (!symbol || symbol->kind != SymbolKind::Function)
 		{
-			_diagnostics.error(node.location(), "'{}' is not a function", node.name());
+			_diagnostics.error(DiagId::InterruptVectorTargetNotAFunction, node.location(), "'{}' is not a function", node.name());
 			return;
 		}
 		if (!symbol->funcDecl || !symbol->funcDecl->isInterruptHandler())
 		{
-			_diagnostics.error(node.location(),
+			_diagnostics.error(DiagId::InterruptVectorTargetNotInterrupt, node.location(),
 				"'{}' is not declared '__interrupt', so it cannot be an interrupt handler", node.name());
 			return;
 		}
@@ -1762,7 +1766,7 @@ namespace ceresc::sema
 		auto [it, inserted] = _interruptVectors.try_emplace(*vector, &node);
 		if (!inserted)
 		{
-			_diagnostics.error(node.location(),
+			_diagnostics.error(DiagId::InterruptVectorAlreadyBound, node.location(),
 				"interrupt {} is already bound to '{}'", *vector, it->second->name());
 		}
 	}

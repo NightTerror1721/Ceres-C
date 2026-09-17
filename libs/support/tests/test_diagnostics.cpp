@@ -19,7 +19,7 @@ namespace
 TEST(diagnostics, reporting_an_error_counts_as_a_failure)
 {
 	DiagnosticEngine engine;
-	engine.error(locAt(1, 1), "something went wrong");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(1, 1), "something went wrong");
 
 	CHECK(engine.hasErrors());
 	CHECK(engine.hasDiagnostics());
@@ -30,7 +30,7 @@ TEST(diagnostics, reporting_an_error_counts_as_a_failure)
 TEST(diagnostics, reporting_only_warnings_does_not_count_as_a_failure)
 {
 	DiagnosticEngine engine;
-	engine.warning(locAt(1, 1), "unused variable '{}'", "x");
+	engine.warning(DiagnosticId::ConstWithoutInitializer, locAt(1, 1), "unused variable '{}'", "x");
 
 	CHECK(!engine.hasErrors());
 	CHECK(engine.hasWarnings());
@@ -41,7 +41,7 @@ TEST(diagnostics, reporting_only_warnings_does_not_count_as_a_failure)
 TEST(diagnostics, message_formatting_interpolates_arguments)
 {
 	DiagnosticEngine engine;
-	engine.error(locAt(3, 7), "unknown type '{}'", "foo");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(3, 7), "unknown type '{}'", "foo");
 
 	CHECK_EQ(engine.diagnostics()[0].message, "unknown type 'foo'");
 }
@@ -50,7 +50,7 @@ TEST(diagnostics, warnings_as_errors_promotes_warnings_to_failures)
 {
 	DiagnosticEngine engine;
 	engine.setWarningsAsErrors(true);
-	engine.warning(locAt(1, 1), "shadowed variable '{}'", "x");
+	engine.warning(DiagnosticId::ConstWithoutInitializer, locAt(1, 1), "shadowed variable '{}'", "x");
 
 	CHECK(engine.hasErrors());
 	CHECK_EQ(engine.errorCount(), usize{ 1 });
@@ -61,9 +61,9 @@ TEST(diagnostics, warnings_as_errors_promotes_warnings_to_failures)
 TEST(diagnostics, warnings_as_errors_does_not_retroactively_affect_earlier_reports)
 {
 	DiagnosticEngine engine;
-	engine.warning(locAt(1, 1), "first warning");
+	engine.warning(DiagnosticId::ConstWithoutInitializer, locAt(1, 1), "first warning");
 	engine.setWarningsAsErrors(true);
-	engine.warning(locAt(2, 1), "second warning");
+	engine.warning(DiagnosticId::ConstWithoutInitializer, locAt(2, 1), "second warning");
 
 	// only the second warning was reported while the flag was on.
 	CHECK_EQ(engine.errorCount(), usize{ 1 });
@@ -73,8 +73,8 @@ TEST(diagnostics, warnings_as_errors_does_not_retroactively_affect_earlier_repor
 TEST(diagnostics, sort_by_location_orders_diagnostics_by_position)
 {
 	DiagnosticEngine engine;
-	engine.error(locAt(10, 1), "reported first, but later in the file");
-	engine.error(locAt(3, 1), "reported second, but earlier in the file");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(10, 1), "reported first, but later in the file");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(3, 1), "reported second, but earlier in the file");
 	engine.sortByLocation();
 
 	auto diags = engine.diagnostics();
@@ -86,8 +86,8 @@ TEST(diagnostics, sort_by_location_orders_diagnostics_by_position)
 TEST(diagnostics, sort_by_location_is_stable_for_ties_at_the_same_position)
 {
 	DiagnosticEngine engine;
-	engine.error(locAt(5, 1), "first reported at this exact position");
-	engine.error(locAt(5, 1), "second reported at this exact position");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(5, 1), "first reported at this exact position");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(5, 1), "second reported at this exact position");
 	engine.sortByLocation();
 
 	auto diags = engine.diagnostics();
@@ -98,7 +98,7 @@ TEST(diagnostics, sort_by_location_is_stable_for_ties_at_the_same_position)
 TEST(diagnostics, clear_resets_everything)
 {
 	DiagnosticEngine engine;
-	engine.error(locAt(1, 1), "boom");
+	engine.error(DiagnosticId::UnexpectedCharacter, locAt(1, 1), "boom");
 	engine.clear();
 
 	CHECK(!engine.hasErrors());
@@ -114,7 +114,7 @@ namespace
 	Result<int> parsePositive(int value, SourceLocation loc)
 	{
 		if (value <= 0)
-			return std::unexpected(Diagnostic(DiagnosticSeverity::Error, loc, "expected a positive value"));
+			return std::unexpected(Diagnostic(DiagnosticSeverity::Error, DiagnosticId::InvalidArraySize, loc, "expected a positive value"));
 		return value;
 	}
 }

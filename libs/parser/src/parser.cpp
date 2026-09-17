@@ -5,6 +5,10 @@
 
 namespace ceresc::parser
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	using support::SourceLocation;
 
 	Parser::Parser(lexer::Lexer& lexer, support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept :
@@ -44,7 +48,7 @@ namespace ceresc::parser
 		// None of the three takes an operand, so the argument list is empty or the program is wrong.
 		if (!check(TokenKind::RParen))
 		{
-			_diagnostics.error(_current.location(), "'{}' takes no arguments", ast::machineOpName(op));
+			_diagnostics.error(DiagId::MachineBuiltinTakesNoArguments, _current.location(), "'{}' takes no arguments", ast::machineOpName(op));
 			return nullptr;
 		}
 		advance(); // ')'
@@ -109,7 +113,7 @@ namespace ceresc::parser
 		if (match(kind))
 			return true;
 
-		_diagnostics.error(_current.location(), "expected {} but found '{}'", what,
+		_diagnostics.error(DiagId::ExpectedToken, _current.location(), "expected {} but found '{}'", what,
 			_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 		return false;
 	}
@@ -129,7 +133,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(Expr*) * args.size(), alignof(Expr*));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating an expression list");
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating an expression list");
 			return {};
 		}
 
@@ -147,7 +151,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(Stmt*) * stmts.size(), alignof(Stmt*));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating block statements");
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating block statements");
 			return {};
 		}
 
@@ -165,7 +169,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(Decl*) * decls.size(), alignof(Decl*));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating top-level declarations");
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating top-level declarations");
 			return {};
 		}
 
@@ -183,7 +187,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(Param) * params.size(), alignof(Param));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating function parameters");
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating function parameters");
 			return {};
 		}
 
@@ -201,7 +205,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(FieldDecl) * fields.size(), alignof(FieldDecl));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating struct fields");
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating struct fields");
 			return {};
 		}
 
@@ -219,7 +223,7 @@ namespace ceresc::parser
 		void* memory = _arena.allocate(sizeof(EnumeratorDecl) * enumerators.size(), alignof(EnumeratorDecl));
 		if (!memory)
 		{
-			_diagnostics.error(_current.location(), "out of memory allocating enumerators");
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating enumerators");
 			return {};
 		}
 
@@ -435,7 +439,7 @@ namespace ceresc::parser
 			{
 				if (!check(TokenKind::Identifier))
 				{
-					_diagnostics.error(_current.location(), "expected member name after '.'");
+					_diagnostics.error(DiagId::ExpectedMemberName, _current.location(), "expected member name after '.'");
 					return nullptr;
 				}
 				std::string_view name = _current.lexeme();
@@ -446,7 +450,7 @@ namespace ceresc::parser
 			{
 				if (!check(TokenKind::Identifier))
 				{
-					_diagnostics.error(_current.location(), "expected member name after '->'");
+					_diagnostics.error(DiagId::ExpectedMemberName, _current.location(), "expected member name after '->'");
 					return nullptr;
 				}
 				std::string_view name = _current.lexeme();
@@ -532,7 +536,7 @@ namespace ceresc::parser
 			}
 			default:
 			{
-				_diagnostics.error(location, "expected expression but found '{}'",
+				_diagnostics.error(DiagId::ExpectedExpression, location, "expected expression but found '{}'",
 					_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 				advance(); // guarantee forward progress even without a real synchronization point (see header comment)
 				return nullptr;
@@ -557,35 +561,35 @@ namespace ceresc::parser
 				case TokenKind::KwConst:
 					advance();
 					if (specifiers.isConst)
-						_diagnostics.error(here, "duplicate 'const'");
+						_diagnostics.error(DiagId::DuplicateQualifier, here, "duplicate 'const'");
 					specifiers.isConst = true;
 					specifiers.sawAny = true;
 					continue;
 				case TokenKind::KwVolatile:
 					advance();
 					if (specifiers.isVolatile)
-						_diagnostics.error(here, "duplicate 'volatile'");
+						_diagnostics.error(DiagId::DuplicateQualifier, here, "duplicate 'volatile'");
 					specifiers.isVolatile = true;
 					specifiers.sawAny = true;
 					continue;
 				case TokenKind::KwRestrict:
 					advance();
 					if (specifiers.isRestrict)
-						_diagnostics.error(here, "duplicate 'restrict'");
+						_diagnostics.error(DiagId::DuplicateQualifier, here, "duplicate 'restrict'");
 					specifiers.isRestrict = true;
 					specifiers.sawAny = true;
 					continue;
 				case TokenKind::KwInline:
 					advance();
 					if (specifiers.isInline)
-						_diagnostics.error(here, "duplicate 'inline'");
+						_diagnostics.error(DiagId::DuplicateQualifier, here, "duplicate 'inline'");
 					specifiers.isInline = true;
 					specifiers.sawAny = true;
 					continue;
 				case TokenKind::KwInterrupt:
 					advance();
 					if (specifiers.isInterrupt)
-						_diagnostics.error(here, "duplicate '__interrupt'");
+						_diagnostics.error(DiagId::DuplicateQualifier, here, "duplicate '__interrupt'");
 					specifiers.isInterrupt = true;
 					specifiers.sawAny = true;
 					continue;
@@ -602,7 +606,7 @@ namespace ceresc::parser
 			{
 				// Not "duplicate": `static extern` is two different answers to one question, and
 				// saying which two is more useful than saying there are two.
-				_diagnostics.error(here, "cannot combine '{}' with '{}' on the same declaration",
+				_diagnostics.error(DiagId::ConflictingStorageClass, here, "cannot combine '{}' with '{}' on the same declaration",
 					ast::storageClassName(storageClass), ast::storageClassName(specifiers.storageClass));
 			}
 			specifiers.storageClass = storageClass;
@@ -623,7 +627,7 @@ namespace ceresc::parser
 			if (check(TokenKind::KwConst))
 			{
 				if (isConst)
-					_diagnostics.error(_current.location(), "duplicate 'const'");
+					_diagnostics.error(DiagId::DuplicateQualifier, _current.location(), "duplicate 'const'");
 				isConst = true;
 				advance();
 				continue;
@@ -631,7 +635,7 @@ namespace ceresc::parser
 			if (check(TokenKind::KwVolatile))
 			{
 				if (isVolatile)
-					_diagnostics.error(_current.location(), "duplicate 'volatile'");
+					_diagnostics.error(DiagId::DuplicateQualifier, _current.location(), "duplicate 'volatile'");
 				isVolatile = true;
 				advance();
 				continue;
@@ -659,11 +663,11 @@ namespace ceresc::parser
 		else if (leading.storageClass != ast::StorageClass::None || leading.isInline || leading.isInterrupt)
 		{
 			if (outRegisterRequest)
-				_diagnostics.error(leading.location,
+				_diagnostics.error(DiagId::StorageClassOnParameter, leading.location,
 					"'{}' is not allowed on a parameter - 'register' is the only storage-class specifier a parameter may carry",
 					ast::storageClassName(leading.storageClass));
 			else
-				_diagnostics.error(leading.location,
+				_diagnostics.error(DiagId::StorageClassInTypeName, leading.location,
 					"a storage-class specifier is not allowed here - it belongs to a declaration, not to a type name");
 		}
 		outLeadingRestrict = leading.isRestrict;
@@ -704,7 +708,7 @@ namespace ceresc::parser
 			return nullptr;
 		if (!declarator.name.empty())
 		{
-			_diagnostics.error(declarator.nameLocation,
+			_diagnostics.error(DiagId::NameIsNotAType, declarator.nameLocation,
 				"'{}' names something here, but this position takes a type rather than a declaration", declarator.name);
 		}
 
@@ -712,7 +716,7 @@ namespace ceresc::parser
 		if (type && leadingRestrict)
 		{
 			if (!type->isPointer())
-				_diagnostics.error(specifierLocation, "'restrict' requires a pointer type");
+				_diagnostics.error(DiagId::RestrictRequiresPointer, specifierLocation, "'restrict' requires a pointer type");
 			else
 				type = Type::withRestrict(_arena, type);
 		}
@@ -722,7 +726,7 @@ namespace ceresc::parser
 	const Type* Parser::cappedToMachineWidth(SourceLocation location, std::string_view written,
 		std::string_view actual, const Type* type)
 	{
-		_diagnostics.warning(location,
+		_diagnostics.warning(DiagId::CappedTypeWidth, location,
 			"'{}' is 32 bits here: this machine has no 64-bit type at all, so it is exactly '{}'",
 			written, actual);
 		return type;
@@ -801,7 +805,7 @@ namespace ceresc::parser
 			case TokenKind::KwUnion: return parseStructTypeSpec(true);
 			case TokenKind::KwEnum: return parseEnumTypeSpec();
 			default:
-				_diagnostics.error(location, "expected type name but found '{}'",
+				_diagnostics.error(DiagId::ExpectedTypeName, location, "expected type name but found '{}'",
 					_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 				advance(); // guarantee forward progress, same reasoning as parsePrimary()'s default case
 				return nullptr;
@@ -820,7 +824,7 @@ namespace ceresc::parser
 
 		if (!check(TokenKind::Identifier))
 		{
-			_diagnostics.error(_current.location(), "expected a {} tag name", isUnion ? "union" : "struct");
+			_diagnostics.error(DiagId::ExpectedTagName, _current.location(), "expected a {} tag name", isUnion ? "union" : "struct");
 			advance();
 			return nullptr;
 		}
@@ -842,7 +846,7 @@ namespace ceresc::parser
 		if (match(TokenKind::LBrace))
 		{
 			if (decl->isComplete())
-				_diagnostics.error(location, "redefinition of '{} {}'", isUnion ? "union" : "struct", tagName);
+				_diagnostics.error(DiagId::RedefinitionOfTag, location, "redefinition of '{} {}'", isUnion ? "union" : "struct", tagName);
 
 			std::vector<FieldDecl> fields;
 			while (!check(TokenKind::RBrace) && !isAtEnd())
@@ -874,7 +878,7 @@ namespace ceresc::parser
 				{
 					// A struct holds objects, and a function is not one. The pointer is what a
 					// program means here, and saying so is more useful than "has no size".
-					_diagnostics.error(fieldLoc,
+					_diagnostics.error(DiagId::FieldCannotBeFunction, fieldLoc,
 						"a field cannot have function type - did you mean a pointer to one?");
 					synchronizeStatement();
 					continue;
@@ -882,7 +886,7 @@ namespace ceresc::parser
 				if (fieldLeadingRestrict)
 				{
 					if (!fieldType->isPointer())
-						_diagnostics.error(fieldSpecifierLocation, "'restrict' requires a pointer type");
+						_diagnostics.error(DiagId::RestrictRequiresPointer, fieldSpecifierLocation, "'restrict' requires a pointer type");
 					else
 						fieldType = Type::withRestrict(_arena, fieldType);
 				}
@@ -907,7 +911,7 @@ namespace ceresc::parser
 
 		if (!check(TokenKind::Identifier))
 		{
-			_diagnostics.error(_current.location(), "expected an enum tag name after 'enum'");
+			_diagnostics.error(DiagId::ExpectedEnumTagName, _current.location(), "expected an enum tag name after 'enum'");
 			advance();
 			return nullptr;
 		}
@@ -925,14 +929,14 @@ namespace ceresc::parser
 		if (match(TokenKind::LBrace))
 		{
 			if (decl->isComplete())
-				_diagnostics.error(location, "redefinition of 'enum {}'", tagName);
+				_diagnostics.error(DiagId::RedefinitionOfTag, location, "redefinition of 'enum {}'", tagName);
 
 			std::vector<EnumeratorDecl> enumerators;
 			while (!check(TokenKind::RBrace) && !isAtEnd())
 			{
 				if (!check(TokenKind::Identifier))
 				{
-					_diagnostics.error(_current.location(), "expected an enumerator name");
+					_diagnostics.error(DiagId::ExpectedEnumeratorName, _current.location(), "expected an enumerator name");
 					synchronizeStatement(); // no per-enumerator ';' to stop on, but this still bounds progress via '}'/EOF
 					break;
 				}
@@ -1258,7 +1262,7 @@ namespace ceresc::parser
 
 		if (!check(TokenKind::Identifier))
 		{
-			_diagnostics.error(_current.location(), "expected a label name after 'goto'");
+			_diagnostics.error(DiagId::ExpectedLabelName, _current.location(), "expected a label name after 'goto'");
 			return nullptr;
 		}
 		std::string_view label = _current.lexeme();
@@ -1360,7 +1364,7 @@ namespace ceresc::parser
 
 		if (!isTypeSpecStart(_current))
 		{
-			_diagnostics.error(_current.location(), "expected a declaration but found '{}'",
+			_diagnostics.error(DiagId::ExpectedDeclaration, _current.location(), "expected a declaration but found '{}'",
 				_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 			return nullptr;
 		}
@@ -1405,7 +1409,7 @@ namespace ceresc::parser
 		{
 			SourceLocation where = specifiers.isRestrict ? specifiers.location : specifierLocation;
 			if (!type->isPointer())
-				_diagnostics.error(where, "'restrict' requires a pointer type");
+				_diagnostics.error(DiagId::RestrictRequiresPointer, where, "'restrict' requires a pointer type");
 			else
 				type = Type::withRestrict(_arena, type);
 		}
@@ -1439,7 +1443,7 @@ namespace ceresc::parser
 
 		if (!check(TokenKind::Identifier))
 		{
-			_diagnostics.error(_current.location(), "expected the name of an '__interrupt' handler");
+			_diagnostics.error(DiagId::ExpectedInterruptHandlerName, _current.location(), "expected the name of an '__interrupt' handler");
 			return nullptr;
 		}
 		std::string_view handlerName = _current.lexeme();
@@ -1476,7 +1480,7 @@ namespace ceresc::parser
 		if (leadingRestrict)
 		{
 			if (!underlyingType->isPointer())
-				_diagnostics.error(specifierLocation, "'restrict' requires a pointer type");
+				_diagnostics.error(DiagId::RestrictRequiresPointer, specifierLocation, "'restrict' requires a pointer type");
 			else
 				underlyingType = Type::withRestrict(_arena, underlyingType);
 		}
@@ -1500,7 +1504,7 @@ namespace ceresc::parser
 		if (check(TokenKind::RBrace))
 		{
 			// §3's initializer-list needs at least one element - see parser.h's own note.
-			_diagnostics.error(location, "an initializer list needs at least one value");
+			_diagnostics.error(DiagId::EmptyInitializerList, location, "an initializer list needs at least one value");
 			advance(); // '}'
 			return nullptr;
 		}
@@ -1522,7 +1526,7 @@ namespace ceresc::parser
 				// `{ 1, 2, }` - real C allows it, §3's grammar does not. Reported where the comma
 				// actually is rather than at the brace, and the list is kept: the values are all
 				// there, so there is nothing to recover from beyond the stray comma itself.
-				_diagnostics.error(commaLocation, "a trailing ',' in an initializer list is not accepted in this version");
+				_diagnostics.error(DiagId::TrailingCommaInInitializerList, commaLocation, "a trailing ',' in an initializer list is not accepted in this version");
 				break;
 			}
 		}
@@ -1540,7 +1544,7 @@ namespace ceresc::parser
 		{
 			// `__interrupt` describes how a function is ENTERED AND LEFT - no arguments, every
 			// register restored, `iret` at the end. A variable has none of that to describe.
-			_diagnostics.error(specifiers.location, "'__interrupt' is only allowed on a function");
+			_diagnostics.error(DiagId::InterruptOnNonFunction, specifiers.location, "'__interrupt' is only allowed on a function");
 		}
 		Expr* initializer = nullptr;
 		if (match(TokenKind::Equal))
@@ -1553,7 +1557,7 @@ namespace ceresc::parser
 			return nullptr;
 
 		if (specifiers.isInline)
-			_diagnostics.error(specifiers.location, "'inline' is only allowed on a function");
+			_diagnostics.error(DiagId::InlineOnNonFunction, specifiers.location, "'inline' is only allowed on a function");
 
 		return _arena.create<ast::VarDecl>(location, name, type, initializer, specifiers.storageClass);
 	}
@@ -1584,20 +1588,20 @@ namespace ceresc::parser
 		{
 			// `auto` means automatic STORAGE, which a function does not have. Rejected here rather
 			// than in sema because there is nothing type-dependent about it.
-			_diagnostics.error(specifiers.location, "'auto' is not allowed on a function");
+			_diagnostics.error(DiagId::AutoOnFunction, specifiers.location, "'auto' is not allowed on a function");
 		}
 		if (specifiers.storageClass == ast::StorageClass::Register)
 		{
 			// Same: `register` asks for a kind of storage a function does not have either. Only
 			// `static`, `extern` and `inline` say anything about one.
-			_diagnostics.error(specifiers.location, "'register' is not allowed on a function");
+			_diagnostics.error(DiagId::RegisterOnFunction, specifiers.location, "'register' is not allowed on a function");
 		}
 		if (specifiers.isInline && !body)
-			_diagnostics.error(specifiers.location, "'inline' is only meaningful on a function definition, not on a prototype");
+			_diagnostics.error(DiagId::InlineOnPrototype, specifiers.location, "'inline' is only meaningful on a function definition, not on a prototype");
 		if (specifiers.isInterrupt && specifiers.isInline)
 		{
 			// Nothing calls an interrupt handler, so there is no call site to inline it into.
-			_diagnostics.error(specifiers.location, "'__interrupt' cannot be combined with 'inline'");
+			_diagnostics.error(DiagId::InterruptWithInline, specifiers.location, "'__interrupt' cannot be combined with 'inline'");
 		}
 
 		// Neither `auto` nor `register` survives onto the node: both were rejected just above, and
@@ -1630,7 +1634,7 @@ namespace ceresc::parser
 			// reason is not merely conformance: __builtin_va_start() names the last fixed parameter
 			// to find where the variadic arguments begin (docs/09-Variadic-Convention.md), so a
 			// list with no fixed parameter has nothing such a call could ever name.
-			_diagnostics.error(_current.location(), "'...' requires at least one named parameter before it");
+			_diagnostics.error(DiagId::EllipsisNeedsNamedParameter, _current.location(), "'...' requires at least one named parameter before it");
 			return false;
 		}
 
@@ -1645,7 +1649,7 @@ namespace ceresc::parser
 				outIsVariadic = true;
 				if (!check(TokenKind::RParen))
 				{
-					_diagnostics.error(_current.location(), "'...' must be the last entry in a parameter list");
+					_diagnostics.error(DiagId::EllipsisMustBeLast, _current.location(), "'...' must be the last entry in a parameter list");
 					return false;
 				}
 				return true;
@@ -1676,7 +1680,7 @@ namespace ceresc::parser
 			if (leadingRestrict)
 			{
 				if (!type->isPointer())
-					_diagnostics.error(specifierLocation, "'restrict' requires a pointer type");
+					_diagnostics.error(DiagId::RestrictRequiresPointer, specifierLocation, "'restrict' requires a pointer type");
 				else
 					type = Type::withRestrict(_arena, type);
 			}
@@ -1726,7 +1730,7 @@ namespace ceresc::parser
 				}
 				else if (!check(TokenKind::LiteralInt))
 				{
-					_diagnostics.error(_current.location(), "expected an integer constant for the array size but found '{}'",
+					_diagnostics.error(DiagId::ExpectedArraySize, _current.location(), "expected an integer constant for the array size but found '{}'",
 						_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
 					// Resync on the ']' so one bad dimension does not cost the declarator the rest.
 					while (!check(TokenKind::RBracket) && !check(TokenKind::Semicolon) && !check(TokenKind::Comma) && !isAtEnd())
@@ -1738,7 +1742,7 @@ namespace ceresc::parser
 					u64 rawSize = _current.integralValue();
 					advance();
 					if (rawSize == 0 || rawSize > 0xFFFFFFFFull)
-						_diagnostics.error(sizeLocation, "array size must be a positive integer that fits in 32 bits");
+						_diagnostics.error(DiagId::InvalidArraySize, sizeLocation, "array size must be a positive integer that fits in 32 bits");
 					else
 					{
 						suffix.arraySize = static_cast<u32>(rawSize);
@@ -1788,7 +1792,7 @@ namespace ceresc::parser
 			while (check(TokenKind::KwRestrict))
 			{
 				if (level.isRestrict)
-					_diagnostics.error(_current.location(), "duplicate 'restrict'");
+					_diagnostics.error(DiagId::DuplicateQualifier, _current.location(), "duplicate 'restrict'");
 				level.isRestrict = true;
 				advance();
 				parseQualifierRun(level.isConst, level.isVolatile); // `* restrict const` is one run
@@ -1824,7 +1828,7 @@ namespace ceresc::parser
 		}
 		else if (!allowAbstract)
 		{
-			_diagnostics.error(_current.location(), "expected an identifier in declaration");
+			_diagnostics.error(DiagId::ExpectedIdentifier, _current.location(), "expected an identifier in declaration");
 			declarator.ok = false;
 			return declarator;
 		}
@@ -1871,9 +1875,9 @@ namespace ceresc::parser
 			if (suffix.isFunction)
 			{
 				if (base->isFunction())
-					_diagnostics.error(suffix.location, "a function cannot return a function");
+					_diagnostics.error(DiagId::FunctionReturnsFunction, suffix.location, "a function cannot return a function");
 				else if (base->isArray())
-					_diagnostics.error(suffix.location, "a function cannot return an array");
+					_diagnostics.error(DiagId::FunctionReturnsArray, suffix.location, "a function cannot return an array");
 
 				std::vector<const Type*> paramTypes;
 				paramTypes.reserve(suffix.params.size());
@@ -1885,9 +1889,9 @@ namespace ceresc::parser
 			}
 
 			if (base->isVoid())
-				_diagnostics.error(suffix.location, "array has invalid element type 'void'");
+				_diagnostics.error(DiagId::InvalidArrayElementType, suffix.location, "array has invalid element type 'void'");
 			else if (base->isFunction())
-				_diagnostics.error(suffix.location, "array has invalid element type: a function");
+				_diagnostics.error(DiagId::InvalidArrayElementType, suffix.location, "array has invalid element type: a function");
 
 			if (!suffix.hasArraySize)
 			{
@@ -1895,7 +1899,7 @@ namespace ceresc::parser
 				// that dimension is not part of the type in the first place - see the decay below.
 				if (!(isParameter && outermost))
 				{
-					_diagnostics.error(suffix.location,
+					_diagnostics.error(DiagId::ArraySizeRequired, suffix.location,
 						"array size is required here (this version cannot infer it from an initializer)");
 				}
 				base = Type::makePointer(_arena, base); // decays, or recovers as a pointer

@@ -8,6 +8,10 @@
 
 namespace ceresc::ir
 {
+	// Shorthand for the ids these messages are classified by - every error() and warning()
+	// call below names one. See support/diagnostic_id.h.
+	using DiagId = support::DiagnosticId;
+
 	using ast::Type;
 	using ast::TypeKind;
 	using ast::Expr;
@@ -1276,7 +1280,7 @@ namespace ceresc::ir
 		}
 		if (isStructType(targetType))
 		{
-			_diagnostics.error(loc, "compound assignment is not valid for a struct type");
+			_diagnostics.error(DiagId::CompoundAssignToStruct, loc, "compound assignment is not valid for a struct type");
 			_lastValue = IrValue{};
 			return;
 		}

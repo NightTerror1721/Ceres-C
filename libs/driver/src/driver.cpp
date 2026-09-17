@@ -183,9 +183,17 @@ namespace ceresc::driver
 					if (_lineMap && !_lineMap->empty())
 						location = _lineMap->toOriginal(location);
 					const support::SourceBuffer* buffer = _sourceManager.getBuffer(location.sourceId);
+					// `error[E3023]:` rather than `error:` - the code is what a program's
+					// `#pragma warning(disable: ...)` names, and what searching for an explanation
+					// of a message would search for (docs/11-Diagnostics.md). Printed only when
+					// there is one, so a diagnostic with no id reads exactly as it always did.
+					std::string code = support::diagnosticCode(diagnostic.id);
 					out << (buffer ? buffer->name() : std::string_view("<unknown>")) << ':'
 						<< location.line << ':' << location.column << ": "
-						<< severityName(diagnostic.severity) << ": " << diagnostic.message << '\n';
+						<< severityName(diagnostic.severity);
+					if (!code.empty())
+						out << '[' << code << ']';
+					out << ": " << diagnostic.message << '\n';
 				}
 				_printed = all.size();
 			}
@@ -316,6 +324,7 @@ namespace ceresc::driver
 			// remapping. Dropping the map first also drops the PREVIOUS unit's, which was a pointer
 			// into a PreprocessedSource that died with the last turn of this loop.
 			printer.setLineMap(nullptr);
+			diagnostics.setPolicy(nullptr); // the previous unit's, and its PreprocessedSource is gone
 			printer.flush(std::cerr);
 			if (!expanded.ok)
 				return 1;
@@ -334,8 +343,13 @@ namespace ceresc::driver
 			support::SourceId sourceId = sourceManager.registerBuffer(inputPath, std::string(expanded.text));
 			const support::SourceBuffer* buffer = sourceManager.getBuffer(sourceId);
 			// Now that the expanded text has an id, the map can say which buffer its output lines
-			// are lines of - and refuse to remap a location that is already original.
+			// are lines of - and refuse to remap a location that is already original. The warning
+			// policy the file's own pragmas built is indexed by the same lines, and governs every
+			// phase from here down; the preprocessor already applied it to its own diagnostics,
+			// which point at their original files instead.
 			expanded.lineMap.setExpandedSourceId(sourceId);
+			expanded.diagnosticPolicy.setControlledSourceId(sourceId);
+			diagnostics.setPolicy(&expanded.diagnosticPolicy);
 
 			// ---- front end -------------------------------------------------------------------------
 			support::Arena arena;

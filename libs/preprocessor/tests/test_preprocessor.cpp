@@ -61,6 +61,7 @@ namespace
 		std::string text;
 		std::vector<std::string> diagnostics;
 		preprocessor::LineMap lineMap;
+		support::DiagnosticPolicy diagnosticPolicy;
 		bool ok = false;
 	};
 
@@ -80,6 +81,7 @@ namespace
 		Result result;
 		result.text = std::move(expanded.text);
 		result.lineMap = std::move(expanded.lineMap);
+		result.diagnosticPolicy = std::move(expanded.diagnosticPolicy);
 		result.ok = expanded.ok;
 		for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
 			result.diagnostics.push_back(diagnostic.message);
@@ -515,4 +517,152 @@ TEST(preprocessor, a_predefined_macro_is_not_substituted_inside_a_string_or_a_co
 	CHECK(result.ok);
 	CHECK(contains(result.text, "\"__LINE__\""));
 	CHECK(contains(result.text, "// __FILE__"));
+}
+
+// ---- #pragma warning ---------------------------------------------------------------------------
+
+TEST(preprocessor, a_warning_pragma_records_what_it_asked_for_against_the_line_it_governs_from)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"int before;\n"
+		"#pragma warning(disable: 2001)\n"
+		"int after;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(result.diagnostics.empty()); // a pragma it understands says nothing
+
+	const support::DiagnosticPolicy& policy = result.diagnosticPolicy;
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 1) == support::DiagnosticAction::Default);
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 3) == support::DiagnosticAction::Ignored);
+
+	// And it still leaves its blank line behind, so nothing below it moved.
+	CHECK_EQ(countOf(result.text, "\n"), usize{ 3 });
+}
+
+TEST(preprocessor, every_verb_the_warning_pragma_takes)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#pragma warning(disable: 2001)\n"
+		"#pragma warning(error: 2001)\n"
+		"#pragma warning(enable: 2001)\n"
+		"#pragma warning(default: 2001)\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(result.diagnostics.empty());
+
+	const support::DiagnosticPolicy& policy = result.diagnosticPolicy;
+	using support::DiagnosticAction;
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 1) == DiagnosticAction::Ignored);
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 2) == DiagnosticAction::Error);
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 3) == DiagnosticAction::Warning);
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 4) == DiagnosticAction::Default);
+}
+
+TEST(preprocessor, a_warning_pragma_takes_a_list_and_a_wildcard_and_the_printed_spelling)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#pragma warning(disable: 2001, 3001)\n"
+		"#pragma warning(default: W2001)\n"
+		"#pragma warning(error: all)\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(result.diagnostics.empty());
+
+	const support::DiagnosticPolicy& policy = result.diagnosticPolicy;
+	using support::DiagnosticAction;
+	// Line 1 turned both off; line 2 named one of them again, by the code as it PRINTS.
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 2) == DiagnosticAction::Default);
+	CHECK(policy.actionFor(support::DiagnosticId::ConstWithoutInitializer, 2) == DiagnosticAction::Ignored);
+	// And `all` catches both, whatever either was.
+	CHECK(policy.actionFor(support::DiagnosticId::CappedTypeWidth, 3) == DiagnosticAction::Error);
+	CHECK(policy.actionFor(support::DiagnosticId::ConstWithoutInitializer, 3) == DiagnosticAction::Error);
+}
+
+TEST(preprocessor, push_and_pop_put_back_exactly_what_was_in_force)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#pragma warning(disable: 2001)\n"
+		"#pragma warning(push)\n"
+		"#pragma warning(error: 2001)\n"
+		"#pragma warning(pop)\n"
+		"int after;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(result.diagnostics.empty());
+
+	using support::DiagnosticAction;
+	CHECK(result.diagnosticPolicy.actionFor(support::DiagnosticId::CappedTypeWidth, 3) == DiagnosticAction::Error);
+	CHECK(result.diagnosticPolicy.actionFor(support::DiagnosticId::CappedTypeWidth, 5) == DiagnosticAction::Ignored);
+}
+
+TEST(preprocessor, a_warning_pragma_it_cannot_read_is_a_warning_rather_than_an_error)
+{
+	// A pragma is advice. Not understanding a piece of it must not stop a program compiling - which
+	// is the same rule `#pragma once` has always followed for an unknown pragma.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#pragma warning disable: 2001\n"
+		"#pragma warning(bogus: 2001)\n"
+		"#pragma warning(disable)\n"
+		"#pragma warning(disable: nonsense)\n"
+		"#pragma warning(pop)\n");
+
+	Result result = expand(path);
+	CHECK(result.ok); // every one of them is survivable
+	CHECK_EQ(result.diagnostics.size(), usize{ 5 });
+	CHECK(contains(result.diagnostics[0], "parenthesized body"));
+	CHECK(contains(result.diagnostics[1], "expected 'disable'"));
+	CHECK(contains(result.diagnostics[2], "needs a ':'"));
+	CHECK(contains(result.diagnostics[3], "expected a warning number or 'all'"));
+	CHECK(contains(result.diagnostics[4], "no matching '#pragma warning(push)'"));
+}
+
+TEST(preprocessor, a_number_that_is_not_a_warning_is_named_as_such)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#pragma warning(disable: 3023)\n"   // E3023 - an error
+		"#pragma warning(disable: 9999)\n"); // nothing at all
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK_EQ(result.diagnostics.size(), usize{ 2 });
+	CHECK(contains(result.diagnostics[0], "does not name a warning"));
+	CHECK(contains(result.diagnostics[1], "does not name a warning"));
+}
+
+TEST(preprocessor, the_pragma_governs_the_preprocessors_own_warnings_too)
+{
+	// The one phase that cannot leave this to the DiagnosticEngine, because its diagnostics point
+	// at the original file rather than at the expanded text the policy is indexed by.
+	TempDirectory dir;
+	std::string loud = dir.write("loud.c", "#pragma frobnicate\n");
+	CHECK_EQ(expand(loud).diagnostics.size(), usize{ 1 });
+
+	std::string quiet = dir.write("quiet.c",
+		"#pragma warning(disable: 1004)\n"
+		"#pragma frobnicate\n");
+	CHECK(expand(quiet).diagnostics.empty());
+}
+
+TEST(preprocessor, a_pragma_in_a_header_governs_the_file_that_included_it)
+{
+	// Nothing scopes a pragma to the file it was written in - the policy is one list over the whole
+	// expanded text, exactly as in C. `push`/`pop` is what a header that means to be polite uses.
+	TempDirectory dir;
+	dir.write("quiet.h", "#pragma warning(disable: 2001)\n");
+	std::string path = dir.write("main.c", "#include \"quiet.h\"\nint after;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(result.diagnosticPolicy.actionFor(support::DiagnosticId::CappedTypeWidth, 2)
+		== support::DiagnosticAction::Ignored);
 }
