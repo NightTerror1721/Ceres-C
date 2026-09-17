@@ -83,6 +83,32 @@ namespace
 		parser.parseTranslationUnit();
 		return diagnostics.hasErrors();
 	}
+
+	// Every diagnostic message parsing `source` produced, joined - for the cases where the point is
+	// what was SAID rather than whether it was accepted.
+	std::string diagnosticsFor(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		Parser parser(lexer, arena, diagnostics);
+
+		parser.parseTranslationUnit();
+		std::string all;
+		for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+		{
+			all += diagnostic.severity == support::DiagnosticSeverity::Error ? "error: " : "warning: ";
+			all += diagnostic.message;
+			all += '\n';
+		}
+		return all;
+	}
+
+	bool mentions(std::string_view haystack, std::string_view needle)
+	{
+		return haystack.find(needle) != std::string_view::npos;
+	}
 }
 
 TEST(parser, array_typedef_parameter_decays_to_pointer)
@@ -1106,6 +1132,47 @@ TEST(parser, register_is_the_one_storage_class_a_parameter_may_carry)
 
 	// And  still means nothing in a type name, where there is no object at all.
 	CHECK(unitHasErrors("int f(void) { return sizeof(register int); }"));
+}
+
+TEST(parser, the_types_that_name_a_width_this_machine_lacks_are_capped_and_said_so)
+{
+	// Ceres has no 64-bit register and no f64 register, so `long long` and `double` cannot be what
+	// C says they are. They are accepted anyway, as spellings of the 32-bit type they cap to - a
+	// program that uses one gets a number, just not the one it asked for, and is told.
+	CHECK_EQ(printUnit("long long a;"), "(unit (var a long <null>))");
+	CHECK_EQ(printUnit("unsigned long long b;"), "(unit (var b unsigned long <null>))");
+	CHECK_EQ(printUnit("signed long long int c;"), "(unit (var c long <null>))");
+	CHECK_EQ(printUnit("long long int d;"), "(unit (var d long <null>))");
+	CHECK_EQ(printUnit("double e;"), "(unit (var e float <null>))");
+	CHECK_EQ(printUnit("long double f;"), "(unit (var f float <null>))");
+
+	// `long` on its own is untouched, and says nothing: it always was 32 bits here.
+	CHECK_EQ(printUnit("long g;"), "(unit (var g long <null>))");
+	CHECK_EQ(diagnosticsFor("long g;"), std::string());
+}
+
+TEST(parser, a_capped_width_is_a_warning_naming_both_spellings)
+{
+	std::string warned = diagnosticsFor("long long a; double b; long double c; unsigned long long d;");
+	CHECK(mentions(warned, "'long long' is 32 bits here"));
+	CHECK(mentions(warned, "so it is exactly 'long'"));
+	CHECK(mentions(warned, "'double' is 32 bits here"));
+	CHECK(mentions(warned, "'long double' is 32 bits here"));
+	CHECK(mentions(warned, "'unsigned long long' is 32 bits here"));
+	CHECK(mentions(warned, "so it is exactly 'unsigned long'"));
+
+	// A warning, not an error: the program still compiles.
+	CHECK(!mentions(warned, "error: "));
+}
+
+TEST(parser, a_capped_type_works_everywhere_its_uncapped_spelling_would)
+{
+	// A cast, a typedef, a parameter and a sizeof - the four places isTypeSpecStart() decides, and
+	// the reason `double` had to be added to it rather than only to parseTypeSpec().
+	CHECK(!parseFails("typedef long long Wide; Wide w;"));
+	CHECK(!parseFails("int f(double d, long long v);"));
+	CHECK(!parseFails("int f(void) { return (int)(double)1; }"));
+	CHECK(!parseFails("int n = sizeof(long double);"));
 }
 
 TEST(parser, the_machine_builtins_are_syntax_rather_than_calls)

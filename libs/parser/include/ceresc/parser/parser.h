@@ -360,6 +360,15 @@ namespace ceresc::parser
 		Expr* parseMachineBuiltin(support::SourceLocation location, ast::MachineOp op);
 
 
+		// `long long`, `unsigned long long`, `double` and `long double` all name a width this
+		// machine does not have: there is no 64-bit register and no f64 register anywhere in Ceres.
+		// They are accepted as SPELLINGS of the 32-bit type they cap to (type.h) rather than
+		// rejected, because a program that uses one is asking for a wide number and gets a number -
+		// but never silently, because it is not the number it asked for. `written` is what the
+		// program said, `actual` what it got.
+		const Type* cappedToMachineWidth(support::SourceLocation location, std::string_view written,
+			std::string_view actual, const Type* type);
+
 		// struct/enum are parsed as part of the type-spec grammar, not as their own top-level
 		// productions - see the header comment above.
 		const Type* parseStructTypeSpec(bool isUnion = false);
@@ -424,6 +433,7 @@ namespace ceresc::parser
 				case TokenKind::KwVoid:
 				case TokenKind::KwBool:
 				case TokenKind::KwFloat:
+				case TokenKind::KwDouble: // a spelling of `float` here - see cappedToMachineWidth()
 				case TokenKind::KwChar:
 				case TokenKind::KwShort:
 				case TokenKind::KwInt:

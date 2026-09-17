@@ -178,7 +178,9 @@ from `r0` and the tail from `[fp + 8]` upward, one word each, and needs a real `
 ## What is not supported
 
 - **No `<stdarg.h>`.** The names are builtin; there is no header to include.
-- **No `double`.** See the promotion note above.
+- **No 64-bit `double`.** `__builtin_va_arg(ap, double)` is accepted, because `double` is a
+  spelling of `float` here, and reads back exactly the `f32` the caller passed. See the promotion
+  note above.
 - **No aggregates through `...`.** Rejected at compile time.
 - **No `printf`.** This compiler ships no standard library; variadic functions are the mechanism a
   `printf` would be written *with*, not a `printf` itself.

@@ -102,7 +102,8 @@ A function can answer a VM interrupt: `__interrupt void f(void)` declares the ha
 Function pointers work, including arrays of them and functions that return them: `int (*f)(int)`
 is a pointer, `f(1)` calls through it, and a function name used as a value is its own address.
 
-No `double` (the VM has no f64 at all) and no bitfields.
+`long long`, `double` and `long double` are accepted and capped to 32 bits with a warning — the VM
+has no 64-bit register in either bank. No bitfields.
 [docs/02-Grammar.md](docs/02-Grammar.md) is the contract;
 [docs/06-Known-Limitations.md](docs/06-Known-Limitations.md) is the honest list of what this version
 leaves out.

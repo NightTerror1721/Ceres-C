@@ -10,7 +10,7 @@ here is, by definition, a syntax error.
 
 | Area | What is supported |
 | --- | --- |
-| Types | `void`, `bool`, `char`, `short`, `int`, `long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. |
+| Types | `void`, `bool`, `char`, `short`, `int`, `long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. `long long`, `double` and `long double` are accepted and capped to 32 bits, with a warning. |
 | Qualifiers | `const`, `volatile` and `restrict`, on either side of the type-spec and after a `*`. |
 | Storage classes | `static`, `extern`, `auto`, `register` and the `inline` function specifier. |
 | Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `union`, `enum`, `typedef`, and function types — so function pointers, including arrays of them and functions that return them. |
@@ -27,15 +27,15 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 
 | Left out | Why |
 | --- | --- |
-| `double` (f64) | The VM has no double-precision support at all. Supporting it would mean software emulation, not a type mapping. It is also why a variadic `float` is not promoted to `double` — see [09-Variadic-Convention.md](09-Variadic-Convention.md). |
+| 64-bit width — `long long`, `double`, `long double` | The spellings are accepted; the WIDTH is not. Ceres has no 64-bit register and no f64 register, so each one caps to its 32-bit counterpart with a warning. See [06-Known-Limitations.md](06-Known-Limitations.md). |
 | Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
 | Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef`, macros with arguments and the predefined `__LINE__`/`__FILE__` family. See [08-Preprocessor.md](08-Preprocessor.md). |
 | Adjacent string literal concatenation | `"a" "b"` is two expressions to the parser, not one string. See [08-Preprocessor.md](08-Preprocessor.md) for what it costs `__DATE__`. |
 | `malloc`/`free` | There is no allocator to call. |
 
-`double` still exists as a token kind in the lexer on purpose: hitting it produces "not implemented
-in this version" rather than a generic syntax error that would hide the fact that it is a known,
-deliberate limit.
+A capped type is a *spelling*, not a type of its own: `long long` and `long` are the same type
+here, and so are `double` and `float`. That is what "there is no 64-bit anything" means once it is
+followed through — a distinct type would be one no phase below the parser could represent.
 
 ## const
 

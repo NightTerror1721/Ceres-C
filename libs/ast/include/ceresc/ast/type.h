@@ -13,22 +13,18 @@
 // sizeInBytes()/alignment()/isSigned() - alignment follows the same rule as CASM's own `struct`
 // (each field aligned to its own size, see §8). See the architecture plan, §6.
 //
-// Float and Bool are V1 scope, not yet reflected in this list of members - ordinary phased work
-// (the lexer already has KwFloat/KwBool/LiteralFloat/LiteralBool, see token.h), this variant just
-// hasn't grown to include them yet. Float is `float` only (f32): it maps directly onto Ceres's
-// native F32 register/DataType (see CeresASM's fregisters.h/data_type.h), so codegen is close to a
-// straight passthrough. `double` (f64) is a different story and stays reserved for a version after
-// v1: Ceres has no f64 support anywhere in the VM, so it would need real work (software emulation)
-// instead of being free like float. Once the parser exists, it must reject `double` with a "not
-// implemented in this version" diagnostic rather than trying to fit it in here early. `const` is a
-// qualifier on a Type, not its own TypeKind member - how it attaches (a bit on Type vs. a wrapper)
-// is still open, see §14.
+// There is no 64-bit anything in this list, and that is the machine speaking rather than an
+// omission: Ceres has no 64-bit register, no f64 register and no instruction that touches either.
+// The four C types that name one - `long long`, `unsigned long long`, `double` and `long double` -
+// are therefore SPELLINGS of the 32-bit types here rather than types of their own: the parser
+// reads them, warns that the width is capped, and hands back Long, ULong and Float. Modelling them
+// as distinct kinds would mean a type system that claims a width no phase below it can produce.
+// See docs/06-Known-Limitations.md.
 //
-// This variant is also narrower than the integer keywords the lexer already recognizes: `short`/
-// `long`/`signed`/`unsigned` are meant to combine the way they do in real C (see token.h), which
-// this enumeration doesn't reflect yet (no Long/ULong, and no separate signedness for Char/Short).
-// It needs to grow when the parser's type-name grammar lands to cover every valid combination -
-// and to reject the invalid ones (e.g. `short long`) - rather than staying stuck at today's shape.
+// Float is `float` (f32): it maps directly onto Ceres's native F32 register/DataType (see
+// CeresASM's fregisters.h/data_type.h), so codegen is close to a straight passthrough.
+//
+// `const` is a qualifier on a Type, not its own TypeKind member.
 //
 // Implemented across Fase 2-4 of the phased plan (§13): the shape lands with the parser's
 // type-name grammar, sizeInBytes()/alignment() with sema's struct layout.
@@ -53,7 +49,6 @@ namespace ceresc::ast
 		Long,
 		ULong,
 		Float,
-		Double, // reserved for a version after v1 (Ceres has no f64 support anywhere)
 		Pointer,
 		Array,
 		Struct,
@@ -139,7 +134,6 @@ namespace ceresc::ast
 		constexpr bool isLong() const noexcept { return _kind == TypeKind::Long; }
 		constexpr bool isULong() const noexcept { return _kind == TypeKind::ULong; }
 		constexpr bool isFloat() const noexcept { return _kind == TypeKind::Float; }
-		constexpr bool isDouble() const noexcept { return _kind == TypeKind::Double; }
 
 		constexpr bool isPointer() const noexcept { return _kind == TypeKind::Pointer; }
 		constexpr bool isArray() const noexcept { return _kind == TypeKind::Array; }
@@ -241,7 +235,6 @@ namespace ceresc::ast
 		static const Type Long, ConstLong, VolatileLong, ConstVolatileLong;
 		static const Type ULong, ConstULong, VolatileULong, ConstVolatileULong;
 		static const Type Float, ConstFloat, VolatileFloat, ConstVolatileFloat;
-		static const Type Double, ConstDouble, VolatileDouble, ConstVolatileDouble;
 	};
 
 	inline constexpr Type Type::Void{ TypeKind::Void, false, false };
@@ -289,10 +282,6 @@ namespace ceresc::ast
 	inline constexpr Type Type::ConstFloat{ TypeKind::Float, true, false };
 	inline constexpr Type Type::VolatileFloat{ TypeKind::Float, false, true };
 	inline constexpr Type Type::ConstVolatileFloat{ TypeKind::Float, true, true };
-	inline constexpr Type Type::Double{ TypeKind::Double, false, false };
-	inline constexpr Type Type::ConstDouble{ TypeKind::Double, true, false };
-	inline constexpr Type Type::VolatileDouble{ TypeKind::Double, false, true };
-	inline constexpr Type Type::ConstVolatileDouble{ TypeKind::Double, true, true };
 
 	static_assert(TriviallyDestructible<Type>, "Type must be trivially destructible");
 }

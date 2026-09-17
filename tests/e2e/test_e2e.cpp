@@ -800,6 +800,25 @@ TEST(e2e, a_register_parameter_computes_the_same_answer_as_an_ordinary_one)
 		"6");
 }
 
+TEST(e2e, a_capped_wide_type_computes_as_the_32_bit_type_it_really_is)
+{
+	// `long long` and `double` name widths this machine does not have, so they are the 32-bit types
+	// under another spelling (docs/06-Known-Limitations.md). What that has to mean at run time is
+	// that mixing the two spellings changes nothing at all.
+	runsTheSameAtEveryLevel("capped_wide_types",
+		"long long widen(long long v) { return v + 1; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    long long a = widen(3);"
+		"    unsigned long long b = 2;"
+		"    double d = 1.5;"
+		"    long double e = 0.5;"
+		"    *term = 48 + (int)(a + (long long)b) + (int)(d + e) - 4;" // 4 + 2 + 2 - 4 = 4
+		"    return 0;"
+		"}",
+		"4");
+}
+
 // ---- storage classes and const ------------------------------------------------------------------
 
 TEST(e2e, a_static_local_keeps_its_value_between_calls)

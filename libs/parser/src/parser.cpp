@@ -719,6 +719,15 @@ namespace ceresc::parser
 		return type;
 	}
 
+	const Type* Parser::cappedToMachineWidth(SourceLocation location, std::string_view written,
+		std::string_view actual, const Type* type)
+	{
+		_diagnostics.warning(location,
+			"'{}' is 32 bits here: this machine has no 64-bit type at all, so it is exactly '{}'",
+			written, actual);
+		return type;
+	}
+
 	const Type* Parser::parseTypeSpec()
 	{
 		SourceLocation location = _current.location();
@@ -742,7 +751,23 @@ namespace ceresc::parser
 			case TokenKind::KwFloat: advance(); return &Type::Float;
 			case TokenKind::KwChar: advance(); return &Type::Char;
 			case TokenKind::KwShort: advance(); match(TokenKind::KwInt); return &Type::Short;
-			case TokenKind::KwLong: advance(); match(TokenKind::KwInt); return &Type::Long;
+			case TokenKind::KwLong:
+			{
+				advance();
+				// The one place `long` does not introduce an integer at all.
+				if (match(TokenKind::KwDouble))
+					return cappedToMachineWidth(location, "long double", "float", &Type::Float);
+				if (match(TokenKind::KwLong))
+				{
+					match(TokenKind::KwInt);
+					return cappedToMachineWidth(location, "long long", "long", &Type::Long);
+				}
+				match(TokenKind::KwInt);
+				return &Type::Long;
+			}
+			case TokenKind::KwDouble:
+				advance();
+				return cappedToMachineWidth(location, "double", "float", &Type::Float);
 			case TokenKind::KwInt: advance(); return &Type::Int;
 			case TokenKind::KwSigned:
 			case TokenKind::KwUnsigned:
@@ -758,6 +783,14 @@ namespace ceresc::parser
 				}
 				if (match(TokenKind::KwLong))
 				{
+					if (match(TokenKind::KwLong))
+					{
+						match(TokenKind::KwInt);
+						return cappedToMachineWidth(location,
+							isUnsigned ? "unsigned long long" : "signed long long",
+							isUnsigned ? "unsigned long" : "long",
+							isUnsigned ? &Type::ULong : &Type::Long);
+					}
 					match(TokenKind::KwInt);
 					return isUnsigned ? &Type::ULong : &Type::Long;
 				}

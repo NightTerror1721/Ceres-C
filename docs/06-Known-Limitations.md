@@ -63,11 +63,28 @@ terminal device's output register at `0xFF000004`; `examples/08_strings.c` write
 routines it needs, and `examples/interop/io.c` wraps them into something reusable. CeresASM's own
 `stdlib/` currently only has `call.casm`, so there is nothing to link against yet either.
 
-### No `double`
+### No 64-bit width, in either bank
 
-The VM has no double-precision floating point at all. Supporting `double` would mean software
-emulation — real front-end and runtime work, not a type mapping. `float` (f32) is fully supported
-and has its own register bank.
+Ceres has no 64-bit integer register and no f64 register — not in the ISA, not in the VM. The four
+C types that name one are still accepted, because refusing them turns a program that wants a wide
+number into a syntax error rather than into a number, but each one caps to its 32-bit counterpart
+and says so:
+
+| Written | Is | Warning |
+| --- | --- | --- |
+| `long long`, `signed long long` | `long` | `'long long' is 32 bits here: this machine has no 64-bit type at all, so it is exactly 'long'` |
+| `unsigned long long` | `unsigned long` | as above, naming `unsigned long` |
+| `double` | `float` | as above, naming `float` |
+| `long double` | `float` | as above, naming `float` |
+
+They are **spellings**, not types of their own: `long long` and `long` are the same type, a
+`double*` and a `float*` are interchangeable, and `sizeof(long long)` is 4. Modelling them as
+distinct kinds would put a width in the type system that nothing below the parser can produce.
+Supporting the real widths would mean software emulation — front-end and runtime work, not a type
+mapping.
+
+The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
+NAME is then an ordinary name for the capped type and says nothing further.
 
 ### No bitfields
 

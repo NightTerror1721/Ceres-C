@@ -11,10 +11,10 @@
 // widest field's alignment. Primitive sizes/alignments mirror CASM's data_type.h
 // (docs/11-Data-Types-and-Literals.md): u8/i8=1, u16/i16=2, u32/i32/f32=4, and a Ceres address
 // (Pointer) is a u32, so 4 bytes as well. `long`/`unsigned long` are int-sized in this ABI - Ceres
-// has no native 64-bit register (see type.h's own note), so there is no wider integer to give them.
-// `double` is unreachable from a valid program (the parser rejects it - see type.h) and its size
-// here is a placeholder, never actually relied on. Enum is always int-sized, same as most C ABIs -
-// it does not need a StructDecl-style computed layout.
+// has no native 64-bit register (see type.h's own note), so there is no wider integer to give them,
+// and neither `long long` nor `double` reaches here as a kind of its own for the same reason: the
+// parser caps both and hands back one of these. Enum is always int-sized, same as most C ABIs - it
+// does not need a StructDecl-style computed layout.
 //
 // Both walks take an explicit recursion depth and bail out past a small limit instead of
 // recursing forever: a struct that (illegally) contains itself by value, directly or through
@@ -49,7 +49,6 @@ namespace ceresc::ast
 				case TypeKind::Long: return 4;
 				case TypeKind::ULong: return 4;
 				case TypeKind::Float: return 4;
-				case TypeKind::Double: return 8;
 				case TypeKind::Pointer: return 4;
 				// A function type is not an OBJECT type: nothing holds one, so it has no size. Zero is
 				// the same answer Void gives, and for the same reason. A POINTER to one is four bytes
@@ -104,7 +103,6 @@ namespace ceresc::ast
 				case TypeKind::Short: case TypeKind::UShort: return 2;
 				case TypeKind::Int: case TypeKind::UInt: case TypeKind::Long: case TypeKind::ULong: return 4;
 				case TypeKind::Float: return 4;
-				case TypeKind::Double: return 8;
 				case TypeKind::Pointer: return 4;
 				case TypeKind::Array: return alignmentOf(type->arrayElementType(), depth + 1);
 				case TypeKind::Enum: return 4;
@@ -234,7 +232,6 @@ namespace ceresc::ast
 			case TypeKind::Long:   return type->isVolatile() ? &Type::ConstVolatileLong : &Type::ConstLong;
 			case TypeKind::ULong:  return type->isVolatile() ? &Type::ConstVolatileULong : &Type::ConstULong;
 			case TypeKind::Float:  return type->isVolatile() ? &Type::ConstVolatileFloat : &Type::ConstFloat;
-			case TypeKind::Double: return type->isVolatile() ? &Type::ConstVolatileDouble : &Type::ConstDouble;
 			default:
 				break;
 		}
@@ -261,7 +258,6 @@ namespace ceresc::ast
 			case TypeKind::Long:   return &Type::Long;
 			case TypeKind::ULong:  return &Type::ULong;
 			case TypeKind::Float:  return &Type::Float;
-			case TypeKind::Double: return &Type::Double;
 			default:
 				break;
 		}
@@ -284,7 +280,6 @@ namespace ceresc::ast
 			case TypeKind::Long: return type->isConst() ? &Type::ConstVolatileLong : &Type::VolatileLong;
 			case TypeKind::ULong: return type->isConst() ? &Type::ConstVolatileULong : &Type::VolatileULong;
 			case TypeKind::Float: return type->isConst() ? &Type::ConstVolatileFloat : &Type::VolatileFloat;
-			case TypeKind::Double: return type->isConst() ? &Type::ConstVolatileDouble : &Type::VolatileDouble;
 			default: return makeCompound(arena, type->kind(), type->isConst(), true, type->isRestrict(), type->_payload, type->_arraySize);
 		}
 	}
