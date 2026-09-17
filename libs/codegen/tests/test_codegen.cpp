@@ -94,6 +94,52 @@ namespace
 	}
 }
 
+TEST(codegen, a_trailing_comment_names_the_file_the_line_was_written_in)
+{
+	// The comments are the whole product (README), and until a line map reached CodeGen every one
+	// of them cited a line of the preprocessor's EXPANDED buffer under the .c file's name. With no
+	// `#include` that happens to be the same number - a directive leaves its blank line behind - so
+	// the bug was invisible until a header shifted everything below it.
+	//
+	// Built by hand rather than by running the preprocessor: libs/codegen does not depend on it,
+	// which is exactly why the map lives in libs/support.
+	support::SourceManager sourceManager;
+	support::SourceId header = sourceManager.registerBuffer("header.h", "int helper(int v) { return v + 1; }\n");
+	std::string_view expandedText = "int helper(int v) { return v + 1; }\nint caller(int n) { return helper(n); }\n";
+	support::SourceId expanded = sourceManager.registerBuffer("main.c", std::string(expandedText));
+
+	support::LineMap lineMap;
+	lineMap.append(1, header, 1);   // line 1 of the expansion came from the header
+	lineMap.append(2, expanded, 2); // line 2 is main.c's own second line
+	lineMap.setExpandedSourceId(expanded);
+
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
+	lexer::Lexer lexer(expandedText, expanded, diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	sema::Sema sema(arena, diagnostics);
+	CHECK(sema.check(*unit));
+	ir::IrBuilder builder(arena, diagnostics, options);
+	ir::IrModule module = builder.build(*unit);
+
+	codegen::CodeGen mapped(sourceManager, diagnostics, options);
+	mapped.setLineMap(&lineMap);
+	std::string text = mapped.generate(*unit, module);
+	CHECK(contains(text, "// header.h:1"));
+	CHECK(contains(text, "// main.c:2"));
+	CHECK(!contains(text, "// main.c:1"));
+
+	// Without the map, both functions claim the same file - which is what the output used to say.
+	codegen::CodeGen unmapped(sourceManager, diagnostics, options);
+	std::string plain = unmapped.generate(*unit, module);
+	CHECK(contains(plain, "// main.c:1"));
+	CHECK(!contains(plain, "header.h"));
+}
+
 // ---- golden tests (§12 of the architecture plan) --------------------------------------------
 //
 // Every program below was also verified for real, at BOTH -O0 and -O2: assembled with the actual

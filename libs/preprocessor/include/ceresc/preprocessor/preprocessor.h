@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ceresc/support/diagnostics.h>
+#include <ceresc/support/line_map.h>
 #include <ceresc/support/source_location.h>
 #include <ceresc/support/source_manager.h>
 #include <span>
@@ -52,35 +53,11 @@
 
 namespace ceresc::preprocessor
 {
-	// One entry per line of the expanded text. `outputLine` is 1-based, like every line number here.
-	struct LineMapEntry
-	{
-		u32 outputLine = 1;
-		support::SourceId sourceId{};
-		u32 sourceLine = 1;
-	};
-
-	class LineMap
-	{
-	private:
-		std::vector<LineMapEntry> _entries; // sorted by outputLine, one per output line
-
-	public:
-		void append(u32 outputLine, support::SourceId sourceId, u32 sourceLine)
-		{
-			_entries.push_back(LineMapEntry{ outputLine, sourceId, sourceLine });
-		}
-
-		std::span<const LineMapEntry> entries() const noexcept { return _entries; }
-		bool empty() const noexcept { return _entries.empty(); }
-
-		// Rewrites a location in the expanded text into one in the file that line was written in.
-		// The column is carried across unchanged: a line's text is copied verbatim apart from macro
-		// expansion, so the column is right unless a macro on that same line changed the text's
-		// length before the position in question - an inaccuracy worth the whole mechanism being
-		// this simple.
-		support::SourceLocation toOriginal(support::SourceLocation location) const noexcept;
-	};
+	// The line map itself lives in libs/support (line_map.h), because libs/codegen consumes one too
+	// and must not know this library exists. These aliases are what keep it spelled the way its
+	// producer names it.
+	using LineMapEntry = support::LineMapEntry;
+	using LineMap = support::LineMap;
 
 	struct PreprocessedSource
 	{

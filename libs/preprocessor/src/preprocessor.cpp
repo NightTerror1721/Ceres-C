@@ -118,11 +118,6 @@ namespace ceresc::preprocessor
 		};
 	}
 
-	support::SourceLocation LineMap::toOriginal(support::SourceLocation location) const noexcept
-	{
-		if (_entries.empty() || location.line == 0 || location.line > _entries.size()) return location;
-		const LineMapEntry& entry = _entries[location.line - 1]; return { entry.sourceId, entry.sourceLine, location.column, location.offset };
-	}
 	void Preprocessor::definePredefinedMacros()
 	{
 		auto object = [&](std::string name, std::string replacement)

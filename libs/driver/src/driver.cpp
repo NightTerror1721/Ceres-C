@@ -312,7 +312,10 @@ namespace ceresc::driver
 				preprocess.define(name, value);
 
 			preprocessor::PreprocessedSource expanded = preprocess.run(inputPath);
-			// Preprocessor diagnostics already point at their original files; only later phases need remapping.
+			// Preprocessor diagnostics already point at their original files; only later phases need
+			// remapping. Dropping the map first also drops the PREVIOUS unit's, which was a pointer
+			// into a PreprocessedSource that died with the last turn of this loop.
+			printer.setLineMap(nullptr);
 			printer.flush(std::cerr);
 			if (!expanded.ok)
 				return 1;
@@ -330,6 +333,9 @@ namespace ceresc::driver
 			// self-consistent; the line map is what turns them back into the originals for printing.
 			support::SourceId sourceId = sourceManager.registerBuffer(inputPath, std::string(expanded.text));
 			const support::SourceBuffer* buffer = sourceManager.getBuffer(sourceId);
+			// Now that the expanded text has an id, the map can say which buffer its output lines
+			// are lines of - and refuse to remap a location that is already original.
+			expanded.lineMap.setExpandedSourceId(sourceId);
 
 			// ---- front end -------------------------------------------------------------------------
 			support::Arena arena;
@@ -373,6 +379,9 @@ namespace ceresc::driver
 			}
 
 			codegen::CodeGen codeGen(sourceManager, diagnostics, options.optimization);
+			// The same map the diagnostics printer uses, for the same reason: a trailing comment
+			// naming a line of the expanded text is a reference nobody can follow.
+			codeGen.setLineMap(&expanded.lineMap);
 			CompiledUnit compiled;
 			compiled.sourcePath = inputPath;
 			compiled.casmPath = singleOutput && !options.outputPath.empty()

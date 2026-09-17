@@ -246,6 +246,11 @@ namespace ceresc::codegen
 	{
 		if (!location.isValid())
 			return {};
+		// Back to the file the line was WRITTEN in, before naming it: everything from the lexer down
+		// carries a position in the preprocessor's expanded buffer, and the whole value of these
+		// comments is that a reader can go and look at the line they name.
+		if (_lineMap)
+			location = _lineMap->toOriginal(location);
 		const support::SourceBuffer* buffer = _sourceManager.getBuffer(location.sourceId);
 		return std::format("{}:{}", buffer ? buffer->name() : std::string_view("?"), location.line);
 	}

@@ -6,6 +6,7 @@
 #include <ceresc/codegen/value_placement.h>
 #include <ceresc/ir/ir_function.h>
 #include <ceresc/support/diagnostics.h>
+#include <ceresc/support/line_map.h>
 #include <ceresc/support/optimization.h>
 #include <ceresc/support/source_manager.h>
 #include <optional>
@@ -90,6 +91,16 @@ namespace ceresc::codegen
 		CodeGen& operator=(CodeGen&&) = delete;
 
 	public:
+		// Where the lines the locations name really came from, when the text this was compiled from
+		// was produced by the preprocessor rather than typed. Without it every trailing comment
+		// cites a line of the EXPANDED buffer - which for a file with no `#include` is the same
+		// number by construction (a directive leaves its blank line behind), and for one with a
+		// header is off by the whole length of that header and names the wrong file besides.
+		//
+		// Optional because the phases below libs/driver are driven straight from a string: a test
+		// that compiles "int f(void) { return 1; }" has no preprocessor and nothing to map.
+		void setLineMap(const support::LineMap* lineMap) noexcept { _lineMap = lineMap; }
+
 		// Generates the whole .casm text for `unit`/`module` - `unit` supplies function signatures/
 		// parameter names/global VarDecls (which the IR never models on purpose, see IrModule's own
 		// header comment); `module` supplies the lowered function bodies. Both must come from the
@@ -267,6 +278,7 @@ namespace ceresc::codegen
 
 	private:
 		const support::SourceManager& _sourceManager;
+		const support::LineMap* _lineMap = nullptr; // nullable - see setLineMap()
 		support::DiagnosticEngine& _diagnostics;
 		support::OptimizationOptions _options;
 		CasmEmitter _emitter;

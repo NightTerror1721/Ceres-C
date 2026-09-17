@@ -160,6 +160,18 @@ the driver maps a location back through that table before printing. The alternat
 `#line` markers and teaching the lexer to read them — would give the lexer a feature that is not
 about lexing.
 
+The same table is what the trailing comments in the generated `.casm` go through, so an instruction
+that came out of a header cites the header:
+
+```casm
+global helper:
+    mov r3, r0            // lib.h:5
+    imul r1, r3, 2        // lib.h:5
+```
+
+That is why the map itself lives in `libs/support` rather than in this library: `libs/codegen` needs
+one and must not know the preprocessor exists.
+
 The column is carried across unchanged. A macro that changed the length of the text earlier on the
 same line can move it, which is the one inaccuracy the mechanism accepts in exchange for being this
 simple.
