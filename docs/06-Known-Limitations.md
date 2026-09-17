@@ -80,11 +80,11 @@ which is what makes `Handler*` and `int (*)(int)` the same type rather than two 
 agree. A call through a pointer becomes `call rN` — the ISA's indirect call, which was always there.
 See `examples/19_function_pointers.c`.
 
-Variadic functions are no longer on this list — `...`, `va_list`, `va_start`, `va_arg`, `va_end`
-and `va_copy` all work. What they do not come with is a `<stdarg.h>` (the names are builtin, since
-there is no system include directory to find a header in) or a `printf` to use them for, and a
-variadic `float` is not promoted to `double`, because there is no `double`. See
-[09-Variadic-Convention.md](09-Variadic-Convention.md).
+Variadic functions are no longer on this list — `...`, `__builtin_va_list`, `__builtin_va_start`,
+`__builtin_va_arg`, `__builtin_va_end` and `__builtin_va_copy` all work. What they do not come with
+is a `<stdarg.h>` (the names are builtin, since there is no system include directory to find a
+header in) or a `printf` to use them for, and a variadic `float` is not promoted to `double`,
+because there is no `double`. See [09-Variadic-Convention.md](09-Variadic-Convention.md).
 
 ### Qualifiers and storage
 

@@ -1149,14 +1149,14 @@ namespace
 
 TEST(ir, a_variadic_function_is_marked_as_one_and_va_start_lowers_to_its_own_opcode)
 {
-	std::string text = functionIr("int f(int a, ...) { va_list ap; va_start(ap, a); return 0; }", "f");
+	std::string text = functionIr("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return 0; }", "f");
 	CHECK(contains(text, "function f(params=1, ..., locals=2)"));
 	CHECK(contains(text, "= va_start"));
 }
 
 TEST(ir, va_arg_lowers_to_a_load_through_the_cursor_and_a_four_byte_advance)
 {
-	std::string text = functionIr("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }", "f");
+	std::string text = functionIr("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, int); }", "f");
 	CHECK(contains(text, "= va_start"));
 	CHECK(contains(text, "const 4"));
 	CHECK(contains(text, "add"));

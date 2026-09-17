@@ -1,18 +1,18 @@
-// 17 - variadic functions: `...`, va_list, and the printf everyone writes once.
+// 17 - variadic functions: `...`, __builtin_va_list, and the printf everyone writes once.
 //
 // A parameter list ending in `...` accepts arguments the declaration does not describe. The fixed
 // parameters are passed the ordinary way; everything past them - the "tail" - always goes on the
-// stack, which is what lets the callee find it at all. A va_list is a cursor into that tail, and
-// va_arg reads one argument and steps forward.
+// stack, which is what lets the callee find it at all. A __builtin_va_list is a cursor into that
+// tail, and __builtin_va_arg reads one argument and steps forward.
 //
 // The rule this file exists to make concrete: the callee cannot know the types of its tail, so
 // SOMETHING has to tell it. Here, as in real C, it is the format string - and getting that wrong is
 // not a compile error, it is a wrong answer. `%d` against a float argument reads the float's bits as
 // an integer, and nothing will stop you.
 //
-// `va_list`, `va_start`, `va_arg`, `va_end` and `va_copy` are builtin: there is no <stdarg.h> to
-// include, because there is no system include directory to find one in. The full contract is in
-// docs/09-Variadic-Convention.md.
+// `__builtin_va_list`, `__builtin_va_start`, `__builtin_va_arg`, `__builtin_va_end` and
+// `__builtin_va_copy` are builtin: there is no <stdarg.h> to include, because there is no system
+// include directory to find one in. The full contract is in docs/09-Variadic-Convention.md.
 //
 //     ceresc examples/17_variadic.c --run
 
@@ -43,43 +43,43 @@ void putint(int value)
 // The simplest useful variadic function: one fixed parameter saying how many follow.
 int sum(int count, ...)
 {
-    va_list arguments;
+    __builtin_va_list arguments;
     int total = 0;
 
-    va_start(arguments, count);
+    __builtin_va_start(arguments, count);
     for (int i = 0; i < count; i++)
-        total = total + va_arg(arguments, int);
-    va_end(arguments);
+        total = total + __builtin_va_arg(arguments, int);
+    __builtin_va_end(arguments);
     return total;
 }
 
-// va_copy exists because a va_list can only be walked forwards. Copy it first and the same tail can
-// be read twice - here, once to find the largest and once to print them all.
+// __builtin_va_copy exists because a __builtin_va_list can only be walked forwards. Copy it first
+// and the same tail can be read twice - here, once to find the largest and once to print them all.
 int largest(int count, ...)
 {
-    va_list arguments;
-    va_list replay;
+    __builtin_va_list arguments;
+    __builtin_va_list replay;
     int best;
 
-    va_start(arguments, count);
-    va_copy(replay, arguments);
+    __builtin_va_start(arguments, count);
+    __builtin_va_copy(replay, arguments);
 
-    best = va_arg(arguments, int);
+    best = __builtin_va_arg(arguments, int);
     for (int i = 1; i < count; i++)
     {
-        int value = va_arg(arguments, int);
+        int value = __builtin_va_arg(arguments, int);
         if (value > best)
             best = value;
     }
-    va_end(arguments);
+    __builtin_va_end(arguments);
 
     putstr("of ");
     for (int i = 0; i < count; i++)
     {
-        putint(va_arg(replay, int));
+        putint(__builtin_va_arg(replay, int));
         put(' ');
     }
-    va_end(replay);
+    __builtin_va_end(replay);
     return best;
 }
 
@@ -89,19 +89,19 @@ int largest(int count, ...)
 // parameter list alone, which is why it stays correct without anything being passed at runtime.
 int after_spilled_fixed(int a, int b, int c, int d, int e, int f, ...)
 {
-    va_list arguments;
+    __builtin_va_list arguments;
     int total = a + b + c + d + e + f;
 
-    va_start(arguments, f);
+    __builtin_va_start(arguments, f);
     for (int i = 0; i < 3; i++)
-        total = total + va_arg(arguments, int);
-    va_end(arguments);
+        total = total + __builtin_va_arg(arguments, int);
+    __builtin_va_end(arguments);
     return total;
 }
 
-// A va_list is an ordinary pointer, so it can be handed on - which is how the real <stdio.h> gets
-// both printf and vprintf out of one implementation. This is the vprintf half.
-void vformat(char* format, va_list arguments)
+// A __builtin_va_list is an ordinary pointer, so it can be handed on - which is how the real
+// <stdio.h> gets both printf and vprintf out of one implementation. This is the vprintf half.
+void vformat(char* format, __builtin_va_list arguments)
 {
     for (int i = 0; format[i] != 0; i++)
     {
@@ -113,13 +113,13 @@ void vformat(char* format, va_list arguments)
 
         i++;
         if (format[i] == 'd')
-            putint(va_arg(arguments, int));
+            putint(__builtin_va_arg(arguments, int));
         else if (format[i] == 'c')
-            put((char)va_arg(arguments, int));
+            put((char)__builtin_va_arg(arguments, int));
         else if (format[i] == 's')
-            putstr(va_arg(arguments, char*));
+            putstr(__builtin_va_arg(arguments, char*));
         else if (format[i] == 'f')
-            putint((int)va_arg(arguments, float)); // truncated: there is no f64 here, and no %.2f
+            putint((int)__builtin_va_arg(arguments, float)); // truncated: no f64 here, no %.2f
         else
             put(format[i]);                        // "%%" prints one '%'
     }
@@ -128,10 +128,10 @@ void vformat(char* format, va_list arguments)
 // ...and this is the printf half, which is now four lines.
 void format(char* format_, ...)
 {
-    va_list arguments;
-    va_start(arguments, format_);
+    __builtin_va_list arguments;
+    __builtin_va_start(arguments, format_);
     vformat(format_, arguments);
-    va_end(arguments);
+    __builtin_va_end(arguments);
 }
 
 int main(void)

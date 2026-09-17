@@ -147,9 +147,9 @@ namespace ceresc::sema
 		Scope* _globalScope = nullptr;
 
 		const ast::Type* _currentFunctionReturnType = nullptr;
-		// The function whose body is being checked, or null at file scope. Only va_start needs it:
-		// it has to name that function's last fixed parameter, and only a variadic function has a
-		// tail for it to start on.
+		// The function whose body is being checked, or null at file scope. Only __builtin_va_start
+		// needs it: it has to name that function's last fixed parameter, and only a variadic
+		// function has a tail for it to start on.
 		const ast::FunctionDecl* _currentFunction = nullptr;
 		std::vector<std::string_view> _currentFunctionLabels; // collected once per function, see collectLabels()
 		u32 _loopDepth = 0;

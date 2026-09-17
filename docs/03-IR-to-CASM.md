@@ -158,8 +158,9 @@ that would otherwise have qualified for the frameless-leaf rule above.
 
 The tail is passed entirely in the outgoing stack area, never in `r0`–`r3` or `f0`–`f3`, which is
 what makes a statically known `[fp + N]` the right answer at all: the callee does not know the types
-of its tail, so it could not tell which bank an argument had been put in. `VaStart` produces that one
-address, and everything else — `va_arg`, `va_copy`, `va_end` — is ordinary pointer work on top of it.
+of its tail, so it could not tell which bank an argument had been put in. `VaStart` produces that
+one address, and everything else — `__builtin_va_arg`, `__builtin_va_copy`, `__builtin_va_end` — is
+ordinary pointer work on top of it.
 [09-Variadic-Convention.md](09-Variadic-Convention.md) is the full contract.
 
 ### Names and linkage

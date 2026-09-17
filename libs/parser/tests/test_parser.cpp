@@ -1052,23 +1052,23 @@ TEST(parser, a_variadic_parameter_list_records_only_its_fixed_parameters)
 
 TEST(parser, a_variadic_definition_and_the_builtins_parse)
 {
-	CHECK_EQ(printDecl("void trace(char* format, ...) { va_list ap; va_start(ap, format); va_end(ap); }"),
+	CHECK_EQ(printDecl("void trace(char* format, ...) { __builtin_va_list ap; __builtin_va_start(ap, format); __builtin_va_end(ap); }"),
 		"(func trace void (params (char* format) ...) (block"
 		" (decl-stmt (var ap char* <null>))"
-		" (expr-stmt (va_start ap format))"
-		" (expr-stmt (va_end ap))))");
+		" (expr-stmt (__builtin_va_start ap format))"
+		" (expr-stmt (__builtin_va_end ap))))");
 }
 
 TEST(parser, va_arg_takes_a_type_name_where_a_call_would_take_an_expression)
 {
-	CHECK_EQ(printExpr("va_arg(ap, int)"), "(va_arg ap int)");
+	CHECK_EQ(printExpr("__builtin_va_arg(ap, int)"), "(__builtin_va_arg ap int)");
 }
 
 TEST(parser, the_va_builtin_names_are_only_special_in_call_position)
 {
 	// Nothing reserves these names, so a program that uses one as an ordinary variable keeps
 	// working - only `name(` is treated as the builtin.
-	CHECK_EQ(printExpr("va_arg + 1"), "(+ va_arg 1)");
+	CHECK_EQ(printExpr("__builtin_va_arg + 1"), "(+ __builtin_va_arg 1)");
 }
 
 TEST(parser, an_ellipsis_needs_a_named_parameter_before_it)

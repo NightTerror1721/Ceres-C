@@ -335,10 +335,11 @@ namespace ceresc::parser
 		bool parseParamList(std::vector<Param>& outParams, bool& outIsVariadic);
 		Decl* parseTypedefDecl();
 
-		// The variadic builtins (va_start/va_arg/va_end/va_copy), recognized by name in call
-		// position rather than declared by a header - this compiler has no system include directory
-		// to find a <stdarg.h> in, and va_arg's second operand is a type-name, which no ordinary
-		// call could express. See docs/09-Variadic-Convention.md.
+		// The variadic builtins (__builtin_va_start, __builtin_va_arg, __builtin_va_end and
+		// __builtin_va_copy), recognized by name in call position rather than declared by a header -
+		// this compiler has no system include directory to find a <stdarg.h> in, and
+		// __builtin_va_arg's second operand is a type-name, which no ordinary call could express.
+		// See docs/09-Variadic-Convention.md.
 		static std::optional<ast::VaOp> vaBuiltinFor(std::string_view name) noexcept;
 		Expr* parseVaBuiltin(support::SourceLocation location, ast::VaOp op);
 

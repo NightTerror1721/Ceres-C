@@ -14,7 +14,7 @@ here is, by definition, a syntax error.
 | Qualifiers | `const`, `volatile` and `restrict`, on either side of the type-spec and after a `*`. |
 | Storage classes | `static`, `extern`, `auto`, `register` and the `inline` function specifier. |
 | Derived types | Pointers, fixed-size arrays (1D and 2D), `struct`, `union`, `enum`, `typedef`, and function types — so function pointers, including arrays of them and functions that return them. |
-| Functions | Calls (direct and through a pointer), recursion, up to any number of parameters, struct arguments and returns by value, and variadic `...` with `va_list`/`va_start`/`va_arg`/`va_end`/`va_copy`. |
+| Functions | Calls (direct and through a pointer), recursion, up to any number of parameters, struct arguments and returns by value, and variadic `...` with `__builtin_va_list`/`__builtin_va_start`/`__builtin_va_arg`/`__builtin_va_end`/`__builtin_va_copy`. |
 | Interrupts | `__interrupt` handlers and `__interrupt_vector`, plus `__builtin_sti`/`__builtin_cli`/`__builtin_halt` — see [10-Interrupts.md](10-Interrupts.md). |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
 | Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, `alignof`, explicit casts. |
@@ -118,7 +118,8 @@ integer-type-spec      ::= sign-spec? ("char" | "short" "int"? | "int" | "long" 
                          | sign-spec "int"?          // signed/unsigned alone means int
 type-spec              ::= "void" | "bool" | "float" | integer-type-spec
                          | struct-spec | union-spec | enum-spec | IDENTIFIER
-                                                     // IDENTIFIER: a typedef name, or `va_list`
+                                                     // IDENTIFIER: a typedef name, or
+                                                     // __builtin_va_list
 struct-spec            ::= "struct" IDENTIFIER ("{" member-decl+ "}")?
 union-spec             ::= "union" IDENTIFIER ("{" member-decl+ "}")?
 member-decl            ::= base-type declarator ";"   // not a function: a struct holds objects
@@ -175,13 +176,13 @@ primary-expr           ::= IDENTIFIER | INT_LITERAL | FLOAT_LITERAL | CHAR_LITER
                          | va-builtin | machine-builtin
 arg-list               ::= assignment-expr ("," assignment-expr)*
 
-// Syntax rather than calls: va_arg's second operand is a type-name, and all four write through
-// the va_list the caller named. Only recognized when directly followed by "(" - see
-// 09-Variadic-Convention.md.
-va-builtin             ::= "va_start" "(" assignment-expr "," IDENTIFIER ")"
-                         | "va_arg"   "(" assignment-expr "," type-name ")"
-                         | "va_end"   "(" assignment-expr ")"
-                         | "va_copy"  "(" assignment-expr "," assignment-expr ")"
+// Syntax rather than calls: __builtin_va_arg's second operand is a type-name, and all four
+// write through the __builtin_va_list the caller named. Only recognized when directly followed
+// by "(" - see 09-Variadic-Convention.md.
+va-builtin             ::= "__builtin_va_start" "(" assignment-expr "," IDENTIFIER ")"
+                         | "__builtin_va_arg"   "(" assignment-expr "," type-name ")"
+                         | "__builtin_va_end"   "(" assignment-expr ")"
+                         | "__builtin_va_copy"  "(" assignment-expr "," assignment-expr ")"
 
 // One machine instruction each, for the part of the machine no expression reaches -
 // see 10-Interrupts.md.

@@ -1042,7 +1042,7 @@ TEST(codegen, a_variadic_function_reads_its_tail_past_its_own_stack_parameters)
 {
 	// One fixed parameter, which arrives in r0 and takes no incoming stack word, so the tail
 	// starts at the first one: [fp + 8].
-	std::string casm = atO0("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }");
+	std::string casm = atO0("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, int); }");
 	CHECK(contains(casm, "la r"));
 	CHECK(contains(casm, ", [fp + 8]"));
 
@@ -1050,14 +1050,14 @@ TEST(codegen, a_variadic_function_reads_its_tail_past_its_own_stack_parameters)
 	// [fp + 8] and [fp + 12], so the tail can only begin at [fp + 16].
 	std::string spilled = atO0(
 		"int g(int a, int b, int c, int d, int e, int h, ...)"
-		"{ va_list ap; va_start(ap, h); return va_arg(ap, int); }");
+		"{ __builtin_va_list ap; __builtin_va_start(ap, h); return __builtin_va_arg(ap, int); }");
 	CHECK(contains(spilled, ", [fp + 16]"));
 }
 
 TEST(codegen, a_variadic_function_always_gets_a_frame)
 {
 	// Nothing else in this function needs one, but it cannot address [fp + N] without an `enter`.
-	std::string casm = atO2("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }");
+	std::string casm = atO2("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, int); }");
 	CHECK(contains(casm, "enter"));
 	CHECK(contains(casm, "leave"));
 }

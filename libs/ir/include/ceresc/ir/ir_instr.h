@@ -255,8 +255,9 @@ namespace ceresc::ir
 	// local slot. Codegen resolves it from the function's own signature (how many stack words its
 	// fixed parameters consumed), so the instruction carries no operand at all.
 	//
-	// Everything else va_list does is ordinary pointer work on the value this produces: va_arg is a
-	// Load plus an Add, va_copy is a Copy, va_end is nothing. Only this one step needs the back end.
+	// Everything else a __builtin_va_list does is ordinary pointer work on the value this produces:
+	// __builtin_va_arg is a Load plus an Add, __builtin_va_copy is a Copy, __builtin_va_end is
+	// nothing. Only this one step needs the back end.
 	struct IrVaStartPayload
 	{
 		IrValue result;

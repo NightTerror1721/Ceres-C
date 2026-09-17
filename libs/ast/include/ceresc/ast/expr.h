@@ -365,32 +365,33 @@ namespace ceresc::ast
 	// (sema, IrBuilder, the printer) has to switch over them together anyway.
 	enum class VaOp : u8
 	{
-		Start, // va_start(ap, last)  - `last` names the final fixed parameter; the result is void
-		Arg,   // va_arg(ap, T)       - reads the next argument and advances ap; the result is T
-		End,   // va_end(ap)          - the result is void, and there is nothing to undo
-		Copy   // va_copy(dst, src)   - the result is void
+		Start, // __builtin_va_start(ap, last) - `last` names the final fixed parameter; result void
+		Arg,   // __builtin_va_arg(ap, T)      - reads the next argument and advances ap; result T
+		End,   // __builtin_va_end(ap)         - the result is void, and there is nothing to undo
+		Copy   // __builtin_va_copy(dst, src)  - the result is void
 	};
 
 	constexpr std::string_view vaOpName(VaOp op) noexcept
 	{
 		switch (op)
 		{
-			case VaOp::Start: return "va_start";
-			case VaOp::Arg:   return "va_arg";
-			case VaOp::End:   return "va_end";
-			case VaOp::Copy:  return "va_copy";
+			case VaOp::Start: return "__builtin_va_start";
+			case VaOp::Arg:   return "__builtin_va_arg";
+			case VaOp::End:   return "__builtin_va_end";
+			case VaOp::Copy:  return "__builtin_va_copy";
 		}
 		return "";
 	}
 
-	// One of the four variadic-access builtins. They cannot be ordinary functions - va_arg takes a
-	// TYPE as its second operand, and all four have to modify the va_list the caller named rather
-	// than a copy of it - so the parser recognizes their names directly and builds this instead of a
-	// CallExpr, the same way it treats sizeof/alignof as syntax rather than as calls.
+	// One of the four variadic-access builtins. They cannot be ordinary functions -
+	// __builtin_va_arg takes a TYPE as its second operand, and all four have to modify the
+	// __builtin_va_list the caller named rather than a copy of it - so the parser recognizes their
+	// names directly and builds this instead of a CallExpr, the same way it treats sizeof/alignof
+	// as syntax rather than as calls.
 	//
-	// `list` is the va_list operand, always an lvalue (C requires it, and va_start/va_arg/va_copy
-	// all write through it). `second` is the other operand where there is one: the last fixed
-	// parameter's NameExpr for Start, the source va_list for Copy, null for Arg and End - Arg carries
+	// `list` is the __builtin_va_list operand, always an lvalue (C requires it, and Start, Arg and
+	// Copy all write through it). `second` is the other operand where there is one: the last fixed
+	// parameter's NameExpr for Start, the source list for Copy, null for Arg and End - Arg carries
 	// a type in `argumentType` instead. See docs/09-Variadic-Convention.md.
 	class VaExpr final : public Expr
 	{

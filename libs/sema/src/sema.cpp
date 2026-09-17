@@ -365,8 +365,8 @@ namespace ceresc::sema
 
 		// A struct or union argument travels as a hidden pointer to a caller-owned copy
 		// (ir_builder.h's struct convention). Nothing in that convention tells the callee how big
-		// the copy is, and va_arg() has no way to ask - so rather than pass one and let the callee
-		// read whatever it guesses, this is refused outright.
+		// the copy is, and __builtin_va_arg() has no way to ask - so rather than pass one and let
+		// the callee read whatever it guesses, this is refused outright.
 		if (argType->isAggregate())
 		{
 			_diagnostics.error(arg->location(),
@@ -380,9 +380,9 @@ namespace ceresc::sema
 		// The default argument promotions are not applied by rewriting the type here: a narrow
 		// value is ALREADY in its promoted representation by the time it becomes a value at all
 		// (ir_instr.h's IrUnOp::Narrow invariant), so the word the caller stores is exactly the
-		// `int` a matching va_arg(ap, int) reads back. `float` is the one place this deviates from
-		// C on purpose: C promotes it to `double`, the machine has no f64 at all, so a float
-		// travels as the f32 it already is - see docs/09-Variadic-Convention.md.
+		// `int` a matching __builtin_va_arg(ap, int) reads back. `float` is the one place this
+		// deviates from C on purpose: C promotes it to `double`, the machine has no f64 at all, so
+		// a float travels as the f32 it already is - see docs/09-Variadic-Convention.md.
 	}
 
 	// The type a FunctionDecl declares: `int f(int)` has type `int(int)`. Built on demand rather
@@ -1092,14 +1092,14 @@ namespace ceresc::sema
 	{
 		using ast::VaOp;
 
-		// Every form writes through its first operand except va_end, and C requires an lvalue there
-		// in all four cases anyway.
+		// Every form writes through its first operand except __builtin_va_end, and C requires an
+		// lvalue there in all four cases anyway.
 		const Type* listType = checkExpr(node.list());
-		const Type* vaListType = Type::makePointer(_arena, &Type::Char); // what `va_list` is - see the parser
+		const Type* vaListType = Type::makePointer(_arena, &Type::Char); // what `__builtin_va_list` is - see the parser
 		if (!isLValue(node.list()))
-			_diagnostics.error(node.list()->location(), "the first argument to '{}' must be an lvalue of type 'va_list'", ast::vaOpName(node.op()));
+			_diagnostics.error(node.list()->location(), "the first argument to '{}' must be an lvalue of type '__builtin_va_list'", ast::vaOpName(node.op()));
 		else if (!listType || !(*listType == *vaListType))
-			_diagnostics.error(node.list()->location(), "the first argument to '{}' must have type 'va_list', not '{}'",
+			_diagnostics.error(node.list()->location(), "the first argument to '{}' must have type '__builtin_va_list', not '{}'",
 				ast::vaOpName(node.op()), typeName(listType));
 
 		const Type* resultType = &Type::Void;
@@ -1110,20 +1110,20 @@ namespace ceresc::sema
 				std::span<const Param> params = _currentFunction ? _currentFunction->params() : std::span<const Param>{};
 				if (!_currentFunction || !_currentFunction->isVariadic())
 				{
-					_diagnostics.error(node.location(), "'va_start' is only allowed inside a function declared with '...'");
+					_diagnostics.error(node.location(), "'__builtin_va_start' is only allowed inside a function declared with '...'");
 					break;
 				}
 				// The second operand must name the LAST fixed parameter. That is not a formality
 				// here: the tail begins at the first incoming stack word the fixed parameters did
 				// not take (docs/09-Variadic-Convention.md), so naming any other parameter would
-				// describe a different starting point than the one va_start actually produces.
+				// describe a different starting point than the one __builtin_va_start actually produces.
 				auto* name = dynamic_cast<ast::NameExpr*>(node.second());
 				if (!name)
 					_diagnostics.error(node.second() ? node.second()->location() : node.location(),
-						"the second argument to 'va_start' must name the last named parameter");
+						"the second argument to '__builtin_va_start' must name the last named parameter");
 				else if (params.empty() || name->name() != params.back().name)
 					_diagnostics.error(name->location(),
-						"'va_start' must name the last named parameter ('{}'), not '{}'",
+						"'__builtin_va_start' must name the last named parameter ('{}'), not '{}'",
 						params.empty() ? std::string_view("<none>") : params.back().name, name->name());
 				if (node.second())
 					checkExpr(node.second());
@@ -1141,11 +1141,11 @@ namespace ceresc::sema
 				if (!argumentType)
 					break;
 				if (!isScalarType(argumentType) || argumentType->isVoid())
-					_diagnostics.error(node.location(), "'va_arg' cannot read type '{}': only scalar types are passed through '...'",
+					_diagnostics.error(node.location(), "'__builtin_va_arg' cannot read type '{}': only scalar types are passed through '...'",
 						typeName(argumentType));
 				else if (argumentType->sizeInBytes() != 4)
 					_diagnostics.error(node.location(),
-						"'va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
+						"'__builtin_va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
 						typeName(argumentType));
 				else
 					resultType = argumentType;
@@ -1156,7 +1156,7 @@ namespace ceresc::sema
 			{
 				const Type* sourceType = node.second() ? checkExpr(node.second()) : nullptr;
 				if (node.second() && (!sourceType || !(*sourceType == *vaListType)))
-					_diagnostics.error(node.second()->location(), "the second argument to 'va_copy' must have type 'va_list', not '{}'",
+					_diagnostics.error(node.second()->location(), "the second argument to '__builtin_va_copy' must have type '__builtin_va_list', not '{}'",
 						typeName(sourceType));
 				break;
 			}

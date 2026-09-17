@@ -1379,8 +1379,9 @@ namespace ceresc::ir
 		using ast::VaOp;
 		support::SourceLocation loc = node.location();
 
-		// A va_list is an ordinary `char*` lvalue (see the parser), so its ADDRESS is what every
-		// form below reads and writes through - the cursor has to survive the call that advanced it.
+		// A __builtin_va_list is an ordinary `char*` lvalue (see the parser), so its ADDRESS is what
+		// every form below reads and writes through - the cursor has to survive the call that
+		// advanced it.
 		IrValue listAddr = lowerAddress(node.list());
 
 		switch (node.op())
@@ -1421,7 +1422,7 @@ namespace ceresc::ir
 			}
 
 			case VaOp::End:
-				// Nothing to release: a va_list owns no resource, it is a cursor into a frame that
+				// Nothing to release: a __builtin_va_list owns no resource, it is a cursor into a frame that
 				// the caller is going to reclaim anyway.
 				_lastValue = IrValue{};
 				return;

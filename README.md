@@ -91,7 +91,7 @@ Headers work: `#include`, `#define` for object-like, function-like and variadic 
 `#error`/`#warning` — see [docs/08-Preprocessor.md](docs/08-Preprocessor.md).
 
 `union` and `alignof` are supported, and so are the `volatile`, `restrict` and `register`
-qualifiers. Variadic functions work too, with `va_list` and the four builtins — see
+qualifiers. Variadic functions work too, with `__builtin_va_list` and the four builtins — see
 [docs/09-Variadic-Convention.md](docs/09-Variadic-Convention.md).
 
 A function can answer a VM interrupt: `__interrupt void f(void)` declares the handler and
@@ -118,7 +118,7 @@ leaves out.
 | [Known limitations](docs/06-Known-Limitations.md) | What this version leaves out, and why. |
 | [C and CASM together](docs/07-CASM-Interop.md) | One program out of C and hand-written assembly. |
 | [The preprocessor](docs/08-Preprocessor.md) | `#include`, `#define`, headers, conditionals. |
-| [Variadic functions](docs/09-Variadic-Convention.md) | `...`, `va_list`, and where a variadic argument is passed. |
+| [Variadic functions](docs/09-Variadic-Convention.md) | `...`, `__builtin_va_list`, and where a variadic argument is passed. |
 | [Interrupts](docs/10-Interrupts.md) | `__interrupt` handlers, vector binding, and waiting for one. |
 
 ## Examples

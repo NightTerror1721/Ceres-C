@@ -1249,7 +1249,7 @@ TEST(sema, the_fixed_parameters_of_a_variadic_call_are_still_type_checked)
 TEST(sema, an_aggregate_cannot_travel_through_an_ellipsis)
 {
 	// It would be passed as a hidden pointer to a caller-owned copy, and nothing tells the callee
-	// how big that copy is - so va_arg could never read it back.
+	// how big that copy is - so __builtin_va_arg could never read it back.
 	CheckOutcome outcome = checkSource(
 		"struct S { int x; int y; };"
 		"int f(int a, ...);"
@@ -1260,39 +1260,39 @@ TEST(sema, an_aggregate_cannot_travel_through_an_ellipsis)
 
 TEST(sema, va_start_is_only_allowed_in_a_variadic_function_and_must_name_the_last_parameter)
 {
-	CHECK(checkSource("int f(int a, ...) { va_list ap; va_start(ap, a); va_end(ap); return 0; }").ok);
+	CHECK(checkSource("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); __builtin_va_end(ap); return 0; }").ok);
 
-	CheckOutcome notVariadic = checkSource("int f(int a) { va_list ap; va_start(ap, a); return 0; }");
+	CheckOutcome notVariadic = checkSource("int f(int a) { __builtin_va_list ap; __builtin_va_start(ap, a); return 0; }");
 	CHECK(!notVariadic.ok);
 	CHECK(containsMessage(notVariadic, "only allowed inside a function declared with"));
 
-	CheckOutcome wrongParam = checkSource("int f(int a, int b, ...) { va_list ap; va_start(ap, a); return 0; }");
+	CheckOutcome wrongParam = checkSource("int f(int a, int b, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return 0; }");
 	CHECK(!wrongParam.ok);
 	CHECK(containsMessage(wrongParam, "must name the last named parameter"));
 }
 
 TEST(sema, va_arg_reads_only_a_four_byte_scalar)
 {
-	CHECK(checkSource("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }").ok);
+	CHECK(checkSource("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, int); }").ok);
 
 	// A `char` was never passed: the default argument promotions mean an `int` was, so reading one
 	// back as `char` would decode a word that does not hold what was asked for.
-	CheckOutcome narrow = checkSource("int f(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, char); }");
+	CheckOutcome narrow = checkSource("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, char); }");
 	CHECK(!narrow.ok);
 	CHECK(containsMessage(narrow, "promoted to a 4-byte type"));
 
 	CheckOutcome aggregate = checkSource(
 		"struct S { int x; int y; };"
-		"int f(int a, ...) { va_list ap; va_start(ap, a); struct S s; s = va_arg(ap, struct S); return s.x; }");
+		"int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); struct S s; s = __builtin_va_arg(ap, struct S); return s.x; }");
 	CHECK(!aggregate.ok);
 	CHECK(containsMessage(aggregate, "only scalar types are passed through"));
 }
 
 TEST(sema, a_va_list_operand_must_actually_be_a_va_list)
 {
-	CheckOutcome outcome = checkSource("int f(int a, ...) { int ap; va_start(ap, a); return 0; }");
+	CheckOutcome outcome = checkSource("int f(int a, ...) { int ap; __builtin_va_start(ap, a); return 0; }");
 	CHECK(!outcome.ok);
-	CHECK(containsMessage(outcome, "must have type 'va_list'"));
+	CHECK(containsMessage(outcome, "must have type '__builtin_va_list'"));
 }
 
 TEST(sema, a_prototype_and_a_definition_must_agree_about_the_ellipsis)
@@ -1305,10 +1305,10 @@ TEST(sema, a_prototype_and_a_definition_must_agree_about_the_ellipsis)
 TEST(sema, a_va_list_may_be_passed_to_another_function)
 {
 	// The vprintf pattern: the worker is not itself variadic, it just consumes a cursor it was
-	// handed - which works because va_list is an ordinary pointer.
+	// handed - which works because __builtin_va_list is an ordinary pointer.
 	CHECK(checkSource(
-		"int worker(va_list ap) { return va_arg(ap, int); }"
-		"int f(int a, ...) { va_list ap; va_start(ap, a); int r = worker(ap); va_end(ap); return r; }").ok);
+		"int worker(__builtin_va_list ap) { return __builtin_va_arg(ap, int); }"
+		"int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); int r = worker(ap); __builtin_va_end(ap); return r; }").ok);
 }
 
 TEST(sema, register_is_only_allowed_on_a_variable_inside_a_block)

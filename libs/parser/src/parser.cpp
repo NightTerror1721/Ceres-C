@@ -10,21 +10,21 @@ namespace ceresc::parser
 	Parser::Parser(lexer::Lexer& lexer, support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept :
 		_lexer(lexer), _arena(arena), _diagnostics(diagnostics), _current(lexer.next()), _next(lexer.next())
 	{
-		// `va_list` is a builtin type name rather than something a header declares: this compiler
-		// has no system include directory to find a <stdarg.h> in, so the type and the four
-		// operations on it are known to the compiler itself (docs/09-Variadic-Convention.md).
+		// `__builtin_va_list` is a builtin type name rather than something a header declares: this
+		// compiler has no system include directory to find a <stdarg.h> in, so the type and the
+		// four operations on it are known to the compiler itself (docs/09-Variadic-Convention.md).
 		// It is a `char*` because that is exactly what it holds - a cursor into the caller's frame,
-		// advanced a byte count at a time by va_arg - and spelling it as an ordinary pointer means
-		// assignment, copying and parameter passing all already work on it.
-		_typedefTable.emplace("va_list", Type::makePointer(_arena, &Type::Char));
+		// advanced a byte count at a time by __builtin_va_arg - and spelling it as an ordinary
+		// pointer means assignment, copying and parameter passing all already work on it.
+		_typedefTable.emplace("__builtin_va_list", Type::makePointer(_arena, &Type::Char));
 	}
 
 	std::optional<ast::VaOp> Parser::vaBuiltinFor(std::string_view name) noexcept
 	{
-		if (name == "va_start") return ast::VaOp::Start;
-		if (name == "va_arg")   return ast::VaOp::Arg;
-		if (name == "va_end")   return ast::VaOp::End;
-		if (name == "va_copy")  return ast::VaOp::Copy;
+		if (name == "__builtin_va_start") return ast::VaOp::Start;
+		if (name == "__builtin_va_arg")   return ast::VaOp::Arg;
+		if (name == "__builtin_va_end")   return ast::VaOp::End;
+		if (name == "__builtin_va_copy")  return ast::VaOp::Copy;
 		return std::nullopt;
 	}
 
@@ -70,7 +70,7 @@ namespace ceresc::parser
 			if (op == ast::VaOp::Arg)
 			{
 				// The one operand in this grammar that is a type rather than an expression, which
-				// is the whole reason va_arg cannot be an ordinary function.
+				// is the whole reason __builtin_va_arg cannot be an ordinary function.
 				argumentType = parseTypeName();
 				if (!argumentType)
 					return nullptr;
@@ -480,10 +480,10 @@ namespace ceresc::parser
 			case TokenKind::Identifier:
 			{
 				std::string_view name = _current.lexeme();
-				// The variadic builtins are syntax, not calls - va_arg's second operand is a type,
-				// and all four write through the va_list the caller named. Only treated as such in
-				// call position, so a program that uses one of these names for something else of
-				// its own keeps working.
+				// The variadic builtins are syntax, not calls - __builtin_va_arg's second operand
+				// is a type, and all four write through the __builtin_va_list the caller named.
+				// Only treated as such in call position, so a program that uses one of these
+				// names for something else of its own keeps working.
 				if (std::optional<ast::VaOp> op = vaBuiltinFor(name); op && _next.is(TokenKind::LParen))
 					return parseVaBuiltin(location, *op);
 				// The machine builtins are the same idea one step lower: a name in call position that
@@ -1583,9 +1583,9 @@ namespace ceresc::parser
 		if (check(TokenKind::Ellipsis))
 		{
 			// `f(...)` with no fixed parameter before it. Real C89 rejects it too, and here the
-			// reason is not merely conformance: va_start() names the last fixed parameter to find
-			// where the variadic arguments begin (docs/09-Variadic-Convention.md), so a list with
-			// no fixed parameter has nothing such a call could ever name.
+			// reason is not merely conformance: __builtin_va_start() names the last fixed parameter
+			// to find where the variadic arguments begin (docs/09-Variadic-Convention.md), so a
+			// list with no fixed parameter has nothing such a call could ever name.
 			_diagnostics.error(_current.location(), "'...' requires at least one named parameter before it");
 			return false;
 		}
