@@ -102,6 +102,39 @@ arguments are not stringified or pasted, and an argument must fit on the same ph
 ceresc main.c -D DEBUG -D WIDTH=320
 ```
 
+## Predefined macros
+
+These are defined before the first line of the file is read, so nothing declares them and nothing
+includes them:
+
+| Macro | Expands to |
+| --- | --- |
+| `__LINE__` | The line it is written on, in the file it is written in — not in the expanded text. |
+| `__FILE__` | That file's name, as a string literal. A header gets its own name, not the includer's. |
+| `__DATE__` | The date this compilation started, `"Mmm dd yyyy"`, day space-padded. |
+| `__TIME__` | The time this compilation started, `"hh:mm:ss"`. |
+| `__STDC__` | `1`. |
+| `__STDC_HOSTED__` | `0`. |
+| `__CERESC__` | `1` — this compiler, as opposed to any other. |
+| `__BASE_FILE__` | The `.c` the translation unit started from, as a string literal. |
+| `__INCLUDE_LEVEL__` | `0` in that `.c`, `1` in a header it includes, `2` one deeper, and so on. |
+| `__COUNTER__` | `0`, then `1`, then `2` — a number nobody else has had, per expansion. |
+
+Every one of them is an ordinary entry in the macro table apart from how its replacement is
+produced, so `#ifdef __FILE__` is true, `defined(__COUNTER__)` is `1`, and `#undef __LINE__` takes
+it away — which, as in C, is then your own problem.
+
+`__DATE__` and `__TIME__` read the clock once per run, not once per use, because C requires every
+expansion of either within one translation unit to agree.
+
+`__STDC_HOSTED__` is `0` and means it: there is no `<stdio.h>`, no `<stdlib.h>`, nothing to be
+hosted by. `__STDC_VERSION__` is deliberately **not** defined — C89 does not define it either, and
+naming a later revision would claim conformance to one this compiler does not implement.
+[02-Grammar.md](02-Grammar.md) is the contract instead.
+
+A `-D` on the command line goes in on top of these, so `-D __STDC_HOSTED__=1` is a decision a
+program gets to make rather than an error.
+
 ## Seeing what it produced
 
 ```sh
@@ -145,5 +178,15 @@ simple.
 
 ## What is missing, and why
 
-**`__FILE__`, `__LINE__` and friends.** They would be easy to add on top of the line map, and
-nothing needs them yet.
+**Adjacent string literals are not concatenated.** `"a" "b"` is a syntax error, so the usual
+`__DATE__ " " __TIME__` has to be written as three separate strings — or as a `char[]` filled
+element by element. This is a parser gap rather than a preprocessor one, and it is the one thing
+that keeps `__DATE__` and `__TIME__` from being as useful here as they are elsewhere.
+
+**`__STDC_VERSION__`, `__func__` and `__TIMESTAMP__`.** The first would claim a conformance level
+this subset does not have. `__func__` is not a macro at all — it is a predefined *identifier*, which
+means a per-function object the compiler synthesizes, not anything the preprocessor could produce.
+`__TIMESTAMP__` needs the file's modification time, which nothing here has asked for.
+
+**Stringification (`#`) and token pasting (`##`).** Still the two that would make `__COUNTER__` pull
+its full weight: without `##` there is no way to paste it onto a name.

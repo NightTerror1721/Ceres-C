@@ -29,7 +29,8 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 | --- | --- |
 | `double` (f64) | The VM has no double-precision support at all. Supporting it would mean software emulation, not a type mapping. It is also why a variadic `float` is not promoted to `double` — see [09-Variadic-Convention.md](09-Variadic-Convention.md). |
 | Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
-| Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef` and macros with arguments. See [08-Preprocessor.md](08-Preprocessor.md). |
+| Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef`, macros with arguments and the predefined `__LINE__`/`__FILE__` family. See [08-Preprocessor.md](08-Preprocessor.md). |
+| Adjacent string literal concatenation | `"a" "b"` is two expressions to the parser, not one string. See [08-Preprocessor.md](08-Preprocessor.md) for what it costs `__DATE__`. |
 | `malloc`/`free` | There is no allocator to call. |
 
 `double` still exists as a token kind in the lexer on purpose: hitting it produces "not implemented

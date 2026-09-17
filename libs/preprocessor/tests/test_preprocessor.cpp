@@ -405,3 +405,114 @@ TEST(preprocessor, a_line_after_an_include_maps_back_to_its_own_file_and_line)
 	CHECK_EQ(afterwards.line, u32(2));
 	CHECK(header.sourceId != afterwards.sourceId); // and they are two different files
 }
+
+// ---- predefined macros -------------------------------------------------------------------------
+
+TEST(preprocessor, line_and_file_name_the_original_file_rather_than_the_expansion)
+{
+	TempDirectory dir;
+	dir.write("two.h", "int a = __LINE__;\nint b = __LINE__;\n");
+	std::string path = dir.write("main.c", "#include \"two.h\"\nint c = __LINE__;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int a = 1;"));
+	CHECK(contains(result.text, "int b = 2;"));
+	// Line 2 of main.c, even though it is line 3 of the expanded buffer - which is the whole point.
+	CHECK(contains(result.text, "int c = 2;"));
+}
+
+TEST(preprocessor, file_is_the_file_the_line_was_written_in_not_the_one_that_included_it)
+{
+	TempDirectory dir;
+	dir.write("named.h", "const char* inHeader = __FILE__;\nint level = __INCLUDE_LEVEL__;\n");
+	std::string path = dir.write("main.c",
+		"#include \"named.h\"\nconst char* inMain = __FILE__;\nconst char* base = __BASE_FILE__;\nint depth = __INCLUDE_LEVEL__;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "named.h\""));
+	CHECK(contains(result.text, "main.c\""));
+	CHECK(contains(result.text, "int level = 1;"));
+	CHECK(contains(result.text, "int depth = 0;"));
+	// __BASE_FILE__ is the .c whatever file asks, which is what makes it different from __FILE__.
+	CHECK(countOf(result.text, "main.c\"") == 2);
+}
+
+TEST(preprocessor, date_and_time_are_string_literals_of_the_right_shape)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "const char* d = __DATE__;\nconst char* t = __TIME__;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+
+	// "Mmm dd yyyy" and "hh:mm:ss" - the shapes C names, checked by length and punctuation rather
+	// than by content, which changes every second this suite runs.
+	usize date = result.text.find("const char* d = \"");
+	CHECK(date != std::string::npos);
+	CHECK_EQ(result.text.substr(date + 17, 11).size(), usize(11));
+	CHECK_EQ(result.text[date + 17 + 11], '"');
+
+	usize time = result.text.find("const char* t = \"");
+	CHECK(time != std::string::npos);
+	CHECK_EQ(result.text[time + 17 + 2], ':');
+	CHECK_EQ(result.text[time + 17 + 5], ':');
+	CHECK_EQ(result.text[time + 17 + 8], '"');
+}
+
+TEST(preprocessor, counter_hands_out_a_new_number_every_time)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "int a = __COUNTER__;\nint b = __COUNTER__;\nint c = __COUNTER__;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int a = 0;"));
+	CHECK(contains(result.text, "int b = 1;"));
+	CHECK(contains(result.text, "int c = 2;"));
+}
+
+TEST(preprocessor, the_predefined_macros_are_ordinary_entries_in_the_macro_table)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#if __STDC__ == 1 && __STDC_HOSTED__ == 0 && defined(__CERESC__)\n"
+		"int conforming;\n"
+		"#endif\n"
+		"#ifdef __LINE__\n"
+		"int hasLine;\n"
+		"#endif\n"
+		"#undef __FILE__\n"
+		"#ifndef __FILE__\n"
+		"int fileIsGone;\n"
+		"#endif\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int conforming;"));
+	CHECK(contains(result.text, "int hasLine;"));
+	CHECK(contains(result.text, "int fileIsGone;"));
+}
+
+TEST(preprocessor, a_command_line_define_goes_in_on_top_of_a_predefined_macro)
+{
+	// Not an error, and not ignored: naming one on the command line is the program's own decision.
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "int hosted = __STDC_HOSTED__;\n");
+
+	Result result = expand(path, {}, { { "__STDC_HOSTED__", "1" } });
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int hosted = 1;"));
+}
+
+TEST(preprocessor, a_predefined_macro_is_not_substituted_inside_a_string_or_a_comment)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "const char* s = \"__LINE__\"; // __FILE__\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "\"__LINE__\""));
+	CHECK(contains(result.text, "// __FILE__"));
+}

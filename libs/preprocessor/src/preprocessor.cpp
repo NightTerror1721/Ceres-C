@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <ctime>
 #include <filesystem>
+#include <format>
 #include <fstream>
 
 namespace ceresc::preprocessor
@@ -37,6 +40,34 @@ namespace ceresc::preprocessor
 		bool isDirective(std::string_view directive, std::string_view name) noexcept
 		{
 			return directive.starts_with(name) && (directive.size() == name.size() || !isIdentifierChar(directive[name.size()]));
+		}
+		// `text` as a C string literal. __FILE__ and friends expand to one, and a Windows path is
+		// full of backslashes - which the lexer would read as escapes if they were passed through.
+		std::string asStringLiteral(std::string_view text)
+		{
+			std::string result = "\"";
+			for (char c : text)
+			{
+				if (c == '\\' || c == '"')
+					result += '\\';
+				result += c;
+			}
+			result += '"';
+			return result;
+		}
+		// The local calendar time this run started, which is what __DATE__ and __TIME__ have to
+		// agree about: C requires every expansion of either within one translation unit to give the
+		// same answer, so the clock is read once rather than per use.
+		std::tm localNow()
+		{
+			std::time_t now = std::time(nullptr);
+			std::tm parts{};
+#if defined(_WIN32)
+			localtime_s(&parts, &now);
+#else
+			localtime_r(&now, &parts);
+#endif
+			return parts;
 		}
 
 		class IfExpressionParser
@@ -92,22 +123,102 @@ namespace ceresc::preprocessor
 		if (_entries.empty() || location.line == 0 || location.line > _entries.size()) return location;
 		const LineMapEntry& entry = _entries[location.line - 1]; return { entry.sourceId, entry.sourceLine, location.column, location.offset };
 	}
+	void Preprocessor::definePredefinedMacros()
+	{
+		auto object = [&](std::string name, std::string replacement)
+		{
+			Macro macro;
+			macro.replacement = std::move(replacement);
+			_macros[std::move(name)] = std::move(macro);
+		};
+		auto builtin = [&](std::string name, Builtin kind)
+		{
+			Macro macro;
+			macro.builtin = kind;
+			_macros[std::move(name)] = std::move(macro);
+		};
+
+		// __STDC__ says "this is an ANSI C compiler, not K&R", which is the question a program
+		// testing it is actually asking. __STDC_VERSION__ is deliberately NOT defined: C89 does not
+		// define it either, and naming a later revision would claim conformance to one this
+		// compiler does not implement - docs/02-Grammar.md is the contract instead.
+		object("__STDC__", "1");
+		// Freestanding, and not in the borderline sense: there is no <stdio.h>, no <stdlib.h> and no
+		// standard library at all for an implementation to be hosted by.
+		object("__STDC_HOSTED__", "0");
+		builtin("__LINE__", Builtin::Line);
+		builtin("__FILE__", Builtin::File);
+
+		// One clock reading for the whole run, because C requires every expansion of __DATE__ or
+		// __TIME__ within a translation unit to agree - a file that takes a second to preprocess
+		// must not straddle a tick.
+		std::tm now = localNow();
+		static constexpr std::string_view kMonths[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+			"Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+		std::string_view month = (now.tm_mon >= 0 && now.tm_mon < 12) ? kMonths[now.tm_mon] : "Jan";
+		// "Mmm dd yyyy", with the day SPACE-padded rather than zero-padded - asctime's format, which
+		// is the one C names.
+		object("__DATE__", asStringLiteral(std::format("{} {:2} {}", month, now.tm_mday, now.tm_year + 1900)));
+		object("__TIME__", asStringLiteral(std::format("{:02}:{:02}:{:02}", now.tm_hour, now.tm_min, now.tm_sec)));
+
+		// Past the standard, and each one here because something in this project wants it rather
+		// than to copy a list: which compiler this is, which .c the unit started from, how deep in
+		// headers a line sits, and a fresh number per expansion for building a name that cannot
+		// collide with another the same macro made.
+		object("__CERESC__", "1");
+		builtin("__BASE_FILE__", Builtin::BaseFile);
+		builtin("__INCLUDE_LEVEL__", Builtin::IncludeLevel);
+		builtin("__COUNTER__", Builtin::Counter);
+	}
+	std::string Preprocessor::expandBuiltin(Builtin builtin, support::SourceLocation location)
+	{
+		switch (builtin)
+		{
+			case Builtin::Line:
+				// `location` is a position in the ORIGINAL file (expandFile builds it from the line
+				// it is reading), not in the expanded text - so this needs no help from the line map.
+				return std::to_string(location.line);
+			case Builtin::File:
+			{
+				const auto* buffer = _sourceManager.getBuffer(location.sourceId);
+				return asStringLiteral(buffer ? buffer->name() : std::string_view(_basePath));
+			}
+			case Builtin::BaseFile:
+				return asStringLiteral(_basePath);
+			case Builtin::IncludeLevel:
+				return std::to_string(_includeLevel);
+			case Builtin::Counter:
+				return std::to_string(_counter++);
+			case Builtin::None:
+				break;
+		}
+		return {};
+	}
 	PreprocessedSource Preprocessor::run(const std::string& path)
 	{
 		_macros.clear();
+		_basePath = path;
+		_includeLevel = 0;
+		_counter = 0;
+		definePredefinedMacros();
+		// Assignment rather than emplace: the command line's own -D goes in on TOP of a predefined
+		// macro of the same name, so `-D __STDC_HOSTED__=1` is a decision a program gets to make.
 		for (const auto& [name, replacement] : _predefines)
 		{
 			Macro macro;
 			macro.replacement = replacement;
-			_macros.emplace(name, std::move(macro));
+			_macros[name] = std::move(macro);
 		}
 		_pragmaOnce.clear(); PreprocessedSource result; std::vector<std::string> stack; result.ok = expandFile(path, result, stack); return result;
 	}
 	std::string Preprocessor::resolveInclude(std::string_view target, bool angled, const std::string& includingFile) const
 	{
 		std::error_code error;
-		if (!angled) { fs::path relative = fs::path(includingFile).parent_path() / std::string(target); if (fs::is_regular_file(relative, error)) return relative.string(); }
-		for (const std::string& directory : _includeDirectories) { fs::path candidate = fs::path(directory) / std::string(target); if (fs::is_regular_file(candidate, error)) return candidate.string(); }
+		// generic_string() rather than string(): the resolved path becomes the header's NAME in the
+		// SourceManager, which is what a diagnostic about it prints and what __FILE__ expands to -
+		// and a path joined natively on Windows mixes both separators in one name.
+		if (!angled) { fs::path relative = fs::path(includingFile).parent_path() / std::string(target); if (fs::is_regular_file(relative, error)) return relative.generic_string(); }
+		for (const std::string& directory : _includeDirectories) { fs::path candidate = fs::path(directory) / std::string(target); if (fs::is_regular_file(candidate, error)) return candidate.generic_string(); }
 		if (!angled && fs::is_regular_file(fs::path(std::string(target)), error))
 			return std::string(target);
 		return {};
@@ -161,6 +272,7 @@ namespace ceresc::preprocessor
 				usize start = i; while (i < current.size() && isIdentifierChar(current[i])) ++i; std::string name(current.substr(start, i - start));
 				auto found = _macros.find(name); if (found == _macros.end()) { next += name; continue; }
 				const Macro& macro = found->second;
+				if (macro.builtin != Builtin::None) { next += expandBuiltin(macro.builtin, location); changed = true; continue; }
 				if (!macro.functionLike) { next += macro.replacement; changed = true; continue; }
 				usize call = i; while (call < current.size() && (current[call] == ' ' || current[call] == '\t')) ++call;
 				if (call == current.size() || current[call] != '(') { next += name; continue; }
@@ -191,7 +303,8 @@ namespace ceresc::preprocessor
 		if (includeStack.size() >= kMaxIncludeDepth) { _diagnostics.error({}, "#include nested more than {} deep, starting at '{}'", kMaxIncludeDepth, path); return false; }
 		std::ifstream input(path, std::ios::binary); if (!input) { _diagnostics.error({}, "cannot open '{}'", path); return false; }
 		std::string contents{ std::istreambuf_iterator<char>(input), {} }; support::SourceId sourceId = _sourceManager.registerBuffer(path, std::move(contents)); const auto* buffer = _sourceManager.getBuffer(sourceId); if (!buffer) return false;
-		includeStack.push_back(canonical); bool ok = true, inBlockComment = false; std::vector<Conditional> conditionals; u32 sourceLine = 0; std::string_view text = buffer->buffer();
+		includeStack.push_back(canonical); u32 previousIncludeLevel = _includeLevel; _includeLevel = static_cast<u32>(includeStack.size()) - 1;
+		bool ok = true, inBlockComment = false; std::vector<Conditional> conditionals; u32 sourceLine = 0; std::string_view text = buffer->buffer();
 		auto active = [&] { return conditionals.empty() || conditionals.back().active; };
 		auto blank = [&] { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size() + 1), sourceId, sourceLine); out.text += '\n'; };
 		for (usize position = 0; position < text.size();)
@@ -219,6 +332,6 @@ namespace ceresc::preprocessor
 			if (active()) { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size()+1), sourceId, sourceLine); out.text += expandMacros(line, here, inBlockComment); out.text += '\n'; } else blank();
 		}
 		for (const Conditional& c : conditionals) { _diagnostics.error(c.location, "unterminated conditional directive"); ok = false; }
-		includeStack.pop_back(); return ok;
+		includeStack.pop_back(); _includeLevel = previousIncludeLevel; return ok;
 	}
 }

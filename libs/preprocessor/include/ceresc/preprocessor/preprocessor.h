@@ -25,6 +25,11 @@
 //   #error/#warning diagnostics from the source.
 //   #pragma once        This file contributes nothing if it is included again.
 //
+// Plus the macros the language predefines rather than the program: __LINE__, __FILE__, __DATE__,
+// __TIME__, __STDC__, __STDC_HOSTED__ and a few extensions beside them - see
+// definePredefinedMacros(), and docs/08-Preprocessor.md for the whole table and what each one is
+// worth here.
+//
 // `#` stringification, `##` token pasting and `#line` are intentionally not implemented. Every
 // other directive is reported by name rather than skipped in silence.
 //
@@ -87,12 +92,27 @@ namespace ceresc::preprocessor
 	class Preprocessor
 	{
 	public:
+		// A predefined macro whose replacement depends on WHERE it is expanded, so it cannot be a
+		// string handed out once at startup the way __DATE__ and __STDC__ are. Every one of these
+		// is an ordinary entry in the macro table apart from that - `#ifdef __LINE__` is true and
+		// `#undef __FILE__` takes it away, exactly as in C, where doing either is your own problem.
+		enum class Builtin : u8
+		{
+			None,
+			Line,         // __LINE__          the line of the ORIGINAL file, not of the expansion
+			File,         // __FILE__          the file that line was written in, as a string literal
+			BaseFile,     // __BASE_FILE__     the .c the translation unit started from
+			IncludeLevel, // __INCLUDE_LEVEL__ 0 in that .c, 1 in a header it includes, and so on
+			Counter       // __COUNTER__       0, then 1, then 2 - a fresh number at every expansion
+		};
+
 		struct Macro
 		{
 			std::string replacement;
 			std::vector<std::string> parameters;
 			bool functionLike = false;
 			bool variadic = false;
+			Builtin builtin = Builtin::None;
 		};
 
 		struct Conditional
@@ -144,6 +164,13 @@ namespace ceresc::preprocessor
 		std::string expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment);
 		bool evaluateIfExpression(std::string_view expression, support::SourceLocation location, i64& value);
 
+		// Seeds the macro table with everything the language predefines, before the command line's
+		// own -D macros go in on top - so `-D __STDC_HOSTED__=1` is a program's own decision to
+		// make rather than an error. Called once per run().
+		void definePredefinedMacros();
+		// What a Builtin expands to at `location`. Not const: __COUNTER__ hands out a new number.
+		std::string expandBuiltin(Builtin builtin, support::SourceLocation location);
+
 	private:
 		support::SourceManager& _sourceManager;
 		support::DiagnosticEngine& _diagnostics;
@@ -151,5 +178,8 @@ namespace ceresc::preprocessor
 		std::unordered_map<std::string, std::string> _predefines;
 		std::unordered_map<std::string, Macro> _macros;
 		std::vector<std::string> _pragmaOnce; // canonical paths that asked not to be included again
+		std::string _basePath;                // what run() was given - __BASE_FILE__
+		u32 _includeLevel = 0;                // __INCLUDE_LEVEL__, maintained by expandFile()
+		u32 _counter = 0;                     // __COUNTER__'s next value
 	};
 }

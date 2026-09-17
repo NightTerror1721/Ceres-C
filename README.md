@@ -88,7 +88,8 @@ distinct operators.
 
 Headers work: `#include`, `#define` for object-like, function-like and variadic macros, `#undef`,
 `#pragma once`, conditional compilation (`#if`/`#elif`/`#else`/`#ifdef`/`#ifndef`/`defined`) and
-`#error`/`#warning` — see [docs/08-Preprocessor.md](docs/08-Preprocessor.md).
+`#error`/`#warning`, with `__LINE__`, `__FILE__`, `__DATE__`, `__TIME__` and the rest predefined —
+see [docs/08-Preprocessor.md](docs/08-Preprocessor.md).
 
 `union` and `alignof` are supported, and so are the `volatile`, `restrict` and `register`
 qualifiers. Variadic functions work too, with `__builtin_va_list` and the four builtins — see
