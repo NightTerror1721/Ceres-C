@@ -49,6 +49,10 @@ namespace ceresc::sema
 		support::SourceLocation location = {};
 
 		bool isGlobal = false;					 // true when declared directly in the translation unit's own scope
+		// Declared `register`. A Variable carries the answer on its own VarDecl, but a Parameter has
+		// no Decl node of its own - ast::Param is a plain field of the FunctionDecl - so the one
+		// rule the keyword enforces (the address may not be taken) needs it recorded here.
+		bool isRegister = false;
 		ast::VarDecl* varDecl = nullptr;		 // set for Variable
 		ast::FunctionDecl* funcDecl = nullptr;	 // set for Function
 		i64 enumConstantValue = 0;				 // set for EnumConstant

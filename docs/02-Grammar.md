@@ -87,7 +87,9 @@ external-decl          ::= declaration | typedef-decl | interrupt-vector-decl
 declaration            ::= decl-specifier* base-type declarator (("=" initializer)? ";" | compound-stmt)
 param-list             ::= param ("," param)* ("," "...")?   // "..." only after a named parameter
                          | "void"                            // an explicitly empty list
-param                  ::= decl-specifier* base-type declarator   // the name may be omitted
+param                  ::= "register"? base-type declarator   // the name may be omitted;
+                                                              // "register" is the only
+                                                              // storage class a parameter takes
 
 // C's declarator, recursive. The suffixes bind tighter than the leading "*", which is what
 // makes `int *f(void)` a function returning int* and `int (*f)(void)` a pointer to a

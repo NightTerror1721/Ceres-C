@@ -1895,7 +1895,7 @@ namespace ceresc::ir
 				// object they were accesses TO.
 				paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u,
 					param.type && param.type->isFloat(), param.type && param.type->isVolatile(),
-					false, param.type && param.type->isSigned() });
+					param.isRegister, param.type && param.type->isSigned() });
 		}
 		function.reserveParamSlots(paramSlots);
 		// Slot reuse never crosses a function boundary: a slot freed by a scope in the previous

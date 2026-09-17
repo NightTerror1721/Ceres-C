@@ -120,8 +120,11 @@ used for automatic local variables — at file scope or on a function it is reje
 in C, taking the address of one is rejected — and so is `register` on an *array*, because using an
 array at all takes its address.
 
-Unlike C, `register` is not accepted on a *parameter*: no storage-class specifier is, which is a
-general limitation of the parameter grammar rather than anything about this keyword.
+A *parameter* may carry it too, as in C, and it means the same thing there: this parameter is
+asked for a register ahead of anything that did not ask, and its address may not be taken. It is the
+only storage-class specifier a parameter accepts — `static`, `extern` and `auto` are all rejected,
+because a parameter's storage is the calling convention's to decide. It is part of the declaration
+and not of the type, so a prototype and the definition need not agree about it, exactly as in C.
 
 None of the three changes which values a correct program computes — `volatile` only removes
 optimizations, and `restrict` and `register` are checked contracts that the back end is free to

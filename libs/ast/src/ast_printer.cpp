@@ -587,6 +587,8 @@ namespace ceresc::ast
 		for (const Param& param : node.params())
 		{
 			_output += " (";
+			if (param.isRegister)
+				_output += "register ";
 			appendTypeName(param.type);
 			_output += ' ';
 			_output += param.name;

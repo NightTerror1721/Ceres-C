@@ -1355,6 +1355,21 @@ TEST(sema, register_is_rejected_on_an_array)
 	CHECK(checkSource("int f(void) { register int x = 1; return x; }").ok);
 }
 
+TEST(sema, a_register_parameter_has_no_address_either)
+{
+	// The keyword's one promise does not depend on where the object came from. A parameter has no
+	// Decl node of its own, so the answer travels on its Symbol (symbol_table.h).
+	CheckOutcome outcome = checkSource("int f(register int a) { int* p = &a; return *p; }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "address of register"));
+
+	CHECK(checkSource("int f(register int a) { return a + 1; }").ok);
+
+	// An array parameter is a pointer - the decay happens in the declaration, so there is no array
+	// left for  to be wrong about.
+	CHECK(checkSource("int f(register int a[4]) { return a[0]; }").ok);
+}
+
 // ---- interrupt handlers ------------------------------------------------------------------------
 
 TEST(sema, an_interrupt_handler_has_no_caller_and_the_rules_all_follow_from_that)

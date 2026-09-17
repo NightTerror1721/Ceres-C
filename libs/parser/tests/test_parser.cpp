@@ -1089,6 +1089,25 @@ TEST(parser, register_is_not_allowed_on_a_function)
 	CHECK(unitHasErrors("register int f(void);"));
 }
 
+TEST(parser, register_is_the_one_storage_class_a_parameter_may_carry)
+{
+	CHECK_EQ(printUnit("int f(register int a, int b);"),
+		"(unit (func f int (params (register int a) (int b)) <null>))");
+
+	// It is part of the DECLARATION, not of the type, so a prototype and the definition need not
+	// agree about it - the same as in C.
+	CHECK(!unitHasErrors("int f(int a); int f(register int a) { return a; }"));
+
+	// Everything else answers a question a parameter does not get to ask: its storage is the
+	// calling convention's to decide.
+	CHECK(unitHasErrors("int f(static int a);"));
+	CHECK(unitHasErrors("int f(extern int a);"));
+	CHECK(unitHasErrors("int f(auto int a);"));
+
+	// And  still means nothing in a type name, where there is no object at all.
+	CHECK(unitHasErrors("int f(void) { return sizeof(register int); }"));
+}
+
 TEST(parser, the_machine_builtins_are_syntax_rather_than_calls)
 {
 	CHECK_EQ(printUnit("int main(void) { __builtin_sti(); return 0; }"),

@@ -1154,6 +1154,31 @@ TEST(codegen, register_wins_the_pool_over_a_local_that_did_not_ask)
 	CHECK(countOf(asked, "str [") < countOf(did_not, "str ["));
 }
 
+TEST(codegen, a_register_parameter_competes_for_the_pool_like_any_other_register_local)
+{
+	// A parameter is a local slot like any other, so `register` on one has to reach the same queue.
+	// Loop-carried locals for the same reason as the test above, and enough of them asking to drain
+	// a call-free function's pool - which is the only situation in which the ORDER can show.
+	std::string_view program =
+		"int f(int n, {}REGISTER{}int p)"
+		"{"
+		"    register int a = n; register int b = n; register int c = n; register int d = n;"
+		"    register int e = n; register int g = n; register int h = n;"
+		"    int k = 0; int s = 0;"
+		"    while (k < n) { s = s + a + b + c + d + e + g + h + p; k = k + 1; }"
+		"    return s;"
+		"}";
+	std::string asked(program);
+	asked.replace(asked.find("{}REGISTER{}"), 12, "register ");
+	std::string did_not(program);
+	did_not.replace(did_not.find("{}REGISTER{}"), 12, "");
+
+	// The parameter that asked keeps the register it arrived in, so the prologue has nothing at all
+	// to emit for it; the one that did not is spilled to a field on the way past.
+	CHECK(contains(atO2(did_not), "], r1 //"));
+	CHECK(!contains(atO2(asked), "], r1 //"));
+}
+
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
 {
 	// The keyword reorders preferences and nothing else: a function that calls something cannot

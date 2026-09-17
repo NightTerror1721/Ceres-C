@@ -812,7 +812,9 @@ namespace ceresc::sema
 				else if (auto* name = dynamic_cast<ast::NameExpr*>(node.operand()))
 				{
 					Symbol* symbol = currentScope().lookup(name->name());
-					if (symbol && symbol->varDecl && symbol->varDecl->storageClass() == ast::StorageClass::Register)
+					bool isRegister = symbol && ((symbol->varDecl && symbol->varDecl->storageClass() == ast::StorageClass::Register)
+						|| symbol->isRegister);
+					if (isRegister)
 						_diagnostics.error(node.location(), "cannot take the address of register variable '{}'", name->name());
 				}
 				resultType = Type::makePointer(_arena, operandType ? operandType : errorRecoveryType());
@@ -1633,6 +1635,7 @@ namespace ceresc::sema
 			paramSymbol.name = param.name;
 			paramSymbol.type = param.type;
 			paramSymbol.location = param.location;
+			paramSymbol.isRegister = param.isRegister;
 			declareSymbol(paramSymbol);
 		}
 

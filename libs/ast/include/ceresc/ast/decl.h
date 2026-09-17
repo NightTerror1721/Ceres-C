@@ -265,6 +265,12 @@ namespace ceresc::ast
 		const Type* type = nullptr;
 		std::string_view name;
 		support::SourceLocation location;
+		// The program wrote `register` on this parameter. C allows exactly one storage-class
+		// specifier inside a parameter list and this is it, for the same reason it allows it on a
+		// local: it is a request, and the one promise it carries is that the address is never
+		// taken. Not part of the parameter's TYPE, so two declarations of the same function need
+		// not agree about it - which is why it does not travel in ast::Type's own param list.
+		bool isRegister = false;
 	};
 	static_assert(TriviallyDestructible<Param>, "Param must be trivially destructible (Arena-allocated)");
 

@@ -641,7 +641,7 @@ namespace ceresc::parser
 	}
 
 	const Type* Parser::parseBaseType(bool leadingConst, bool leadingVolatile, bool& outLeadingRestrict,
-		support::SourceLocation& outSpecifierLocation)
+		support::SourceLocation& outSpecifierLocation, bool* outRegisterRequest)
 	{
 		// The type-SPEC and its qualifiers, and nothing past them: every `*` belongs to the
 		// declarator that follows, not to this, because which side of a star a qualifier sits on is
@@ -650,10 +650,21 @@ namespace ceresc::parser
 		// A qualifier may sit on either side of the type-spec - `const int` and `int const` are the
 		// same type in C, and so are `volatile int` and `int volatile`.
 		DeclSpecifiers leading = parseDeclSpecifiers();
-		if (leading.storageClass != ast::StorageClass::None || leading.isInline || leading.isInterrupt)
+		if (outRegisterRequest && leading.storageClass == ast::StorageClass::Register)
 		{
-			_diagnostics.error(leading.location,
-				"a storage-class specifier is not allowed here - it belongs to a declaration, not to a type name");
+			// The one legal case - see parser.h. Everything else about the specifier run is
+			// checked below exactly as it is anywhere else.
+			*outRegisterRequest = true;
+		}
+		else if (leading.storageClass != ast::StorageClass::None || leading.isInline || leading.isInterrupt)
+		{
+			if (outRegisterRequest)
+				_diagnostics.error(leading.location,
+					"'{}' is not allowed on a parameter - 'register' is the only storage-class specifier a parameter may carry",
+					ast::storageClassName(leading.storageClass));
+			else
+				_diagnostics.error(leading.location,
+					"a storage-class specifier is not allowed here - it belongs to a declaration, not to a type name");
 		}
 		outLeadingRestrict = leading.isRestrict;
 		outSpecifierLocation = leading.location;
@@ -1609,8 +1620,9 @@ namespace ceresc::parser
 
 			SourceLocation location = _current.location();
 			bool leadingRestrict = false;
+			bool isRegister = false;
 			SourceLocation specifierLocation{};
-			const Type* base = parseBaseType(false, false, leadingRestrict, specifierLocation);
+			const Type* base = parseBaseType(false, false, leadingRestrict, specifierLocation, &isRegister);
 			if (!base)
 				return false;
 
@@ -1636,7 +1648,7 @@ namespace ceresc::parser
 					type = Type::withRestrict(_arena, type);
 			}
 
-			outParams.push_back(Param{ type, declarator.name, location });
+			outParams.push_back(Param{ type, declarator.name, location, isRegister });
 		} while (match(TokenKind::Comma));
 
 		return true;

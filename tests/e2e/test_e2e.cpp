@@ -785,6 +785,21 @@ TEST(e2e, a_narrow_local_kept_in_a_register_reads_back_exactly_as_a_frame_field_
 		"7");
 }
 
+TEST(e2e, a_register_parameter_computes_the_same_answer_as_an_ordinary_one)
+{
+	// `register` is a request about placement and nothing else, so the two spellings of the same
+	// function have to agree - at every level, including -O0, where the keyword says nothing at all
+	// because register allocation itself is off.
+	runsTheSameAtEveryLevel("register_parameter",
+		"int scale(register int a, register int b) { register int t = a * b; return t + a; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + scale(2, 3) - 2;" // 2*3 + 2 = 8, minus 2 = 6
+		"    return 0;"
+		"}",
+		"6");
+}
+
 // ---- storage classes and const ------------------------------------------------------------------
 
 TEST(e2e, a_static_local_keeps_its_value_between_calls)

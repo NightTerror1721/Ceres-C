@@ -221,8 +221,13 @@ namespace ceresc::parser
 
 		// The type-spec and its qualifiers alone - everything before the declarator. Split out
 		// because a `*` belongs to the declarator, not to the type it derives from.
+		//
+		// `outRegisterRequest`, when non-null, marks the one position in the grammar where C does
+		// allow a storage-class specifier inside what is otherwise a type: a parameter declaration,
+		// where `register` and nothing else is legal. It is null everywhere else, which is what
+		// keeps `static` in a cast or a `sizeof` an error.
 		const Type* parseBaseType(bool leadingConst, bool leadingVolatile, bool& outLeadingRestrict,
-			support::SourceLocation& outSpecifierLocation);
+			support::SourceLocation& outSpecifierLocation, bool* outRegisterRequest = nullptr);
 
 		// ---- declarators ------------------------------------------------------------------------
 		//
