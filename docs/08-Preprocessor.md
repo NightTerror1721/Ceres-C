@@ -126,7 +126,16 @@ produced, so `#ifdef __FILE__` is true, `defined(__COUNTER__)` is `1`, and `#und
 it away — which, as in C, is then your own problem.
 
 `__DATE__` and `__TIME__` read the clock once per run, not once per use, because C requires every
-expansion of either within one translation unit to agree.
+expansion of either within one translation unit to agree. Both expand to a string literal, and
+adjacent string literals are joined into one, so the usual spelling works:
+
+```c
+void report(void)
+{
+    const char* stamp = __DATE__ " " __TIME__;   /* "Sep 17 2026 17:22:22" */
+    putstr(stamp);
+}
+```
 
 `__STDC_HOSTED__` is `0` and means it: there is no `<stdio.h>`, no `<stdlib.h>`, nothing to be
 hosted by. `__STDC_VERSION__` is deliberately **not** defined — C89 does not define it either, and
@@ -190,11 +199,6 @@ simple.
 | Any other directive | `'#xxx' is not supported` |
 
 ## What is missing, and why
-
-**Adjacent string literals are not concatenated.** `"a" "b"` is a syntax error, so the usual
-`__DATE__ " " __TIME__` has to be written as three separate strings — or as a `char[]` filled
-element by element. This is a parser gap rather than a preprocessor one, and it is the one thing
-that keeps `__DATE__` and `__TIME__` from being as useful here as they are elsewhere.
 
 **`__STDC_VERSION__`, `__func__` and `__TIMESTAMP__`.** The first would claim a conformance level
 this subset does not have. `__func__` is not a macro at all — it is a predefined *identifier*, which

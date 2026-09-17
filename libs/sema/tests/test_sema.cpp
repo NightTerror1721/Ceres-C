@@ -1355,6 +1355,18 @@ TEST(sema, register_is_rejected_on_an_array)
 	CHECK(checkSource("int f(void) { register int x = 1; return x; }").ok);
 }
 
+TEST(sema, adjacent_string_literals_are_one_object_of_one_size)
+{
+	// Joined by the lexer, before sema ever sees them - so the size, the array it fits and the
+	// array it does not are all decided on the joined text.
+	CHECK(checkSource("int f(void) { return (int)sizeof(\"a\" \"bc\"); }").ok);
+	CHECK(checkSource("char s[4] = \"ab\" \"c\";").ok);
+
+	CheckOutcome tooLong = checkSource("char s[3] = \"ab\" \"cd\";");
+	CHECK(!tooLong.ok);
+	CHECK(containsMessage(tooLong, "5 byte(s)"));
+}
+
 TEST(sema, a_register_parameter_has_no_address_either)
 {
 	// The keyword's one promise does not depend on where the object came from. A parameter has no

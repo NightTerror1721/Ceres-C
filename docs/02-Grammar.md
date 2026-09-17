@@ -18,7 +18,7 @@ here is, by definition, a syntax error.
 | Interrupts | `__interrupt` handlers and `__interrupt_vector`, plus `__builtin_sti`/`__builtin_cli`/`__builtin_halt` — see [10-Interrupts.md](10-Interrupts.md). |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
 | Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, `alignof`, explicit casts. |
-| Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. |
+| Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. Adjacent string literals are joined into one, as in C. |
 
 `.` and `->` are genuinely different operators, not two spellings of one: the parser records which
 token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->x` needs a pointer.
@@ -30,7 +30,6 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 | 64-bit width — `long long`, `double`, `long double` | The spellings are accepted; the WIDTH is not. Ceres has no 64-bit register and no f64 register, so each one caps to its 32-bit counterpart with a warning. See [06-Known-Limitations.md](06-Known-Limitations.md). |
 | Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
 | Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef`, macros with arguments and the predefined `__LINE__`/`__FILE__` family. See [08-Preprocessor.md](08-Preprocessor.md). |
-| Adjacent string literal concatenation | `"a" "b"` is two expressions to the parser, not one string. See [08-Preprocessor.md](08-Preprocessor.md) for what it costs `__DATE__`. |
 | `malloc`/`free` | There is no allocator to call. |
 
 A capped type is a *spelling*, not a type of its own: `long long` and `long` are the same type
@@ -177,6 +176,8 @@ postfix-op             ::= "[" expression "]" | "(" arg-list? ")"
 primary-expr           ::= IDENTIFIER | INT_LITERAL | FLOAT_LITERAL | CHAR_LITERAL
                          | STRING_LITERAL | BOOL_LITERAL | "(" expression ")"
                          | va-builtin | machine-builtin
+                                                     // STRING_LITERAL is a RUN of one or more
+                                                     // adjacent literals, joined by the lexer
 arg-list               ::= assignment-expr ("," assignment-expr)*
 
 // Syntax rather than calls: __builtin_va_arg's second operand is a type-name, and all four

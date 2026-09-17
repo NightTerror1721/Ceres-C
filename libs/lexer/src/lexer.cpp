@@ -286,36 +286,61 @@ namespace ceresc::lexer
 	{
 		SourceLocation startLoc = currentLocation();
 		uoffset startPos = _cursor.position();
-		_cursor.advance(); // opening "
 
 		std::string decoded;
-		bool terminated = false;
+		uoffset endPos = startPos;
 
-		while (!_cursor.isAtEnd() && _cursor.peek() != '\n')
+		// C joins adjacent string literals into one, before the grammar ever sees them - which is
+		// what makes `"a" "b"` a single 3-byte object rather than a syntax error, and what lets a
+		// long string be written over several lines. One token comes out of the whole run, so the
+		// parser, sizeof and the .rodata entry all see exactly what the program meant to write.
+		for (;;)
 		{
-			char c = _cursor.peek();
-			if (c == '"')
+			SourceLocation pieceLoc = currentLocation();
+			_cursor.advance(); // opening "
+			bool terminated = false;
+
+			while (!_cursor.isAtEnd() && _cursor.peek() != '\n')
 			{
-				_cursor.advance();
-				terminated = true;
+				char c = _cursor.peek();
+				if (c == '"')
+				{
+					_cursor.advance();
+					terminated = true;
+					break;
+				}
+
+				if (c == '\\')
+				{
+					_cursor.advance();
+					decoded.push_back(scanEscapeSequence());
+				}
+				else
+				{
+					decoded.push_back(_cursor.advance());
+				}
+			}
+
+			// Before the trivia below, so the token's lexeme is the literals and whatever sits
+			// between them, and not the blank line that happens to follow the last one.
+			endPos = _cursor.position();
+
+			if (!terminated)
+			{
+				_diagnostics.error(DiagId::UnterminatedStringLiteral, pieceLoc, "unterminated string literal");
 				break;
 			}
 
-			if (c == '\\')
-			{
-				_cursor.advance();
-				decoded.push_back(scanEscapeSequence());
-			}
-			else
-			{
-				decoded.push_back(_cursor.advance());
-			}
+			// Whitespace, newlines and comments may all sit between two pieces. Skipping them is
+			// not undone when what follows turns out not to be another literal: next() would have
+			// skipped exactly the same run on its next call, and putting the cursor back would mean
+			// skipTrivia() reporting an unterminated block comment here and then again there.
+			skipTrivia();
+			if (_cursor.isAtEnd() || _cursor.peek() != '"')
+				break;
 		}
 
-		if (!terminated)
-			_diagnostics.error(DiagId::UnterminatedStringLiteral, startLoc, "unterminated string literal");
-
-		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
+		std::string_view lexeme = _cursor.buffer().substr(startPos, endPos - startPos);
 		support::PooledString interned = _stringPool.intern(decoded);
 		if (!interned)
 			_diagnostics.error(DiagId::StringPoolExhausted, startLoc, "out of memory interning string literal");

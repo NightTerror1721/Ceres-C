@@ -391,6 +391,9 @@ namespace ceresc::lexer
 		Token scanNumber();
 		Token scanRadixInteger(SourceLocation startLoc, uoffset startPos, int base);
 		Token scanCharLiteral();
+		// One token for a whole run of adjacent string literals - C's translation phase 6, which
+		// happens before anything parses. `"a" "b"` and a literal split over three lines are each
+		// one Token::LiteralString whose value is the pieces joined.
 		Token scanStringLiteral();
 		Token scanOperatorOrPunctuation();
 

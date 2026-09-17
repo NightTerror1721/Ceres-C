@@ -822,6 +822,24 @@ TEST(e2e, a_capped_wide_type_computes_as_the_32_bit_type_it_really_is)
 		"4");
 }
 
+TEST(e2e, adjacent_string_literals_print_as_one_string)
+{
+	// C joins them before the grammar sees them, which is what makes a long string writable over
+	// several lines and what `__DATE__ " " __TIME__` relies on.
+	runsTheSameAtEveryLevel("string_concatenation",
+		"void put(char c) { char* t = (char*)0xFF000004; *t = c; }"
+		"void putstr(char* s) { for (int i = 0; s[i] != 0; i++) put(s[i]); }"
+		"int main() {"
+		"    char joined[6] = \"ab\" \"cd\";"
+		"    putstr(\"he\""
+		"           \"llo\");"          /* over two lines, as a long string is written */
+		"    putstr(joined);"
+		"    put((char)(48 + (int)sizeof(\"a\" \"bc\")));" // 4
+		"    return 0;"
+		"}",
+		"helloabcd4");
+}
+
 // ---- storage classes and const ------------------------------------------------------------------
 
 TEST(e2e, a_static_local_keeps_its_value_between_calls)

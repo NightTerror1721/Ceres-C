@@ -312,6 +312,77 @@ TEST(lexer, unterminated_string_literal_reports_a_diagnostic_and_keeps_what_it_s
 	CHECK(diagnostics.hasErrors());
 }
 
+TEST(lexer, adjacent_string_literals_are_one_token)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"a\" \"b\" \"c\"", testSourceId(), diagnostics, pool);
+
+	Token t = lexer.next();
+	CHECK(t.isLiteralString());
+	CHECK_EQ(t.stringValue().view(), "abc");
+	CHECK_EQ(t.lexeme(), "\"a\" \"b\" \"c\""); // the whole run, as written
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_run_of_string_literals_may_cross_lines_and_comments)
+{
+	// What the joining is FOR: a long string written over several lines, and the
+	// `__DATE__ " " __TIME__` that expands to three of them side by side.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"one \"\n   /* between */ \"two\"", testSourceId(), diagnostics, pool);
+
+	Token t = lexer.next();
+	CHECK(t.isLiteralString());
+	CHECK_EQ(t.stringValue().view(), "one two");
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, only_another_string_literal_joins_and_the_next_token_is_untouched)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"a\" , \"b\"", testSourceId(), diagnostics, pool);
+
+	Token first = lexer.next();
+	CHECK(first.isLiteralString());
+	CHECK_EQ(first.stringValue().view(), "a");   // the comma stopped the run
+	CHECK(lexer.next().is(TokenKind::Comma));
+	Token second = lexer.next();
+	CHECK(second.isLiteralString());
+	CHECK_EQ(second.stringValue().view(), "b");
+	CHECK(lexer.next().isEndOfFile());
+}
+
+TEST(lexer, escapes_are_decoded_per_piece_and_a_piece_may_be_empty)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"a\\n\" \"\" \"b\"", testSourceId(), diagnostics, pool);
+
+	Token t = lexer.next();
+	CHECK(t.isLiteralString());
+	CHECK_EQ(t.stringValue().view(), "a\nb");
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, an_unterminated_piece_in_a_run_is_reported_once_and_ends_the_run)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"a\" \"b", testSourceId(), diagnostics, pool);
+
+	Token t = lexer.next();
+	CHECK(t.isLiteralString());
+	CHECK_EQ(t.stringValue().view(), "ab");
+	CHECK_EQ(diagnostics.diagnosticCount(), usize{ 1 });
+	CHECK(diagnostics.diagnostics()[0].id == support::DiagnosticId::UnterminatedStringLiteral);
+	// And the report points at the piece that was wrong, not at the one that was fine.
+	CHECK_EQ(diagnostics.diagnostics()[0].location.column, u32{ 5 });
+}
+
 // ---- operators: maximal munch --------------------------------------------------------------------
 
 TEST(lexer, all_operators_and_punctuation_are_recognized)
