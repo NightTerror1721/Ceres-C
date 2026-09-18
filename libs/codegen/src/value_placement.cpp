@@ -295,13 +295,11 @@ namespace ceresc::codegen
 			// parameter, which arrives from outside this function - codegen's prologue narrows
 			// one on the way into its register, exactly as the store into a field used to.
 			// The callee-saved pools, reached only by a call-making function. An interrupt handler
-			// is left out on purpose: its own save/restore is the interrupt prologue/epilogue's job
-			// (codegen.h), so handing one a callee-saved register here would save nothing and pay
-			// the pushm/popm twice.
-			std::vector<u32> calleeFreeInt = function.isInterruptHandler()
-				? std::vector<u32>{} : allocatableCalleeSavedIntRegisters();
-			std::vector<u32> calleeFreeFloat = function.isInterruptHandler()
-				? std::vector<u32>{} : allocatableCalleeSavedFloatRegisters();
+			// takes them too - its own save/restore is the interrupt prologue/epilogue's job, whose
+			// mask already covers the whole allocatable set (codegen.h), so no extra pushm/popm is
+			// emitted around the body for it.
+			std::vector<u32> calleeFreeInt = allocatableCalleeSavedIntRegisters();
+			std::vector<u32> calleeFreeFloat = allocatableCalleeSavedFloatRegisters();
 
 			auto assignLocals = [&](bool requested)
 			{

@@ -66,20 +66,22 @@ saved a register before the jump.
 The caller/callee split in
 [CeresASM's calling convention](https://github.com/Krampus1721/CeresASM/blob/main/docs/24-Calling-Convention.md)
 does not apply here. `r0`–`r7`, `r12` and `f0`–`f7` are called caller-saved because a *caller* saved
-them; a handler has none, so it saves them itself:
+them; a handler has none, so it saves them itself. It also saves `r8`–`r11` and `f8`–`f15`, the
+callee-saved half, because value placement hands those out too and the interrupted code never
+agreed to lose one either:
 
 ```casm
 global term_isr:
-    pushm 0x10FF          // r0-r7 and r12, in one instruction
+    pushm 0x1FFF           // r0-r12, in one instruction
+    fpushm 0xFFFF          // f0-f15, in one - only when the body reaches the float bank
     ...
-    popm  0x10FF
+    fpopm 0xFFFF
+    popm  0x1FFF
     iret
 ```
 
-`r8`–`r11` and `f8`–`f15` need nothing, for the opposite reason: Ceres-C never allocates them
-(`libs/codegen/value_placement.cpp`), so a generated body cannot touch one. The float bank has no
-mask instruction and costs eight pushes, so it is saved only when the handler can reach it at all —
-which any call makes true, whatever the body itself does.
+The float bank goes back in one `fpushm`/`fpopm` pair, but still only when the handler can reach it
+at all — which any call makes true, whatever the body itself does.
 
 Calling a handler is an error rather than a warning. `iret` pops the flags and PC the dispatcher
 pushed; reached through `call` it would pop the return address as a PC and whatever sat below it as
@@ -150,11 +152,11 @@ interrupt 17: term_isr
 
 // term_isr - echo.c:3
 global term_isr:
-    pushm 0x10FF          // echo.c:3
+    pushm 0x1FFF          // echo.c:3
 .L0:
     la r3, -16777208      // echo.c:5
     ...
-    popm 0x10FF           // echo.c:3
+    popm 0x1FFF           // echo.c:3
     iret                  // echo.c:3
 ```
 

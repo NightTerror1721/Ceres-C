@@ -1162,14 +1162,11 @@ namespace ceresc::codegen
 		// stack it does not own (05-Instruction-Set.md).
 		_emitter.instr(std::format("pushm 0x{:04X}", kInterruptSaveMask), comment);
 
-		// The float bank has no mask instruction, so it costs one push per register - worth paying
-		// only when the handler can reach the bank at all.
+		// The float bank goes back in one `fpushm` as well - worth paying only when the handler can
+		// reach the bank at all.
 		_interruptSavesFloats = usesFloatBank(function);
 		if (_interruptSavesFloats)
-		{
-			for (u32 i = 0; i < kInterruptSavedFloatCount; ++i)
-				_emitter.instr(std::format("push f{}", i), comment);
-		}
+			_emitter.instr(std::format("fpushm 0x{:04X}", kInterruptSavedFloatMask), comment);
 	}
 
 	void CodeGen::emitInterruptEpilogue(std::string_view comment)
@@ -1177,10 +1174,7 @@ namespace ceresc::codegen
 		// Exactly the prologue reversed: the floats came off a stack that grows down, so the last
 		// one pushed is the first one back.
 		if (_interruptSavesFloats)
-		{
-			for (u32 i = kInterruptSavedFloatCount; i > 0; --i)
-				_emitter.instr(std::format("pop f{}", i - 1), comment);
-		}
+			_emitter.instr(std::format("fpopm 0x{:04X}", kInterruptSavedFloatMask), comment);
 		_emitter.instr(std::format("popm 0x{:04X}", kInterruptSaveMask), comment);
 	}
 

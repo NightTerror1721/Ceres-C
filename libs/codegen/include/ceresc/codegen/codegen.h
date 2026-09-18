@@ -368,21 +368,22 @@ namespace ceresc::codegen
 		//
 		// The caller/callee split of 24-Calling-Convention.md does not help here. r0-r7, r12 and
 		// f0-f7 are caller-saved because a CALLER saved them; a handler has no caller, so it saves
-		// them itself. r8-r11 and f8-f15 need nothing, for the opposite reason: this compiler never
-		// hands them out at all (value_placement.cpp's pools), so a generated body cannot touch one.
+		// them itself. r8-r11 and f8-f15 are the callee-saved half, which the handler has to save
+		// too once value_placement hands them out (Fase 1) - the interrupt save mask below is the
+		// whole allocatable set for exactly that reason.
 		bool _generatingInterrupt = false;
 
 		// True when the handler being generated touches the float bank at all. The integer set goes
 		// back in one `pushm`/`popm` pair whatever happens, so it is not worth deciding about; the
-		// floats have no mask instruction and cost eight pushes and eight pops, which is worth not
-		// paying for a handler that never looks at one.
+		// floats go back in one `fpushm`/`fpopm` pair now, but still worth not paying for a handler
+		// that never looks at one.
 		bool _interruptSavesFloats = false;
 
-		// The whole integer set a generated body can write: r0-r7 (bits 0-7) and r12 (bit 12).
-		// `pushm` stores from the highest set bit down and `popm` reads back from r0, so the pair
-		// round-trips by construction (05-Instruction-Set.md).
-		static constexpr u32 kInterruptSaveMask = 0x10FF;
-		static constexpr u32 kInterruptSavedFloatCount = 8; // f0-f7
+		// The whole integer set a generated body can write: r0-r7 (bits 0-7), r8-r11 (bits 8-11,
+		// callee-saved) and r12 (bit 12). `pushm` stores from the highest set bit down and `popm`
+		// reads back from r0, so the pair round-trips by construction (05-Instruction-Set.md).
+		static constexpr u32 kInterruptSaveMask = 0x1FFF;
+		static constexpr u32 kInterruptSavedFloatMask = 0xFFFF; // f0-f15, the whole bank
 
 		// The two halves of that, emitted around the frame the ordinary prologue/epilogue open.
 		void emitInterruptPrologue(const ir::IrFunction& function, std::string_view comment);

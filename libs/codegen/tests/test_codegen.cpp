@@ -1326,8 +1326,9 @@ TEST(codegen, a_register_parameter_competes_for_the_pool_like_any_other_register
 
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
 {
-	// The keyword reorders preferences and nothing else: a function that calls something cannot
-	// keep any local in a register across the call, whatever it asked for.
+	// The keyword reorders preferences and nothing else: whatever it asked for, a value that must
+	// survive a call cannot live in a caller-saved register, and the frame that holds the spill
+	// stays in place.
 	std::string casm = atO2("int g(int v); int f(int n) { register int x = n; return g(x) + x; }");
 	CHECK(contains(casm, "struct __frame_f"));
 }
@@ -1355,23 +1356,24 @@ TEST(codegen, an_interrupt_handler_saves_every_register_it_could_touch_and_ends_
 {
 	// The hardware pushes the flags and the PC and nothing else, and the code this preempted never
 	// agreed to lose a register - so the caller/callee split of the calling convention does not
-	// apply. r0-r7 and r12 go back in one pushm/popm pair.
+	// apply. r0-r12 go back in one pushm/popm pair (0x1FFF: bits 0-12).
 	std::string casm = atO2("__interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }");
-	CHECK(contains(casm, "pushm 0x10FF"));
-	CHECK(contains(casm, "popm 0x10FF"));
+	CHECK(contains(casm, "pushm 0x1FFF"));
+	CHECK(contains(casm, "popm 0x1FFF"));
 	CHECK(contains(casm, "iret"));
 	CHECK(!contains(casm, "\n    ret"));
 
-	// No float in sight, so none of the eight float pushes it would otherwise cost.
-	CHECK(!contains(casm, "push f"));
+	// No float in sight, so no fpushm either.
+	CHECK(!contains(casm, "fpushm"));
 }
 
 TEST(codegen, an_interrupt_handler_that_touches_the_float_bank_saves_it_too)
 {
+	// The whole float bank (f0-f15) goes back in one fpushm/fpopm pair, whatever subset the body
+	// actually uses.
 	std::string casm = atO2("float g; __interrupt void h(void) { g = g + 1.0; }");
-	CHECK(contains(casm, "push f0"));
-	CHECK(contains(casm, "pop f0"));
-	CHECK(contains(casm, "push f7"));
+	CHECK(contains(casm, "fpushm 0xFFFF"));
+	CHECK(contains(casm, "fpopm 0xFFFF"));
 }
 
 TEST(codegen, an_interrupt_handler_saves_before_it_opens_its_frame)
