@@ -379,11 +379,19 @@ namespace ceresc::codegen
 		// that never looks at one.
 		bool _interruptSavesFloats = false;
 
+		// The float mask the interrupt prologue actually pushed - f0-f7 always, plus whatever f8-f15
+		// value placement handed out - remembered so the epilogue pops exactly what the prologue
+		// saved rather than recomputing it.
+		u32 _interruptFloatMask = 0;
+
 		// The whole integer set a generated body can write: r0-r7 (bits 0-7), r8-r11 (bits 8-11,
 		// callee-saved) and r12 (bit 12). `pushm` stores from the highest set bit down and `popm`
 		// reads back from r0, so the pair round-trips by construction (05-Instruction-Set.md).
 		static constexpr u32 kInterruptSaveMask = 0x1FFF;
-		static constexpr u32 kInterruptSavedFloatMask = 0xFFFF; // f0-f15, the whole bank
+		// f0-f7 (caller-saved and scratch) are the whole float set a body can write except for the
+		// callee-saved f8-f15, which only become reachable when value placement hands one out -
+		// calleeSavedFloatMask(), OR-ed in by emitInterruptPrologue().
+		static constexpr u32 kInterruptCallerSavedFloatMask = 0x00FF;
 
 		// The two halves of that, emitted around the frame the ordinary prologue/epilogue open.
 		void emitInterruptPrologue(const ir::IrFunction& function, std::string_view comment);

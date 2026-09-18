@@ -66,22 +66,24 @@ saved a register before the jump.
 The caller/callee split in
 [CeresASM's calling convention](https://github.com/Krampus1721/CeresASM/blob/main/docs/24-Calling-Convention.md)
 does not apply here. `r0`–`r7`, `r12` and `f0`–`f7` are called caller-saved because a *caller* saved
-them; a handler has none, so it saves them itself. It also saves `r8`–`r11` and `f8`–`f15`, the
-callee-saved half, because value placement hands those out too and the interrupted code never
-agreed to lose one either:
+them; a handler has none, so it saves them itself:
 
 ```casm
 global term_isr:
     pushm 0x1FFF           // r0-r12, in one instruction
-    fpushm 0xFFFF          // f0-f15, in one - only when the body reaches the float bank
+    fpushm 0x00FF          // f0-f7, in one - only when the body reaches the float bank
     ...
-    fpopm 0xFFFF
+    fpopm 0x00FF
     popm  0x1FFF
     iret
 ```
 
 The float bank goes back in one `fpushm`/`fpopm` pair, but still only when the handler can reach it
-at all — which any call makes true, whatever the body itself does.
+at all — which any call makes true, whatever the body itself does. The mask covers `f0`–`f7` only:
+the callee-saved `f8`–`f15` never need saving, because only a *parameter* can earn a callee-saved
+register and a handler has no parameters (its own locals are either forwarded away or escaped to
+memory). The `r8`–`r11` half is bundled into the integer mask's `0x1FFF` for the same reason a
+mask is cheap and precise there — one `pushm` is the same word however many bits are set.
 
 Calling a handler is an error rather than a warning. `iret` pops the flags and PC the dispatcher
 pushed; reached through `call` it would pop the return address as a PC and whatever sat below it as

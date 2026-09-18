@@ -1354,11 +1354,13 @@ TEST(codegen, an_interrupt_handler_saves_every_register_it_could_touch_and_ends_
 
 TEST(codegen, an_interrupt_handler_that_touches_the_float_bank_saves_it_too)
 {
-	// The whole float bank (f0-f15) goes back in one fpushm/fpopm pair, whatever subset the body
-	// actually uses.
+	// The caller-saved half of the float bank (f0-f7) goes back in one fpushm/fpopm pair. The
+	// callee-saved f8-f15 never join the mask: only a PARAMETER can earn one (a non-parameter local
+	// is either forwarded away or escaped to memory), and a handler has no parameters.
 	std::string casm = atO2("float g; __interrupt void h(void) { g = g + 1.0; }");
-	CHECK(contains(casm, "fpushm 0xFFFF"));
-	CHECK(contains(casm, "fpopm 0xFFFF"));
+	CHECK(contains(casm, "fpushm 0x00FF"));
+	CHECK(contains(casm, "fpopm 0x00FF"));
+	CHECK(!contains(casm, "fpushm 0x01FF"));
 }
 
 TEST(codegen, an_interrupt_handler_saves_before_it_opens_its_frame)

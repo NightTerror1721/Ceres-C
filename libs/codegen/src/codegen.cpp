@@ -1169,10 +1169,16 @@ namespace ceresc::codegen
 		_emitter.instr(std::format("pushm 0x{:04X}", kInterruptSaveMask), comment);
 
 		// The float bank goes back in one `fpushm` as well - worth paying only when the handler can
-		// reach the bank at all.
+		// reach the bank at all. The mask is f0-f7 always (caller-saved and scratch), plus whichever
+		// callee-saved f8-f15 value placement handed out. The second term is always empty today: a
+		// handler has no parameters, and only a parameter can earn a callee-saved register - but
+		// OR-ing it in keeps the mask right by construction if that ever changes.
 		_interruptSavesFloats = usesFloatBank(function);
 		if (_interruptSavesFloats)
-			_emitter.instr(std::format("fpushm 0x{:04X}", kInterruptSavedFloatMask), comment);
+		{
+			_interruptFloatMask = kInterruptCallerSavedFloatMask | _calleeSavedFloatMask;
+			_emitter.instr(std::format("fpushm 0x{:04X}", _interruptFloatMask), comment);
+		}
 	}
 
 	void CodeGen::emitInterruptEpilogue(std::string_view comment)
@@ -1180,7 +1186,7 @@ namespace ceresc::codegen
 		// Exactly the prologue reversed: the floats came off a stack that grows down, so the last
 		// one pushed is the first one back.
 		if (_interruptSavesFloats)
-			_emitter.instr(std::format("fpopm 0x{:04X}", kInterruptSavedFloatMask), comment);
+			_emitter.instr(std::format("fpopm 0x{:04X}", _interruptFloatMask), comment);
 		_emitter.instr(std::format("popm 0x{:04X}", kInterruptSaveMask), comment);
 	}
 
@@ -1344,6 +1350,7 @@ namespace ceresc::codegen
 		_generatingMain = false;
 		_generatingInterrupt = false;
 		_interruptSavesFloats = false;
+		_interruptFloatMask = 0;
 		_placement.reset();
 		_function = nullptr;
 	}
