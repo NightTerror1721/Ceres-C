@@ -444,8 +444,12 @@ namespace ceresc::ast
 
 	void AstPrinter::visit(DeclStmt& node)
 	{
-		_output += "(decl-stmt ";
-		printChild(node.decl());
+		_output += "(decl-stmt";
+		for (Decl* decl : node.decls())
+		{
+			_output += ' ';
+			printChild(decl);
+		}
 		_output += ')';
 	}
 

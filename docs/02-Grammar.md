@@ -83,8 +83,14 @@ external-decl          ::= declaration | typedef-decl | interrupt-vector-decl
 
 // One production for a function and a variable alike. Which one it is falls out of the
 // declarator: it declares a function when the derived type IS a function type, exactly as
-// in C - `int f(int)` and `int (*f)(int)` differ in nothing else.
-declaration            ::= decl-specifier* base-type declarator (("=" initializer)? ";" | compound-stmt)
+// in C - `int f(int)` and `int (*f)(int)` differ in nothing else. A base type may introduce
+// several declarators (`int a, b, c;`), each with its own `*`/`[...]`/initializer; a function
+// DEFINITION (a declarator followed by a body) ends the declaration by itself, so no ';' and
+// no further declarator follow it.
+declaration            ::= decl-specifier* base-type init-declarator-list? ";"
+init-declarator-list   ::= init-declarator ("," init-declarator)*
+init-declarator        ::= declarator ("=" initializer)?     // or, naming a function:
+                          | declarator compound-stmt          //   a definition: no ';' and no ','
 param-list             ::= param ("," param)* ("," "...")?   // "..." only after a named parameter
                          | "void"                            // an explicitly empty list
 param                  ::= "register"? base-type declarator   // the name may be omitted;
@@ -124,7 +130,7 @@ type-spec              ::= "void" | "bool" | "float" | integer-type-spec
                                                      // __builtin_va_list
 struct-spec            ::= "struct" IDENTIFIER ("{" member-decl+ "}")?
 union-spec             ::= "union" IDENTIFIER ("{" member-decl+ "}")?
-member-decl            ::= base-type declarator ";"   // not a function: a struct holds objects
+member-decl            ::= base-type declarator ("," declarator)* ";"   // not a function: a struct holds objects
 enum-spec              ::= "enum" IDENTIFIER ("{" enumerator-list "}")?
 enumerator-list        ::= enumerator ("," enumerator)*
 enumerator             ::= IDENTIFIER ("=" INT_LITERAL)?
@@ -147,7 +153,7 @@ label-stmt             ::= IDENTIFIER ":" statement
 break-stmt             ::= "break" ";"
 continue-stmt          ::= "continue" ";"
 return-stmt            ::= "return" expression? ";"
-decl-stmt              ::= declaration ";"
+decl-stmt              ::= declaration
 expr-stmt              ::= expression? ";"
 
 expression             ::= assignment-expr

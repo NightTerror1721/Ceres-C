@@ -46,7 +46,7 @@
 // typedef happened, for the AST/--emit-ast's sake.
 //
 // This file only forward-declares Stmt/CompoundStmt (FunctionDecl::_body is a bare pointer), the
-// same way stmt.h only forward-declares Decl for DeclStmt::_decl - see stmt.h's header comment for
+// same way stmt.h only forward-declares Decl for DeclStmt::_decls - see stmt.h's header comment for
 // why an actual mutual #include between the two files would be a real cycle, and why AstVisitor
 // (ast_visitor.h) is the one place that includes both fully.
 //

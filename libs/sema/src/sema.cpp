@@ -1221,8 +1221,8 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::DeclStmt& node)
 	{
-		if (node.decl())
-			node.decl()->accept(*this);
+		for (ast::Decl* decl : node.decls())
+			decl->accept(*this);
 	}
 
 	void Sema::visit(ast::CompoundStmt& node)

@@ -14,8 +14,8 @@
 // here (mirrors CallExpr::_args in expr.h) - a non-owning {pointer, count} view over arena storage,
 // not a std::vector.
 //
-// DeclStmt only forward-declares Decl (this file does not include decl.h): it stores a bare Decl*,
-// which needs no more than a forward declaration, and decl.h's own FunctionDecl needs a CompoundStmt*
+// DeclStmt only forward-declares Decl (this file does not include decl.h): it stores an array of
+// Decl*, which needs no more than a forward declaration, and decl.h's own FunctionDecl needs a CompoundStmt*
 // right back - an actual mutual #include would be a real cycle. AstVisitor (ast_visitor.h) is the
 // one place that includes both stmt.h and decl.h together and therefore the one place that can
 // define every accept() body, same reasoning as expr.h's own note about AstVisitor.
@@ -83,13 +83,20 @@ namespace ceresc::ast
 	class DeclStmt final : public Stmt
 	{
 	private:
-		Decl* _decl; // always a VarDecl today - see decl.h. A bare pointer, so the forward declaration above is enough.
+		// One entry per declarator in `int a, b, c;` - a non-owning view over an arena-allocated
+		// array, same pattern as CompoundStmt::_stmts. A bare pointer, so the forward declaration
+		// of Decl above is enough.
+		Decl* const* _decls;
+		u32 _count;
 
 	public:
-		DeclStmt(support::SourceLocation location, Decl* decl) noexcept : Stmt(location), _decl(decl) {}
+		DeclStmt(support::SourceLocation location, std::span<Decl* const> decls) noexcept :
+			Stmt(location), _decls(decls.data()), _count(static_cast<u32>(decls.size()))
+		{}
 
 	public:
-		Decl* decl() const noexcept { return _decl; }
+		std::span<Decl* const> decls() const noexcept { return { _decls, _count }; }
+		u32 count() const noexcept { return _count; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<DeclStmt>, "DeclStmt must be trivially destructible (Arena-allocated)");

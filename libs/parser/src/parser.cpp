@@ -860,42 +860,45 @@ namespace ceresc::parser
 					synchronizeStatement(); // reuses the statement-level recovery: skip to ';' or '}'
 					continue;
 				}
-				// An ordinary declarator, so a field may be a function pointer - `int (*handler)(int);`
-				// inside a struct is how a program builds a dispatch table.
-				Declarator fieldDeclarator = parseDeclarator(/*allowAbstract=*/false);
-				if (!fieldDeclarator.ok)
+				// One base type, then a comma-separated run of declarators - `int x, *y, a[3];` is
+				// three fields. An ordinary declarator, so a field may be a function pointer -
+				// `int (*handler)(int);` inside a struct is how a program builds a dispatch table.
+				for (;;)
 				{
-					synchronizeStatement();
-					continue;
-				}
-				const Type* fieldType = applyDeclarator(fieldBase, fieldDeclarator, /*isParameter=*/false);
-				if (!fieldType)
-				{
-					synchronizeStatement();
-					continue;
-				}
-				if (fieldType->isFunction())
-				{
-					// A struct holds objects, and a function is not one. The pointer is what a
-					// program means here, and saying so is more useful than "has no size".
-					_diagnostics.error(DiagId::FieldCannotBeFunction, fieldLoc,
-						"a field cannot have function type - did you mean a pointer to one?");
-					synchronizeStatement();
-					continue;
-				}
-				if (fieldLeadingRestrict)
-				{
-					if (!fieldType->isPointer())
-						_diagnostics.error(DiagId::RestrictRequiresPointer, fieldSpecifierLocation, "'restrict' requires a pointer type");
-					else
-						fieldType = Type::withRestrict(_arena, fieldType);
+					Declarator fieldDeclarator = parseDeclarator(/*allowAbstract=*/false);
+					if (!fieldDeclarator.ok)
+					{
+						synchronizeStatement();
+						break;
+					}
+					const Type* fieldType = applyDeclarator(fieldBase, fieldDeclarator, /*isParameter=*/false);
+					if (!fieldType)
+					{
+						synchronizeStatement();
+						break;
+					}
+					if (fieldType->isFunction())
+					{
+						// A struct holds objects, and a function is not one. The pointer is what a
+						// program means here, and saying so is more useful than "has no size".
+						_diagnostics.error(DiagId::FieldCannotBeFunction, fieldLoc,
+							"a field cannot have function type - did you mean a pointer to one?");
+						synchronizeStatement();
+						break;
+					}
+					if (fieldLeadingRestrict)
+					{
+						if (!fieldType->isPointer())
+							_diagnostics.error(DiagId::RestrictRequiresPointer, fieldSpecifierLocation, "'restrict' requires a pointer type");
+						else
+							fieldType = Type::withRestrict(_arena, fieldType);
+					}
+					fields.push_back(FieldDecl{ fieldType, fieldDeclarator.name, fieldLoc });
+					if (!match(TokenKind::Comma))
+						break;
 				}
 				if (!expect(TokenKind::Semicolon, "';'"))
-				{
 					synchronizeStatement();
-					continue;
-				}
-				fields.push_back(FieldDecl{ fieldType, fieldDeclarator.name, fieldLoc });
 			}
 			expect(TokenKind::RBrace, "'}'");
 			decl->setFields(copyFieldsToArena(fields));
@@ -994,7 +997,8 @@ namespace ceresc::parser
 				Decl* decl = parseTypedefDecl();
 				if (!decl)
 					return nullptr;
-				return _arena.create<ast::DeclStmt>(location, decl);
+				std::vector<Decl*> decls{ decl };
+				return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(decls));
 			}
 			case TokenKind::Semicolon:
 			{
@@ -1308,13 +1312,14 @@ namespace ceresc::parser
 		{
 			advance();
 			Decl* tagDecl = base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl());
-			return _arena.create<ast::DeclStmt>(location, tagDecl);
+			std::vector<Decl*> decls{ tagDecl };
+			return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(decls));
 		}
 
-		Decl* decl = finishDeclarator(location, base, specifiers, leadingRestrict, specifierLocation);
-		if (!decl)
+		std::vector<Decl*> decls;
+		if (!parseInitDeclaratorList(location, base, specifiers, leadingRestrict, specifierLocation, decls))
 			return nullptr;
-		return _arena.create<ast::DeclStmt>(location, decl);
+		return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(decls));
 	}
 
 	Stmt* Parser::parseExprStatement()
@@ -1336,26 +1341,32 @@ namespace ceresc::parser
 		std::vector<Decl*> decls;
 		while (!isAtEnd())
 		{
-			Decl* decl = parseExternalDecl();
-			if (!decl)
+			std::vector<Decl*> parsed = parseExternalDecl();
+			if (parsed.empty())
 			{
 				synchronizeDeclaration();
 				continue;
 			}
-			decls.push_back(decl);
+			decls.insert(decls.end(), parsed.begin(), parsed.end());
 		}
 		return _arena.create<TranslationUnit>(location, copyDeclsToArena(decls));
 	}
 
-	Decl* Parser::parseExternalDecl()
+	std::vector<Decl*> Parser::parseExternalDecl()
 	{
 		SourceLocation location = _current.location();
 
 		if (check(TokenKind::KwTypedef))
-			return parseTypedefDecl();
+		{
+			Decl* decl = parseTypedefDecl();
+			return decl ? std::vector<Decl*>{ decl } : std::vector<Decl*>{};
+		}
 
 		if (check(TokenKind::KwInterruptVector))
-			return parseInterruptVectorDecl();
+		{
+			Decl* decl = parseInterruptVectorDecl();
+			return decl ? std::vector<Decl*>{ decl } : std::vector<Decl*>{};
+		}
 
 		// Storage classes and `const` come first and belong to the DECLARATION, so they are read
 		// here rather than inside parseTypeName() - which would have no one to hand a storage class
@@ -1366,24 +1377,49 @@ namespace ceresc::parser
 		{
 			_diagnostics.error(DiagId::ExpectedDeclaration, _current.location(), "expected a declaration but found '{}'",
 				_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
-			return nullptr;
+			return {};
 		}
 
 		bool leadingRestrict = false;
 		SourceLocation specifierLocation{};
 		const Type* base = parseBaseType(specifiers.isConst, specifiers.isVolatile, leadingRestrict, specifierLocation);
 		if (!base)
-			return nullptr;
+			return {};
 
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
 		// parseDeclStatement()'s identical check for the local-statement equivalent.
 		if (check(TokenKind::Semicolon) && (base->isAggregate() || base->isEnum()))
 		{
 			advance();
-			return base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl());
+			return { base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl()) };
 		}
 
-		return finishDeclarator(location, base, specifiers, leadingRestrict, specifierLocation);
+		std::vector<Decl*> decls;
+		if (!parseInitDeclaratorList(location, base, specifiers, leadingRestrict, specifierLocation, decls))
+			return {};
+		return decls;
+	}
+
+	bool Parser::parseInitDeclaratorList(SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
+		bool leadingRestrict, SourceLocation specifierLocation, std::vector<Decl*>& outDecls)
+	{
+		for (;;)
+		{
+			bool isFunctionDefinition = false;
+			Decl* decl = finishDeclarator(location, base, specifiers, leadingRestrict, specifierLocation, &isFunctionDefinition);
+			if (!decl)
+				return false;
+			outDecls.push_back(decl);
+
+			// A function DEFINITION closes the declaration itself - a body, not a ';' - and C allows
+			// no further declarator after one.
+			if (isFunctionDefinition)
+				return true;
+
+			if (!match(TokenKind::Comma))
+				break;
+		}
+		return expect(TokenKind::Semicolon, "';'");
 	}
 
 	// One declarator plus whatever follows it, shared by the file-scope and block-scope forms - they
@@ -1394,7 +1430,7 @@ namespace ceresc::parser
 	// `int f(int)` and `int (*f)(int)`, and it falls out of applying the declarator rather than
 	// needing a rule of its own.
 	Decl* Parser::finishDeclarator(SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
-		bool leadingRestrict, SourceLocation specifierLocation)
+		bool leadingRestrict, SourceLocation specifierLocation, bool* outIsFunctionDefinition)
 	{
 		Declarator declarator = parseDeclarator(/*allowAbstract=*/false);
 		if (!declarator.ok)
@@ -1418,8 +1454,11 @@ namespace ceresc::parser
 		{
 			// The parameter NAMES the declaration keeps come from the suffix that made it a function -
 			// the type itself holds only their types (type.h).
-			return finishFunctionDecl(location, declarator.name, type, signature->params, signature->isVariadic, specifiers);
+			return finishFunctionDecl(location, declarator.name, type, signature->params, signature->isVariadic,
+				specifiers, outIsFunctionDefinition);
 		}
+		if (outIsFunctionDefinition)
+			*outIsFunctionDefinition = false;
 		return finishVarDecl(location, declarator.name, type, specifiers);
 	}
 
@@ -1553,8 +1592,6 @@ namespace ceresc::parser
 			// grammar allows a brace initializer-list in.
 			initializer = parseInitializer();
 		}
-		if (!expect(TokenKind::Semicolon, "';'"))
-			return nullptr;
 
 		if (specifiers.isInline)
 			_diagnostics.error(DiagId::InlineOnNonFunction, specifiers.location, "'inline' is only allowed on a function");
@@ -1563,7 +1600,7 @@ namespace ceresc::parser
 	}
 
 	Decl* Parser::finishFunctionDecl(SourceLocation location, std::string_view name, const Type* functionType,
-		std::span<const Param> params, bool isVariadic, const DeclSpecifiers& specifiers)
+		std::span<const Param> params, bool isVariadic, const DeclSpecifiers& specifiers, bool* outIsDefinition)
 	{
 		// The parameter list has already been read, as part of the declarator that made this a
 		// function declaration in the first place - `int f(int)` and `int (*f)(int)` differ only in
@@ -1579,10 +1616,8 @@ namespace ceresc::parser
 				return nullptr;
 			body = static_cast<CompoundStmt*>(bodyStmt); // parseCompoundStatement() only ever returns a CompoundStmt* (or nullptr)
 		}
-		else if (!expect(TokenKind::Semicolon, "';' or a function body"))
-		{
-			return nullptr;
-		}
+		if (outIsDefinition)
+			*outIsDefinition = body != nullptr;
 
 		if (specifiers.storageClass == ast::StorageClass::Auto)
 		{

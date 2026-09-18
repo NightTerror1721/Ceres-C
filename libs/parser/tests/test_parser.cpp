@@ -51,9 +51,16 @@ namespace
 		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
 		Parser parser(lexer, arena, diagnostics);
 
-		ast::Decl* decl = parser.parseExternalDecl();
+		std::vector<ast::Decl*> decls = parser.parseExternalDecl();
 		ast::AstPrinter printer;
-		return printer.print(decl);
+		std::string out;
+		for (ast::Decl* decl : decls)
+		{
+			if (!out.empty())
+				out += ' ';
+			out += printer.print(decl);
+		}
+		return out;
 	}
 
 	std::string printUnit(std::string_view source)
@@ -491,6 +498,49 @@ TEST(parser, global_variable_declaration)
 	CHECK_EQ(printDecl("int x = 5;"), "(var x int 5)");
 }
 
+TEST(parser, several_variables_in_one_local_declaration)
+{
+	CHECK_EQ(printStmt("int a, b, c;"),
+		"(decl-stmt (var a int <null>) (var b int <null>) (var c int <null>))");
+}
+
+TEST(parser, several_variables_in_one_global_declaration)
+{
+	CHECK_EQ(printDecl("int a, b, c;"),
+		"(var a int <null>) (var b int <null>) (var c int <null>)");
+	CHECK_EQ(printUnit("int a, b, c;"),
+		"(unit (var a int <null>) (var b int <null>) (var c int <null>))");
+}
+
+TEST(parser, each_declarator_builds_its_own_pointer_and_array_type)
+{
+	// The `*` and `[...]` belong to the declarator, not to the base type - so `q` is a plain int
+	// even though `p` and `arr` sit in the same declaration.
+	CHECK_EQ(printStmt("int *p, q, arr[3];"),
+		"(decl-stmt (var p int* <null>) (var q int <null>) (var arr int[3] <null>))");
+	CHECK_EQ(printDecl("int *p, q, arr[3];"),
+		"(var p int* <null>) (var q int <null>) (var arr int[3] <null>)");
+}
+
+TEST(parser, each_declarator_has_its_own_initializer)
+{
+	CHECK_EQ(printStmt("int a = 1, b = 2, c;"),
+		"(decl-stmt (var a int 1) (var b int 2) (var c int <null>))");
+	CHECK_EQ(printDecl("int a = 1, b = 2;"), "(var a int 1) (var b int 2)");
+}
+
+TEST(parser, several_function_prototypes_in_one_declaration)
+{
+	CHECK_EQ(printUnit("int f(int a), g(int b);"),
+		"(unit (func f int (params (int a)) <null>) (func g int (params (int b)) <null>))");
+}
+
+TEST(parser, a_for_loop_can_declare_several_variables)
+{
+	CHECK_EQ(printStmt("for (int i = 0, j = 10; i < j; i = i + 1) x;"),
+		"(for (decl-stmt (var i int 0) (var j int 10)) (< i j) (= i (+ i 1)) (expr-stmt x))");
+}
+
 TEST(parser, function_prototype_has_no_body)
 {
 	CHECK_EQ(printDecl("int foo();"), "(func foo int (params) <null>)");
@@ -580,8 +630,8 @@ TEST(parser, array_size_is_required_outside_a_parameter_declarator)
 	lexer::Lexer lexer("int arr[];", testSourceId(), diagnostics, pool);
 	Parser parser(lexer, arena, diagnostics);
 
-	ast::Decl* decl = parser.parseExternalDecl();
-	CHECK(decl != nullptr); // still recovers to *a* type (size 1) instead of losing the declarator
+	std::vector<ast::Decl*> decls = parser.parseExternalDecl();
+	CHECK(!decls.empty()); // still recovers to *a* type (size 1) instead of losing the declarator
 	CHECK(diagnostics.hasErrors());
 }
 
@@ -593,7 +643,7 @@ TEST(parser, array_size_must_be_a_positive_integer_literal)
 	lexer::Lexer lexer("int arr[0];", testSourceId(), diagnostics, pool);
 	Parser parser(lexer, arena, diagnostics);
 
-	CHECK(parser.parseExternalDecl() != nullptr);
+	CHECK(!parser.parseExternalDecl().empty());
 	CHECK(diagnostics.hasErrors());
 }
 
@@ -621,7 +671,7 @@ TEST(parser, array_of_void_is_an_error)
 	lexer::Lexer lexer("void arr[3];", testSourceId(), diagnostics, pool);
 	Parser parser(lexer, arena, diagnostics);
 
-	CHECK(parser.parseExternalDecl() != nullptr);
+	CHECK(!parser.parseExternalDecl().empty());
 	CHECK(diagnostics.hasErrors());
 }
 
@@ -785,6 +835,12 @@ TEST(parser, struct_tag_declaration_with_no_variable)
 	CHECK_EQ(printDecl("struct Point { int x; int y; };"), "(struct Point (fields (int x) (int y)))");
 }
 
+TEST(parser, a_struct_field_declaration_may_name_several_fields)
+{
+	CHECK_EQ(printDecl("struct Point { int x, y, *link; };"),
+		"(struct Point (fields (int x) (int y) (int* link)))");
+}
+
 TEST(parser, struct_defined_and_instantiated_in_one_declaration)
 {
 	CHECK_EQ(printDecl("struct Point { int x; int y; } p;"), "(var p struct Point <null>)");
@@ -840,10 +896,10 @@ TEST(parser, a_broken_field_inside_a_struct_body_is_skipped)
 	lexer::Lexer lexer("struct Foo { @ int y; int z; };", testSourceId(), diagnostics, pool);
 	Parser parser(lexer, arena, diagnostics);
 
-	ast::Decl* decl = parser.parseExternalDecl();
+	std::vector<ast::Decl*> decls = parser.parseExternalDecl();
 	ast::AstPrinter printer;
-	CHECK(decl != nullptr);
-	CHECK_EQ(printer.print(*decl), "(struct Foo (fields (int z)))");
+	CHECK(!decls.empty());
+	CHECK_EQ(printer.print(*decls.front()), "(struct Foo (fields (int z)))");
 	CHECK(diagnostics.hasErrors());
 }
 

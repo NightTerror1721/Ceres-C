@@ -638,8 +638,8 @@ namespace
 		support::SourceLocation loc = astLoc();
 
 		const ast::Type* arrayType = ast::Type::makeArray(arena, &ast::Type::Int, 4);
-		ast::VarDecl* arrDecl = arena.create<ast::VarDecl>(loc, std::string_view("arr"), arrayType);
-		ast::DeclStmt* declStmt = arena.create<ast::DeclStmt>(loc, arrDecl);
+		ast::Decl* arrDecl = arena.create<ast::VarDecl>(loc, std::string_view("arr"), arrayType);
+		ast::DeclStmt* declStmt = arena.create<ast::DeclStmt>(loc, std::span<ast::Decl* const>(&arrDecl, 1));
 		ast::ReturnStmt* ret = arena.create<ast::ReturnStmt>(loc, returnValue);
 
 		std::vector<ast::Stmt*> stmts{ declStmt };

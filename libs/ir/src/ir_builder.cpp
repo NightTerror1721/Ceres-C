@@ -1480,8 +1480,8 @@ namespace ceresc::ir
 
 	void IrBuilder::visit(ast::DeclStmt& node)
 	{
-		if (node.decl())
-			node.decl()->accept(*this);
+		for (ast::Decl* decl : node.decls())
+			decl->accept(*this);
 	}
 
 	void IrBuilder::visit(ast::CompoundStmt& node)

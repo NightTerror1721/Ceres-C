@@ -277,7 +277,7 @@ TEST(ast_printer, decl_stmt)
 	support::Arena arena;
 	AstPrinter printer;
 	Decl* d = arena.create<VarDecl>(loc(), std::string_view("x"), &Type::Int);
-	Stmt* s = arena.create<DeclStmt>(loc(), d);
+	Stmt* s = arena.create<DeclStmt>(loc(), std::span<Decl* const>(&d, 1));
 	CHECK_EQ(printer.print(*s), "(decl-stmt (var x int <null>))");
 }
 

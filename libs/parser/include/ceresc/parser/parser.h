@@ -154,7 +154,9 @@ namespace ceresc::parser
 		const Type* parseTypeName(bool leadingConst, bool leadingVolatile);
 
 		TranslationUnit* parseTranslationUnit();
-		Decl* parseExternalDecl();
+		// One top-level declaration, which may declare several objects - `int a, b, c;` returns all
+		// three. Empty on failure (after reporting), like every other parse failure here.
+		std::vector<Decl*> parseExternalDecl();
 		Stmt* parseStatement();
 
 		bool isAtEnd() const noexcept { return _current.isEndOfFile(); }
@@ -312,7 +314,14 @@ namespace ceresc::parser
 		// One declarator plus whatever follows it. Whether it declares a function or an object is
 		// decided by the declarator itself, exactly as in C - see the definition.
 		Decl* finishDeclarator(support::SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
-			bool leadingRestrict, support::SourceLocation specifierLocation);
+			bool leadingRestrict, support::SourceLocation specifierLocation, bool* outIsFunctionDefinition = nullptr);
+
+		// The comma-separated init-declarator-list a base type introduces: one Decl per declarator,
+		// each with its own `*`/`[...]`/initializer - `int a, *b[3], c = 1;` is three declarations.
+		// Consumes the terminating ';' (a function DEFINITION ends the list without one). Returns
+		// false, after reporting, on a malformed declarator - the caller does panic recovery.
+		bool parseInitDeclaratorList(support::SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
+			bool leadingRestrict, support::SourceLocation specifierLocation, std::vector<Decl*>& outDecls);
 
 		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type,
 			const DeclSpecifiers& specifiers);
@@ -330,9 +339,12 @@ namespace ceresc::parser
 		Expr* parseInitializer();
 		// The body or the `;` after a declarator that turned out to name a function. The parameter
 		// list has already been read as part of that declarator - it is what made the type a
-		// function type - so this only takes the pieces rather than parsing them again.
+		// function type - so this only takes the pieces rather than parsing them again. Does not
+		// consume the trailing ';' of a prototype: that belongs to the init-declarator list. Sets
+		// `outIsDefinition` (when given) for a function that was followed by a body.
 		Decl* finishFunctionDecl(support::SourceLocation location, std::string_view name, const Type* functionType,
-			std::span<const Param> params, bool isVariadic, const DeclSpecifiers& specifiers);
+			std::span<const Param> params, bool isVariadic, const DeclSpecifiers& specifiers,
+			bool* outIsDefinition = nullptr);
 		// Reads the parameter list between an already-consumed '(' and its ')'. `outIsVariadic` is
 		// set when the list ended in `...`, which is never itself a Param: the ellipsis says that
 		// arguments MAY follow the ones named here, so outParams keeps describing exactly the fixed
