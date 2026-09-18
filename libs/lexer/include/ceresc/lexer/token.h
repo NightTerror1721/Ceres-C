@@ -197,6 +197,7 @@ namespace ceresc::lexer
 		std::string_view _lexeme	= {};
 		TokenValue		 _value		= {};
 		SourceLocation	 _location	= {};
+		bool			 _isUnsigned = false; // an integer literal's `u`/`U` suffix
 
 	public:
 		constexpr Token() noexcept = default;
@@ -210,11 +211,12 @@ namespace ceresc::lexer
 		constexpr bool operator==(const Token&) const noexcept = default;
 
 	private:
-		constexpr Token(TokenKind kind, std::string_view lexeme, TokenValue value, SourceLocation location) noexcept :
+		constexpr Token(TokenKind kind, std::string_view lexeme, TokenValue value, SourceLocation location, bool isUnsigned = false) noexcept :
 			_kind(kind),
 			_lexeme(lexeme),
 			_value(value),
-			_location(location)
+			_location(location),
+			_isUnsigned(isUnsigned)
 		{}
 
 	public:
@@ -222,6 +224,9 @@ namespace ceresc::lexer
 		constexpr std::string_view lexeme() const noexcept { return _lexeme; }
 		constexpr TokenValue value() const noexcept { return _value; }
 		constexpr SourceLocation location() const noexcept { return _location; }
+		// True only for an integer literal written with a `u`/`U` suffix (`42u`) - the one suffix that
+		// changes a literal's TYPE rather than its kind, so it has to ride along on the token.
+		constexpr bool isUnsigned() const noexcept { return _isUnsigned; }
 
 		constexpr TokenValue::IntegralValue integralValue() const noexcept { return _value.getIntegral(); }
 		constexpr TokenValue::FloatingValue floatingValue() const noexcept { return _value.getFloating(); }
@@ -398,7 +403,7 @@ namespace ceresc::lexer
 	public:
 		static forceinline constexpr Token makeInvalid(std::string_view lexeme, SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Invalid, lexeme, location); }
 		static forceinline constexpr Token makeEndOfFile(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::EndOfFile, {}, location); }
-		static forceinline constexpr Token makeLiteralInt(std::string_view lexeme, TokenValue::IntegralValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralInt, lexeme, TokenValue::makeIntegral(value), location); }
+		static forceinline constexpr Token makeLiteralInt(std::string_view lexeme, TokenValue::IntegralValue value, SourceLocation location, bool isUnsigned = false) noexcept { return Token(TokenKind::LiteralInt, lexeme, TokenValue::makeIntegral(value), location, isUnsigned); }
 		static forceinline constexpr Token makeLiteralFloat(std::string_view lexeme, TokenValue::FloatingValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralFloat, lexeme, TokenValue::makeFloating(value), location); }
 		static forceinline constexpr Token makeLiteralChar(std::string_view lexeme, TokenValue::CharValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralChar, lexeme, TokenValue::makeChar(value), location); }
 		static forceinline constexpr Token makeLiteralBool(std::string_view lexeme, TokenValue::BoolValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralBool, lexeme, TokenValue::makeBool(value), location); }

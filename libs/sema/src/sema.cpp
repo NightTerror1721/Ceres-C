@@ -597,8 +597,11 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::IntLiteralExpr& node)
 	{
-		node.setType(&Type::Int);
-		_lastExprType = &Type::Int;
+		// A `u`/`U` suffix selects the unsigned type; an unsuffixed literal is `int` (no widening to
+		// `long` exists in this subset - see type.h).
+		const Type* type = node.isUnsigned() ? &Type::UInt : &Type::Int;
+		node.setType(type);
+		_lastExprType = type;
 	}
 
 	void Sema::visit(ast::FloatLiteralExpr& node)

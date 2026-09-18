@@ -199,10 +199,12 @@ The `__builtin_` prefix is reserved to the implementation in C, so no existing p
 these names — and because they are only recognized in call position, one that uses the spelling for
 a variable of its own still works.
 
-### No integer literal suffixes
+### No `long` literal suffix
 
-`100u`, `100L` and `1.5f` are not accepted. A literal's type comes from its form and from what it is
-assigned to.
+`u`/`U` makes an integer literal unsigned and `f`/`F` makes a float literal (or forces a digit run
+to one, `1f`), both exactly as in C. The `l`/`L` suffix is not accepted, because Ceres has no
+64-bit integer width for it to name — the same reason `long`/`long long` collapse to `int` with a
+warning.
 
 ### Division by zero does not fault
 

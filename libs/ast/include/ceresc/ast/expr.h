@@ -90,12 +90,16 @@ namespace ceresc::ast
 	{
 	private:
 		u64 _value;
+		bool _isUnsigned;
 
 	public:
-		IntLiteralExpr(support::SourceLocation location, u64 value) noexcept : Expr(location), _value(value) {}
+		IntLiteralExpr(support::SourceLocation location, u64 value, bool isUnsigned = false) noexcept : Expr(location), _value(value), _isUnsigned(isUnsigned) {}
 
 	public:
 		u64 value() const noexcept { return _value; }
+		// True when the literal was written with a `u`/`U` suffix (`42u`) - what sema reads to give
+		// the literal type `unsigned` instead of `int`.
+		bool isUnsigned() const noexcept { return _isUnsigned; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<IntLiteralExpr>, "IntLiteralExpr must be trivially destructible (Arena-allocated)");

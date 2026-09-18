@@ -117,6 +117,16 @@ TEST(sema, literal_types)
 	CHECK_EQ(typeOfMainLastExpr("int main() { \"hi\"; }"), "char*");
 }
 
+TEST(sema, literal_suffixes_select_the_type)
+{
+	// `u`/`U` makes an integer literal unsigned; `f`/`F` makes a float (and forces a digit run to one).
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42u; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42U; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0xFFu; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1.5f; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1F; }"), "float");
+}
+
 TEST(sema, small_integer_types_promote_to_int_in_arithmetic)
 {
 	CHECK_EQ(typeOfMainLastExpr("int main() { (char)1 + (char)2; }"), "int");

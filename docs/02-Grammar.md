@@ -18,7 +18,7 @@ here is, by definition, a syntax error.
 | Interrupts | `__interrupt` handlers and `__interrupt_vector`, plus `__builtin_sti`/`__builtin_cli`/`__builtin_halt` — see [10-Interrupts.md](10-Interrupts.md). |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
 | Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, `alignof`, explicit casts. |
-| Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. Adjacent string literals are joined into one, as in C. |
+| Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. Adjacent string literals are joined into one, as in C. Integer literals take an optional `u`/`U` suffix (unsigned) and float literals an optional `f`/`F`; `f`/`F` also forces a digit run to be a float (`1f`). |
 
 `.` and `->` are genuinely different operators, not two spellings of one: the parser records which
 token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->x` needs a pointer.

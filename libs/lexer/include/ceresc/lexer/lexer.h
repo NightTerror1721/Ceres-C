@@ -399,8 +399,8 @@ namespace ceresc::lexer
 
 		char scanEscapeSequence();
 
-		Token makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits);
-		Token makeFloatToken(std::string_view lexeme, SourceLocation loc);
+		Token makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned);
+		Token makeFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc);
 
 	private:
 		static constexpr bool isIdentifierStart(char c) noexcept { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }

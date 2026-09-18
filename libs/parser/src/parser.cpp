@@ -500,8 +500,9 @@ namespace ceresc::parser
 			case TokenKind::LiteralInt:
 			{
 				auto value = _current.integralValue();
+				bool isUnsigned = _current.isUnsigned();
 				advance();
-				return _arena.create<ast::IntLiteralExpr>(location, value);
+				return _arena.create<ast::IntLiteralExpr>(location, value, isUnsigned);
 			}
 			case TokenKind::LiteralFloat:
 			{

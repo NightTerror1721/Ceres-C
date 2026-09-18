@@ -183,21 +183,54 @@ TEST(lexer, float_literal_with_an_exponent)
 	CHECK_EQ(t.floatingValue(), TokenValue::FloatingValue{ 1.5e-3 });
 }
 
-TEST(lexer, no_suffix_support_so_a_trailing_letter_is_its_own_identifier_token)
+TEST(lexer, a_float_literal_accepts_an_f_suffix)
 {
-	// v1 has no float/int literal suffixes (§5): "1.5f" is the float "1.5" followed by identifier
-	// "f", not a single malformed token.
 	support::DiagnosticEngine diagnostics;
 	support::StringPool pool;
 	Lexer lexer("1.5f", testSourceId(), diagnostics, pool);
 
-	Token f = lexer.next();
-	CHECK(f.isLiteralFloat());
-	CHECK_EQ(f.lexeme(), "1.5");
+	Token t = lexer.next();
+	CHECK(t.isLiteralFloat());
+	CHECK_EQ(t.floatingValue(), TokenValue::FloatingValue{ 1.5 });
+	CHECK(!diagnostics.hasDiagnostics());
+}
 
-	Token ident = lexer.next();
-	CHECK(ident.isIdentifier());
-	CHECK_EQ(ident.lexeme(), "f");
+TEST(lexer, an_f_suffix_turns_a_digit_run_into_a_float)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("1F", testSourceId(), diagnostics, pool);
+
+	Token t = lexer.next();
+	CHECK(t.isLiteralFloat());
+	CHECK_EQ(t.floatingValue(), TokenValue::FloatingValue{ 1.0 });
+}
+
+TEST(lexer, a_u_suffix_marks_an_integer_literal_unsigned)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("42u 43U 0xFFu 0b101U", testSourceId(), diagnostics, pool);
+
+	for (u64 expected : { u64(42), u64(43), u64(255), u64(5) })
+	{
+		Token t = lexer.next();
+		CHECK(t.isLiteralInt());
+		CHECK(t.isUnsigned());
+		CHECK_EQ(t.integralValue(), expected);
+	}
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, an_unsuffixed_integer_is_not_unsigned)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("42", testSourceId(), diagnostics, pool);
+
+	Token t = lexer.next();
+	CHECK(t.isLiteralInt());
+	CHECK(!t.isUnsigned());
 }
 
 // ---- char literals ---------------------------------------------------------------------------
