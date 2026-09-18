@@ -12,6 +12,7 @@ into one buffer.
 | `#define NAME text` | An object-like macro: every later `NAME` identifier becomes `text`. |
 | `#define F(a, b) text` | A function-like macro. Arguments are substituted as whole identifiers. |
 | `#define F(a, ...) text` | A variadic macro; `__VA_ARGS__` is the comma-separated remaining arguments. |
+| `#` and `##` in a macro body | `#a` stringifies an argument; `a ## b` pastes two tokens into one. |
 | `#undef NAME` | Forgets one. |
 | `#if`, `#elif`, `#else`, `#endif` | Selects source based on an integer constant expression. |
 | `#ifdef`, `#ifndef` | Selects source based on whether a macro is defined. |
@@ -24,7 +25,7 @@ into one buffer.
 comparisons, equality, bitwise operators and `&&`/`||`, with C precedence. Undefined identifiers
 evaluate to zero. `defined NAME` and `defined(NAME)` test macro existence without expanding `NAME`.
 
-Anything else — notably `#line`, stringification (`#`) and token pasting (`##`) — is reported by name:
+Anything else — notably `#line` — is reported by name:
 
 ```
 main.c:1:1: error: '#ifdef' is not supported in this version - only #include, #define, #undef and
@@ -95,7 +96,32 @@ int NAMEx;             // stays NAMEx - a different identifier
 
 A macro may expand into another one. A macro defined in terms of itself stops being rewritten after
 a bounded number of passes, with a warning, instead of looping forever. This is text substitution:
-arguments are not stringified or pasted, and an argument must fit on the same physical source line.
+an argument must fit on the same physical source line, and stringification and token pasting work on
+text rather than on tokens — see below.
+
+### Stringification and token pasting
+
+`#a` inside a function-like macro's body turns an argument into a string literal, and `a ## b`
+pastes two tokens into one:
+
+```c
+#define NAME(n) #n
+#define CAT_(a, b) a ## b
+#define CAT(a, b) CAT_(a, b)
+#define UNIQUE(prefix) CAT(prefix, __COUNTER__)
+
+const char* label = NAME(writeCount);   // "writeCount"
+int UNIQUE(buf);                        // buf0
+int UNIQUE(buf);                        // buf1
+```
+
+Stringification drops leading and trailing whitespace, collapses a run of internal whitespace into
+one space, and escapes `\` and `"` — so the result is always a valid literal. `##` is text pasting:
+it deletes the operator and any whitespace around it, leaving the two neighbours as one, with no idea
+of what a valid token is. An argument next to `##` is pasted before it is expanded, so pasting a
+macro's *result* — like `__COUNTER__` above — needs the one-level indirection `CAT` gives it, exactly
+as in C. That is what gives `__COUNTER__` its full weight: a fresh name per expansion, which nothing
+else could build.
 
 `-D` predefines one from the command line, and a bare name means `1`:
 
@@ -204,6 +230,3 @@ simple.
 this subset does not have. `__func__` is not a macro at all — it is a predefined *identifier*, which
 means a per-function object the compiler synthesizes, not anything the preprocessor could produce.
 `__TIMESTAMP__` needs the file's modification time, which nothing here has asked for.
-
-**Stringification (`#`) and token pasting (`##`).** Still the two that would make `__COUNTER__` pull
-its full weight: without `##` there is no way to paste it onto a name.

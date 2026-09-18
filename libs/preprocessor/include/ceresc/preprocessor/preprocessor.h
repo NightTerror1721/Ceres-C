@@ -22,6 +22,8 @@
 //   #include <file.h>   The search path only.
 //   #define NAME text   An object-like macro.
 //   #define F(x) text   A function-like macro, including `...` / `__VA_ARGS__`.
+//                      `#x` inside the body stringifies the argument, and `a ## b` pastes two
+//                      tokens into one.
 //   #undef NAME         Forgets one.
 //   #if/#elif/#else/#endif and #ifdef/#ifndef conditional compilation.
 //   #error/#warning diagnostics from the source.
@@ -34,8 +36,8 @@
 // definePredefinedMacros(), and docs/08-Preprocessor.md for the whole table and what each one is
 // worth here.
 //
-// `#` stringification, `##` token pasting and `#line` are intentionally not implemented. Every
-// other directive is reported by name rather than skipped in silence.
+// `#line` is intentionally not implemented. Every other directive is reported by name rather than
+// skipped in silence.
 //
 // `#pragma once` carries real weight because of what is missing around it: without #ifndef there is
 // no other way to write an include guard, so a header included twice would declare everything

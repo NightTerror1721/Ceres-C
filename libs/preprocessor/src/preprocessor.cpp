@@ -60,6 +60,55 @@ namespace ceresc::preprocessor
 			result += '"';
 			return result;
 		}
+		// An argument run through `#`: its text as a string literal. Leading and trailing
+		// whitespace is dropped, a run of internal whitespace becomes one space, and the two
+		// characters a literal cannot hold raw are escaped - C's stringification, apart from the
+		// whitespace inside an argument having to be on one physical line to be here at all.
+		std::string stringify(std::string_view text)
+		{
+			text = trim(text);
+			std::string result = "\"";
+			bool betweenTokens = false;
+			for (char c : text)
+			{
+				if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+				{
+					betweenTokens = true;
+					continue;
+				}
+				if (betweenTokens)
+				{
+					result += ' ';
+					betweenTokens = false;
+				}
+				if (c == '\\' || c == '"')
+					result += '\\';
+				result += c;
+			}
+			result += '"';
+			return result;
+		}
+		// `##` joins the two tokens on either side into one: the operator, and any whitespace
+		// around it, is deleted - `a ## b` becomes `ab`. The result is still text rather than a
+		// token, so `##` has no notion of what a valid pasted token is and pastes anything.
+		std::string paste(std::string text)
+		{
+			std::string result;
+			for (usize i = 0; i < text.size();)
+			{
+				if (text[i] == '#' && i + 1 < text.size() && text[i + 1] == '#')
+				{
+					while (!result.empty() && (result.back() == ' ' || result.back() == '\t'))
+						result.pop_back();
+					i += 2;
+					while (i < text.size() && (text[i] == ' ' || text[i] == '\t'))
+						++i;
+					continue;
+				}
+				result += text[i++];
+			}
+			return result;
+		}
 		// The local calendar time this run started, which is what __DATE__ and __TIME__ have to
 		// agree about: C requires every expansion of either within one translation unit to give the
 		// same answer, so the clock is read once rather than per use.
@@ -274,7 +323,7 @@ namespace ceresc::preprocessor
 				auto found = _macros.find(name); if (found == _macros.end()) { next += name; continue; }
 				const Macro& macro = found->second;
 				if (macro.builtin != Builtin::None) { next += expandBuiltin(macro.builtin, location); changed = true; continue; }
-				if (!macro.functionLike) { next += macro.replacement; changed = true; continue; }
+				if (!macro.functionLike) { next += macro.replacement.find("##") == std::string::npos ? macro.replacement : paste(macro.replacement); changed = true; continue; }
 				usize call = i; while (call < current.size() && (current[call] == ' ' || current[call] == '\t')) ++call;
 				if (call == current.size() || current[call] != '(') { next += name; continue; }
 				usize pos = call + 1, argStart = pos, depth = 0; std::vector<std::string> args; bool closed = false;
@@ -284,10 +333,57 @@ namespace ceresc::preprocessor
 				if (!closed || (!args.empty() && macro.parameters.empty() && !macro.variadic)) { _diagnostics.error(DiagId::MalformedMacroInvocation, location, "malformed invocation of macro '{}'", name); next += name; continue; }
 				usize fixed = macro.parameters.size(); if ((!macro.variadic && args.size() != fixed) || (macro.variadic && args.size() < fixed)) { _diagnostics.error(DiagId::MacroArgumentCount, location, "macro '{}' expects {} argument(s), got {}", name, fixed + (macro.variadic ? 1 : 0), args.size()); next += name; continue; }
 				std::string replacement = macro.replacement;
-				auto substitute = [&](std::string_view parameter, std::string_view value) { std::string r; for (usize j = 0; j < replacement.size();) { if (isIdentifierStart(replacement[j])) { usize s = j++; while (j < replacement.size() && isIdentifierChar(replacement[j])) ++j; std::string_view word(replacement.data() + s, j - s); r += word == parameter ? value : word; } else r += replacement[j++]; } replacement = std::move(r); };
-				for (usize a = 0; a < fixed; ++a) substitute(macro.parameters[a], args[a]);
-				if (macro.variadic) { std::string joined; for (usize a = fixed; a < args.size(); ++a) { if (!joined.empty()) joined += ", "; joined += args[a]; } substitute("__VA_ARGS__", joined); }
-				next += replacement; i = pos; changed = true;
+				// `raw[param]` is the argument verbatim. A bare occurrence - not `#`-stringified, not
+				// `##`-pasted - substitutes the argument with its own macros resolved instead, which
+				// C computes once per argument; the cache in `expanded` is that "once".
+				std::unordered_map<std::string_view, std::string_view> raw;
+				for (usize a = 0; a < fixed; ++a)
+					raw.emplace(macro.parameters[a], args[a]);
+				std::string variadicArgs;
+				if (macro.variadic)
+				{
+					for (usize a = fixed; a < args.size(); ++a) { if (!variadicArgs.empty()) variadicArgs += ", "; variadicArgs += args[a]; }
+					raw.emplace("__VA_ARGS__", variadicArgs);
+				}
+				std::unordered_map<std::string_view, std::string> expanded;
+				auto expandedArgument = [&](std::string_view parameter) -> std::string_view
+				{
+					auto found = expanded.find(parameter);
+					if (found == expanded.end()) { bool comments = false; found = expanded.emplace(parameter, expandMacros(raw.at(parameter), location, comments)).first; }
+					return found->second;
+				};
+				auto pasteBefore = [&](usize at) { while (at > 0 && (replacement[at - 1] == ' ' || replacement[at - 1] == '\t')) --at; return at >= 2 && replacement[at - 2] == '#' && replacement[at - 1] == '#'; };
+				auto pasteAfter = [&](usize at) { while (at < replacement.size() && (replacement[at] == ' ' || replacement[at] == '\t')) ++at; return at + 1 < replacement.size() && replacement[at] == '#' && replacement[at + 1] == '#'; };
+				std::string substituted;
+				for (usize j = 0; j < replacement.size();)
+				{
+					if (replacement[j] == '#' && j + 1 < replacement.size() && replacement[j + 1] == '#') { substituted += "##"; j += 2; continue; }
+					if (replacement[j] == '#')
+					{
+						usize p = j + 1;
+						while (p < replacement.size() && (replacement[p] == ' ' || replacement[p] == '\t')) ++p;
+						if (p < replacement.size() && isIdentifierStart(replacement[p]))
+						{
+							usize s = p; while (p < replacement.size() && isIdentifierChar(replacement[p])) ++p;
+							std::string_view word(replacement.data() + s, p - s);
+							auto found = raw.find(word);
+							if (found != raw.end()) { substituted += stringify(found->second); j = p; continue; }
+						}
+						substituted += replacement[j++];
+						continue;
+					}
+					if (isIdentifierStart(replacement[j]))
+					{
+						usize s = j; while (j < replacement.size() && isIdentifierChar(replacement[j])) ++j;
+						std::string_view word(replacement.data() + s, j - s);
+						auto found = raw.find(word);
+						if (found == raw.end()) { substituted.append(replacement, s, j - s); continue; }
+						substituted += (pasteBefore(s) || pasteAfter(j)) ? found->second : expandedArgument(word);
+						continue;
+					}
+					substituted += replacement[j++];
+				}
+				next += paste(std::move(substituted)); i = pos; changed = true;
 			}
 			current = std::move(next); if (current.size() > kMaxExpandedLineBytes) { _diagnostics.warning(DiagId::MacroExpansionByteLimit, location, "gave up expanding macros after {} bytes", kMaxExpandedLineBytes); return current; }
 			if (pass == 0)

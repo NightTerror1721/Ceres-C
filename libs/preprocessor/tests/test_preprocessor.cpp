@@ -359,6 +359,80 @@ TEST(preprocessor, function_like_and_variadic_macros_substitute_arguments)
 	CHECK(contains(result.text, "print(x, 4);"));
 }
 
+TEST(preprocessor, stringification_turns_an_argument_into_a_string_literal)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define STR(x) #x\n"
+		"const char* a = STR(hello);\n"
+		"const char* b = STR(two  words);\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "const char* a = \"hello\";"));
+	// Leading, trailing and internal whitespace collapse to at most one space.
+	CHECK(contains(result.text, "const char* b = \"two words\";"));
+}
+
+TEST(preprocessor, stringification_escapes_the_two_characters_a_literal_cannot_hold)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define STR(x) #x\n"
+		"const char* a = STR(a\\b);\n"
+		"const char* b = STR(a\"b);\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "\"a\\\\b\""));
+	CHECK(contains(result.text, "\"a\\\"b\""));
+}
+
+TEST(preprocessor, token_pasting_joins_two_arguments_into_one_token)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define CAT(a, b) a ## b\n"
+		"int CAT(foo, bar);\n"
+		"int CAT(x, 42);\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int foobar;"));
+	CHECK(contains(result.text, "int x42;"));
+}
+
+TEST(preprocessor, token_pasting_puts_a_fresh_number_on_a_name)
+{
+	// The whole reason `##` matters here: without it there is no way to build a name from
+	// __COUNTER__. The indirection through CAT is what lets __COUNTER__ expand to a number
+	// BEFORE the paste - `p ## __COUNTER__` directly would paste it onto the name first.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define CAT_(a, b) a ## b\n"
+		"#define CAT(a, b) CAT_(a, b)\n"
+		"#define UNIQUE(p) CAT(p, __COUNTER__)\n"
+		"int UNIQUE(buf);\n"
+		"int UNIQUE(buf);\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int buf0;"));
+	CHECK(contains(result.text, "int buf1;"));
+}
+
+TEST(preprocessor, token_pasting_works_in_an_object_like_macro)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define GLUE a ## b\n"
+		"int GLUE;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int ab;"));
+}
+
 TEST(preprocessor, error_and_warning_are_reported_only_in_active_branches)
 {
 	TempDirectory dir;
