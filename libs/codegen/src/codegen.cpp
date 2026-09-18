@@ -898,12 +898,14 @@ namespace ceresc::codegen
 			{
 				const auto& p = instr.as<IrVaStartPayload>();
 				// Incoming stack arguments start at [fp + 8] (24-Calling-Convention.md: saved fp at
-				// [fp + 0], return address at [fp + 4]). The fixed parameters that were passed on
-				// the stack occupy the first words of that area, so the variadic tail begins right
-				// after them - and every variadic argument is on the stack by construction
-				// (docs/09-Variadic-Convention.md), so from here on it is just consecutive words.
+				// [fp + 0], return address at [fp + 4]) - plus the callee-saved copies this function
+				// pushed below its frame, which shift the whole incoming area up by one word each.
+				// The fixed parameters that were passed on the stack occupy the first words of that
+				// area, so the variadic tail begins right after them - and every variadic argument is
+				// on the stack by construction (docs/09-Variadic-Convention.md), so from here on it
+				// is just consecutive words.
 				std::string dest = defineInto(p.result, kScratchA, false);
-				_emitter.instr(std::format("la {}, [fp + {}]", dest, 8 + _fixedStackArgWords * 4), comment);
+				_emitter.instr(std::format("la {}, [fp + {}]", dest, 8 + 4 * _calleeSavedWords + _fixedStackArgWords * 4), comment);
 				storeResult(p.result, dest, loc);
 				break;
 			}
@@ -1084,6 +1086,14 @@ namespace ceresc::codegen
 				{
 					if (_hasFrame)
 						_emitter.instr("leave", comment);
+					// The callee-saved copies pushed by the prologue come back off in the reverse
+					// order: floats first, then the integer mask - before the return, so the caller
+					// finds its registers exactly as it left them. An interrupt handler never reaches
+					// this branch (its epilogue restores the full allocatable set instead).
+					if (!_generatingInterrupt && _calleeSavedFloatMask)
+						_emitter.instr(std::format("fpopm 0x{:04X}", _calleeSavedFloatMask), comment);
+					if (!_generatingInterrupt && _calleeSavedIntMask)
+						_emitter.instr(std::format("popm 0x{:04X}", _calleeSavedIntMask), comment);
 					if (_generatingInterrupt)
 					{
 						// `iret` pops the PC and then the flags the dispatcher pushed, so the registers
@@ -1198,6 +1208,9 @@ namespace ceresc::codegen
 		collectSuppressedConstants(function);
 
 		_hasFrame = placement.needsFrame();
+		_calleeSavedIntMask = placement.calleeSavedIntMask();
+		_calleeSavedFloatMask = placement.calleeSavedFloatMask();
+		_calleeSavedWords = std::popcount(_calleeSavedIntMask) + std::popcount(_calleeSavedFloatMask);
 		bool hasFields = placement.outgoingSlotCount() > 0 || !placement.slots().empty();
 		_frameName = hasFields ? std::format("__frame_{}", decl.name()) : std::string{};
 
@@ -1230,6 +1243,14 @@ namespace ceresc::codegen
 		// Before `enter`, so `leave` puts sp back exactly where the restore expects to find it.
 		if (_generatingInterrupt)
 			emitInterruptPrologue(function, sourceComment(entryLoc));
+		// A normal function that gave a local a callee-saved register has to put the caller's value
+		// in it somewhere before it overwrites it, and take it back before it returns. The saved
+		// copies go below the frame, ahead of `enter`, so the [fp + N] incoming-argument reads see a
+		// shift of exactly _calleeSavedWords (accounted for where those reads are emitted).
+		if (!_generatingInterrupt && _calleeSavedIntMask)
+			_emitter.instr(std::format("pushm 0x{:04X}", _calleeSavedIntMask), sourceComment(entryLoc));
+		if (!_generatingInterrupt && _calleeSavedFloatMask)
+			_emitter.instr(std::format("fpushm 0x{:04X}", _calleeSavedFloatMask), sourceComment(entryLoc));
 		if (_hasFrame)
 			_emitter.instr(hasFields ? std::format("enter {}", _frameName) : "enter", sourceComment(entryLoc));
 
@@ -1257,7 +1278,7 @@ namespace ceresc::codegen
 			{
 				std::string scratch = bankReg(kScratchA, slot.isFloat);
 				std::string target = home.kind == PlacementKind::Register ? bankReg(home.index, home.isFloat) : scratch;
-				_emitter.instr(std::format("ldr {}, [fp + {}]", target, 8 + arrival.index * 4), comment);
+				_emitter.instr(std::format("ldr {}, [fp + {}]", target, 8 + 4 * _calleeSavedWords + arrival.index * 4), comment);
 				if (home.kind == PlacementKind::Slot)
 					_emitter.instr(std::format("{} {}, {}", storeMnemonicForSize(slot.sizeInBytes, slot.isFloat),
 						slotAddress(home.index), target), comment);
@@ -1317,6 +1338,9 @@ namespace ceresc::codegen
 		_skipInstr.clear();
 		_suppressedConsts.clear();
 		_frameName.clear();
+		_calleeSavedIntMask = 0;
+		_calleeSavedFloatMask = 0;
+		_calleeSavedWords = 0;
 		_generatingMain = false;
 		_generatingInterrupt = false;
 		_interruptSavesFloats = false;

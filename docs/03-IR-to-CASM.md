@@ -114,12 +114,15 @@ Lend:
 
 The allocation rule is deliberately small enough to state in a paragraph.
 
-Every value has one home. A value may sit in a register only while no `call` can clobber it —
-a call destroys `r0`–`r7`, `r12`, `f0`–`f7` and the flags. So a local gets a register only in a
-function that calls nothing at all, and a temporary gets one whenever its own live range is
-call-free. Everything else lives in a field of the function's stack frame. `r8`–`r11` and `f8`–`f15`,
-the callee-saved half, are left unused: using them would mean saving and restoring them around every
-function that touches one.
+Every value has one home. A value may sit in a caller-saved register only while no `call` can
+clobber it — a call destroys `r0`–`r7`, `r12`, `f0`–`f7` and the flags. So a temporary gets one
+whenever its own live range is call-free, and a local gets one only in a function that calls nothing
+at all. The callee-saved half — `r8`–`r11` and `f8`–`f15` — is the exception a call does *not*
+clobber, so a local that has to survive a call may live there instead; the price is that the
+function saves and restores each one around its own body (`pushm`/`popm`, `fpushm`/`fpopm`). The
+saved copies sit below the frame, which is why an incoming stack argument is read at
+`[fp + 8 + 4·saved]` rather than `[fp + 8]`. Everything else lives in a field of the function's
+stack frame.
 
 Width is the other half of the rule, and it is simply "does it fit": a `char`, a `bool`, a `short`,
 an `int`, a `float` and a pointer are all candidates, an array or a `struct` is not. A narrow local

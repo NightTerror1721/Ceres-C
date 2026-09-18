@@ -35,12 +35,14 @@
 //
 // Two register-eligibility rules carry the ABI (24-Calling-Convention.md) rather than any analysis:
 //
-//   - A value may only stay in a register across a stretch with no `call` in it, because a call
-//     clobbers r0-r7, r12 and f0-f7. Locals therefore only get registers in a function that calls
-//     nothing at all; a temporary gets one whenever its own live range is call-free.
-//   - r8-r11/f8-f15 (the callee-saved half) stay unused, exactly as §10 says for v1: using them
-//     would mean saving and restoring them around every function that touches one. Promoting
-//     long-lived locals into them is the remaining Fase 9 item this class deliberately leaves open.
+//   - A value may only stay in a caller-saved register across a stretch with no `call` in it,
+//     because a call clobbers r0-r7, r12 and f0-f7. Locals therefore only get those in a function
+//     that calls nothing at all; a temporary gets one whenever its own live range is call-free.
+//   - r8-r11/f8-f15 (the callee-saved half) survive a call, so a local that must live across one
+//     can take one of those instead - at the price of the function saving and restoring each one
+//     around its body (codegen.cpp emits the pushm/popm and fpushm/fpopm pair from
+//     calleeSavedIntMask()/calleeSavedFloatMask()). An interrupt handler is the one function that
+//     does not use this path: its own save/restore is the interrupt prologue/epilogue's job.
 //
 // With support::OptimizationOptions::registerAllocation off, every value gets its own permanent
 // frame field and no register - the simplified rule the golden tests still pin at -O0 (see
@@ -96,6 +98,13 @@ namespace ceresc::codegen
 		// its arguments (frame_layout.h's assignArgSlots()).
 		std::span<const ArgSlot> paramArrival() const noexcept { return _paramArrival; }
 
+		// Which callee-saved registers this function actually handed to a local, one bit per
+		// register. CodeGen emits the matching pushm/popm (and fpushm/fpopm) around the body so the
+		// caller's value in each one survives. Empty for an interrupt handler, whose own save/restore
+		// is the interrupt prologue/epilogue's job rather than this pair's.
+		u32 calleeSavedIntMask() const noexcept { return _calleeSavedIntMask; }
+		u32 calleeSavedFloatMask() const noexcept { return _calleeSavedFloatMask; }
+
 	private:
 		bool _needsFrame = true;
 		u32 _outgoingSlotCount = 0;
@@ -104,5 +113,7 @@ namespace ceresc::codegen
 		std::vector<Placement> _locals;  // indexed by local slot index
 		std::vector<u32> _virtualAddress; // per temp: the local a virtual FrameAddr names, or ~0u
 		std::vector<ArgSlot> _paramArrival;
+		u32 _calleeSavedIntMask = 0;   // bits 8-11: which callee-saved int registers hold a local
+		u32 _calleeSavedFloatMask = 0; // bits 8-15: which callee-saved float registers hold a local
 	};
 }

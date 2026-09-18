@@ -31,6 +31,20 @@ namespace ceresc::codegen
 			return { 6, 7, 0, 1, 2, 3 };
 		}
 
+		// The callee-saved half, which a call does NOT clobber. A local that has to survive a call
+		// can live here, at the price of the function saving and restoring each one around its own
+		// body - see value_placement.h's header comment on why these stay out of the caller-saved
+		// pools above.
+		std::vector<u32> allocatableCalleeSavedIntRegisters()
+		{
+			return { 8, 9, 10, 11 };
+		}
+
+		std::vector<u32> allocatableCalleeSavedFloatRegisters()
+		{
+			return { 8, 9, 10, 11, 12, 13, 14, 15 };
+		}
+
 		// Per-block live-in/live-out over temporaries, iterated to a fixpoint - see
 		// value_placement.h's own note on why a linear interval is not good enough.
 		struct Liveness
@@ -257,7 +271,8 @@ namespace ceresc::codegen
 		if (options.registerAllocation)
 		{
 			// Locals first: they are live for the whole function, so whatever they take is gone for
-			// its whole length. Only in a call-free function - see value_placement.h.
+			// its whole length. In a call-free function that is the caller-saved pool; in one that
+			// calls, it is the callee-saved pool below.
 			//
 			// Two passes over the same list, not one: everything the program asked for with
 			// `register` is considered before anything that did not. The pool runs out when there
@@ -279,6 +294,15 @@ namespace ceresc::codegen
 			// have gone through has nothing left to do. The one place that is not automatic is a
 			// parameter, which arrives from outside this function - codegen's prologue narrows
 			// one on the way into its register, exactly as the store into a field used to.
+			// The callee-saved pools, reached only by a call-making function. An interrupt handler
+			// is left out on purpose: its own save/restore is the interrupt prologue/epilogue's job
+			// (codegen.h), so handing one a callee-saved register here would save nothing and pay
+			// the pushm/popm twice.
+			std::vector<u32> calleeFreeInt = function.isInterruptHandler()
+				? std::vector<u32>{} : allocatableCalleeSavedIntRegisters();
+			std::vector<u32> calleeFreeFloat = function.isInterruptHandler()
+				? std::vector<u32>{} : allocatableCalleeSavedFloatRegisters();
+
 			auto assignLocals = [&](bool requested)
 			{
 				for (u32 i = 0; i < localCount; ++i)
@@ -288,15 +312,30 @@ namespace ceresc::codegen
 						continue;
 
 					bool paramOnStack = i < function.paramCount() && _paramArrival[i].kind == ArgSlotKind::Stack;
-					if (!localReferenced[i] || hasCalls || localEscapes[i] || slot.isVolatile || slot.sizeInBytes > 4 || paramOnStack)
+					if (!localReferenced[i] || localEscapes[i] || slot.isVolatile || slot.sizeInBytes > 4 || paramOnStack)
 						continue;
 
+					// A leaf's local goes in the caller-saved pool; a call-making function's goes in
+					// the callee-saved pool instead - the only registers a call cannot clobber, and
+					// the price is the pushm/popm pair codegen emits around the body.
+					std::vector<u32>& pool = hasCalls ? (slot.isFloat ? calleeFreeFloat : calleeFreeInt)
+						: (slot.isFloat ? freeFloat : freeInt);
 					// A parameter prefers the register it already arrived in: taking it means the
-					// prologue has nothing at all to emit for that parameter.
-					u32 preferred = (i < function.paramCount()) ? _paramArrival[i].index : ~0u;
-					std::vector<u32>& pool = slot.isFloat ? freeFloat : freeInt;
+					// prologue has nothing at all to emit for that parameter. Only in a leaf, though
+					// - that register is caller-saved, and a call would clobber it.
+					u32 preferred = (!hasCalls && i < function.paramCount()) ? _paramArrival[i].index : ~0u;
+
 					if (std::optional<u32> reg = takeRegister(pool, preferred))
+					{
 						_locals[i] = Placement{ PlacementKind::Register, *reg, slot.isFloat };
+						if (hasCalls)
+						{
+							if (slot.isFloat)
+								_calleeSavedFloatMask |= (1u << *reg);
+							else
+								_calleeSavedIntMask |= (1u << *reg);
+						}
+					}
 				}
 			};
 			assignLocals(true);

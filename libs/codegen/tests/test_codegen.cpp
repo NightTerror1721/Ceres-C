@@ -492,45 +492,44 @@ TEST(codegen, recursion_at_O0)
 
 TEST(codegen, recursion_at_O2)
 {
-	// Fifteen frame slots become two. Note what survives and why: `factorial` calls something, so
-	// its parameter cannot live in a register across the call (r0-r7/r12 are caller-saved,
-	// 24-Calling-Convention.md) and the frame stays - frameless-leaf is not a blanket "drop the
-	// frame", it is "drop it when the analysis says nothing needs it". The two remaining slots hold
-	// the values live ACROSS the recursive call; everything whose range is call-free got a register.
+	// Fifteen frame slots become one. `factorial` calls itself, so its parameter cannot live in a
+	// caller-saved register across the call - but it can live in a callee-saved one (r8), saved and
+	// restored by the pushm/popm pair around the body (Fase 1 of the register-allocation plan,
+	// docs/12-Register-Allocation-Extension-Plan.md). The one remaining slot holds the value live
+	// ACROSS the recursive call; everything whose range is call-free got a register.
 	CHECK_EQ(atO2("int factorial(int n) { if (n <= 1) return 1; return n * factorial(n - 1); }"),
 		"@text\n"
 		"\n"
 		"// factorial - test.c:1\n"
 		"struct __frame_factorial\n"
 		"    slot0: u32\n"
-		"    slot1: u32\n"
 		"endstruct\n"
 		"global factorial:\n"
+		"    pushm 0x0100          // test.c:1\n"
 		"    enter __frame_factorial // test.c:1\n"
-		"    str [sp + __frame_factorial.slot0], r0 // test.c:1\n"
+		"    mov r8, r0            // test.c:1\n"
 		".L0:\n"
-		"    la r12, [sp + __frame_factorial.slot0] // test.c:1\n"
-		"    ldr r7, [r12]         // test.c:1\n"
-		"    ifgr r7, 1, .L2       // test.c:1\n"
+		"    mov r12, r8           // test.c:1\n"
+		"    ifgr r12, 1, .L2      // test.c:1\n"
 		".L1:\n"
 		"    li r12, 1             // test.c:1\n"
 		"    mov r0, r12           // test.c:1\n"
 		"    leave                 // test.c:1\n"
+		"    popm 0x0100           // test.c:1\n"
 		"    ret                   // test.c:1\n"
 		".L2:\n"
-		"    la r12, [sp + __frame_factorial.slot0] // test.c:1\n"
-		"    ldr r5, [r12]         // test.c:1\n"
-		"    str [sp + __frame_factorial.slot1], r5 // test.c:1\n"
-		"    la r12, [sp + __frame_factorial.slot0] // test.c:1\n"
-		"    ldr r7, [r12]         // test.c:1\n"
-		"    sub r6, r7, 1         // test.c:1\n"
+		"    mov r5, r8            // test.c:1\n"
+		"    str [sp + __frame_factorial.slot0], r5 // test.c:1\n"
+		"    mov r12, r8           // test.c:1\n"
+		"    sub r6, r12, 1        // test.c:1\n"
 		"    mov r0, r6            // test.c:1\n"
 		"    call factorial        // test.c:1\n"
 		"    mov r6, r0            // test.c:1\n"
-		"    ldr r4, [sp + __frame_factorial.slot1] // test.c:1\n"
-		"    imul r7, r4, r6       // test.c:1\n"
-		"    mov r0, r7            // test.c:1\n"
+		"    ldr r4, [sp + __frame_factorial.slot0] // test.c:1\n"
+		"    imul r12, r4, r6      // test.c:1\n"
+		"    mov r0, r12           // test.c:1\n"
 		"    leave                 // test.c:1\n"
+		"    popm 0x0100           // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
 

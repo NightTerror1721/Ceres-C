@@ -330,6 +330,13 @@ namespace ceresc::codegen
 		// function reads it (IrOpcode::VaStart): its argument tail starts at the first incoming stack
 		// word the fixed parameters did not already take.
 		u32 _fixedStackArgWords = 0;
+		// Which callee-saved registers this function handed to a local (value_placement.h), and how
+		// many words that is: what the prologue pushes and the epilogue pops, and how far the saved
+		// copies shift the incoming stack-argument area - a stack parameter is read at
+		// [fp + 8 + 4*_calleeSavedWords + ...], not [fp + 8 + ...].
+		u32 _calleeSavedIntMask = 0;
+		u32 _calleeSavedFloatMask = 0;
+		u32 _calleeSavedWords = 0;
 		u32 _nextComparisonLabel = 0; // uniquely names each materialized comparison's .cmpN_true/.cmpN_end pair
 		// How often each temporary is read and written across the whole function - what the
 		// peepholes consult before consuming an instruction (a Cmp may only be folded into the

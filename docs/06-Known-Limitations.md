@@ -157,7 +157,8 @@ checked contract rather than an unsafe speculative transformation.
 
 `register` moves a local to the front of the queue for a machine register, ahead of everything that
 did not ask. It only reorders preferences: every condition that keeps a local out of a register is a
-correctness rule — a call clobbers the pool, an escaped local needs an address, a `volatile` one
+correctness rule — a call clobbers the caller-saved pool (a local that must survive one competes for
+the callee-saved half instead), an escaped local needs an address, a `volatile` one
 needs a memory home, one wider than a register does not fit — and the keyword relaxes none of them.
 "Wider than a register" is the whole of the width rule: a `char`, a `bool` and a `short` are as
 eligible as an `int` is.
