@@ -252,6 +252,21 @@ namespace ceresc::codegen
 			if (frameAddrLocal[t] != kInvalidLocal && defCount[static_cast<u32>(t)] > 1)
 				localEscapes[frameAddrLocal[t]] = true;
 
+		// A temporary whose value is handed straight to a Call's Param (a call argument) cannot live
+		// in an argument register (r0-r3/f0-f3): the argument-setup moves that precede the call
+		// write those registers in order, and a source sitting in one would be clobbered before its
+		// own move read it. Fase 3 below lets call-free temporaries use the argument registers, but
+		// only the ones that are NOT arguments themselves.
+		std::vector<bool> callArg(tempCount, false);
+		for (const auto& block : function.blocks())
+			for (const IrInstr* instr : block->instrs())
+				if (instr->opcode() == IrOpcode::Param)
+				{
+					IrValue value = instr->as<IrParamPayload>().value;
+					if (value.isValid() && value.id < tempCount)
+						callArg[value.id] = true;
+				}
+
 		// ---- register assignment ------------------------------------------------------------------
 
 		std::vector<u32> freeInt = allocatableIntRegisters(hasCalls);
@@ -383,7 +398,12 @@ namespace ceresc::codegen
 
 				std::vector<u32> blockFreeInt = freeInt;
 				std::vector<u32> blockFreeFloat = freeFloat;
-				struct Held { u32 reg; bool isFloat; usize until; };
+				// The argument registers, only ever handed out in a call-making function and only to
+				// a temporary that is NOT itself a call argument (see callArg[] above). A leaf already
+				// has them in freeInt/freeFloat.
+				std::vector<u32> blockFreeIntArg = hasCalls ? std::vector<u32>{ 0, 1, 2, 3 } : std::vector<u32>{};
+				std::vector<u32> blockFreeFloatArg = hasCalls ? std::vector<u32>{ 0, 1, 2, 3 } : std::vector<u32>{};
+				struct Held { u32 reg; bool isFloat; bool fromArgPool; usize until; };
 				std::vector<Held> held;
 
 				for (usize i = 0; i < instrs.size(); ++i)
@@ -393,7 +413,10 @@ namespace ceresc::codegen
 					{
 						if (held[h].until >= i)
 							continue;
-						(held[h].isFloat ? blockFreeFloat : blockFreeInt).push_back(held[h].reg);
+						if (held[h].fromArgPool)
+							(held[h].isFloat ? blockFreeFloatArg : blockFreeIntArg).push_back(held[h].reg);
+						else
+							(held[h].isFloat ? blockFreeFloat : blockFreeInt).push_back(held[h].reg);
 						held.erase(held.begin() + static_cast<std::ptrdiff_t>(h));
 					}
 
@@ -434,12 +457,26 @@ namespace ceresc::codegen
 					}
 
 					std::vector<u32>& pool = isFloat ? blockFreeFloat : blockFreeInt;
-					if (pool.empty())
+					std::vector<u32>& argPool = isFloat ? blockFreeFloatArg : blockFreeIntArg;
+					bool fromArgPool = false;
+					u32 reg;
+					if (!pool.empty())
+					{
+						reg = pool.back();
+						pool.pop_back();
+					}
+					else if (!callArg[result.id] && !argPool.empty())
+					{
+						reg = argPool.back();
+						argPool.pop_back();
+						fromArgPool = true;
+					}
+					else
+					{
 						continue;
-					u32 reg = pool.back();
-					pool.pop_back();
+					}
 					_temps[result.id] = Placement{ PlacementKind::Register, reg, isFloat };
-					held.push_back(Held{ reg, isFloat, lastUse[result.id] });
+					held.push_back(Held{ reg, isFloat, fromArgPool, lastUse[result.id] });
 				}
 			}
 		}

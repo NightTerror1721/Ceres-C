@@ -1333,6 +1333,16 @@ TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
 	CHECK(contains(casm, "struct __frame_f"));
 }
 
+TEST(codegen, a_call_free_temporary_takes_an_argument_register_in_a_calling_function)
+{
+	// Fase 3: r0-r3/f0-f3 are only the argument registers while a call is being set up. A temporary
+	// whose live range is call-free, and which is not itself a call argument, may use one even in a
+	// function that calls - here `b + c` (computed after `g(a)` returns) lands in r3, which the
+	// pre-Fase-3 pool never handed out to a call-making function.
+	std::string casm = atO2("int g(int v); int f(int a, int b, int c, int d, int e, int h) { return g(a) + (b+c) + (d+e) + (h+a); }");
+	CHECK(contains(casm, "add r3, r7, r6"));
+}
+
 // ---- machine builtins --------------------------------------------------------------------------
 
 TEST(codegen, the_machine_builtins_emit_their_one_instruction)
