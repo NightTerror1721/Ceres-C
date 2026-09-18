@@ -323,6 +323,9 @@ namespace ceresc::codegen
 		if (placement.kind == PlacementKind::Register)
 			return bankReg(placement.index, placement.isFloat);
 
+		if (placement.kind == PlacementKind::Alias)
+			return bankReg(placement.index, placement.isFloat);
+
 		if (placement.kind == PlacementKind::Virtual)
 		{
 			// A FrameAddr naming a register-resident local has no address to hand out. Every
@@ -837,7 +840,10 @@ namespace ceresc::codegen
 				if (std::optional<u32> local = _placement->virtualAddressLocal(p.address))
 				{
 					// Reading a local that lives in a register is just a register read - there is no
-					// memory access to make at all.
+					// memory access to make at all. When the result is an alias of that register, not
+					// even a move: the value is already where every later read expects it.
+					if (_placement->temp(p.result).kind == PlacementKind::Alias)
+						break;
 					std::optional<std::string> source = localRegister(*local);
 					std::string dest = defineInto(p.result, kScratchB, p.isFloat);
 					if (source && *source != dest)

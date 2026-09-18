@@ -33,6 +33,11 @@
 //   4. Frame slots for everything left over, reusing one slot for several temporaries whose live
 //      ranges do not overlap.
 //
+//   5. Aliasing. A Load whose address is a virtual FrameAddr (step 2's register-resident local) has
+//      no home of its own: its result IS the register that local lives in, so every read goes
+//      straight back to it. This is what keeps a callee-saved local from being copied into a frame
+//      field around a call - the copy never exists.
+//
 // Two register-eligibility rules carry the ABI (24-Calling-Convention.md) rather than any analysis:
 //
 //   - A value may only stay in a caller-saved register across a stretch with no `call` in it,
@@ -55,7 +60,8 @@ namespace ceresc::codegen
 		None,		// nothing left in the IR mentions this value, so it needs no home at all
 		Register,	// lives in `index` of its own bank for as long as it is live
 		Slot,		// lives in frame field `index`
-		Virtual		// a FrameAddr naming a register-resident local: there is no address to compute
+		Virtual,	// a FrameAddr naming a register-resident local: there is no address to compute
+		Alias		// a Load of a register-resident local: the value IS `index` of the local's bank
 	};
 
 	struct Placement

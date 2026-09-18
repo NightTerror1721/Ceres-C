@@ -367,6 +367,31 @@ namespace ceresc::codegen
 			}
 		}
 
+		// A Load whose address is a virtual FrameAddr reads a register-resident local, so its result
+		// is exactly that register's value - an alias, not a value that needs a home of its own. This
+		// is what keeps a local that lives in a callee-saved register from being copied to a frame
+		// field around a call: the copy never exists, and every read of the local goes straight back
+		// to the register that holds it for the function's whole lifetime.
+		for (const auto& block : function.blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				if (instr->opcode() != IrOpcode::Load)
+					continue;
+				const auto& p = instr->as<IrLoadPayload>();
+				IrValue address = p.address;
+				if (!address.isValid() || address.id >= tempCount)
+					continue;
+				u32 local = frameAddrLocal[address.id];
+				if (local == kInvalidLocal || _locals[local].kind != PlacementKind::Register)
+					continue;
+				IrValue result = p.result;
+				if (!result.isValid() || result.id >= tempCount)
+					continue;
+				_temps[result.id] = Placement{ PlacementKind::Alias, _locals[local].index, _locals[local].isFloat };
+			}
+		}
+
 		// One liveness solution serves both the register pass below and the slot-sharing pass after
 		// it - the analysis is the expensive part, and nothing between them changes the CFG.
 		Liveness liveness;
@@ -426,7 +451,7 @@ namespace ceresc::codegen
 					IrValue result = resultOf(*instrs[i]);
 					if (!result.isValid() || result.id >= tempCount)
 						continue;
-					if (_temps[result.id].kind == PlacementKind::Virtual)
+					if (_temps[result.id].kind == PlacementKind::Virtual || _temps[result.id].kind == PlacementKind::Alias)
 						continue;
 					if (defCount[result.id] != 1 || liveness.liveOut[b][result.id] || !usedHere[result.id])
 						continue; // defined twice, or read outside this block - it needs a real home

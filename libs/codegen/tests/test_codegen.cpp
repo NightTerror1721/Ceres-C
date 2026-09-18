@@ -286,10 +286,8 @@ TEST(codegen, arithmetic_at_O2_is_frameless_and_stays_in_registers)
 		"// add - test.c:1\n"
 		"global add:\n"
 		".L0:\n"
-		"    mov r3, r0            // test.c:1\n"
-		"    mov r2, r1            // test.c:1\n"
-		"    add r12, r3, r2       // test.c:1\n"
-		"    mov r0, r12           // test.c:1\n"
+		"    add r3, r0, r1        // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
 
@@ -303,15 +301,13 @@ TEST(codegen, comparison_used_as_a_value_still_materializes_at_O2)
 		"// lessThan - test.c:1\n"
 		"global lessThan:\n"
 		".L0:\n"
-		"    mov r3, r0            // test.c:1\n"
-		"    mov r2, r1            // test.c:1\n"
-		"    ifls r3, r2, .cmp0_true // test.c:1\n"
-		"    li r12, 0             // test.c:1\n"
+		"    ifls r0, r1, .cmp0_true // test.c:1\n"
+		"    li r3, 0              // test.c:1\n"
 		"    jp .cmp0_end          // test.c:1\n"
 		".cmp0_true:\n"
-		"    li r12, 1             // test.c:1\n"
+		"    li r3, 1              // test.c:1\n"
 		".cmp0_end:\n"
-		"    mov r0, r12           // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
 
@@ -325,9 +321,7 @@ TEST(codegen, comparison_used_as_a_condition_fuses_into_one_branch_at_O2)
 		"// clamp - test.c:1\n"
 		"global clamp:\n"
 		".L0:\n"
-		"    mov r3, r0            // test.c:1\n"
-		"    mov r2, r1            // test.c:1\n"
-		"    ifge r3, r2, .L2      // test.c:1\n"
+		"    ifge r0, r1, .L2      // test.c:1\n"
 		".L1:\n"
 		"    li r3, 1              // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
@@ -492,43 +486,33 @@ TEST(codegen, recursion_at_O0)
 
 TEST(codegen, recursion_at_O2)
 {
-	// Fifteen frame slots become one. `factorial` calls itself, so its parameter cannot live in a
+	// Fifteen frame slots become none. `factorial` calls itself, so its parameter cannot live in a
 	// caller-saved register across the call - but it can live in a callee-saved one (r8), saved and
 	// restored by the pushm/popm pair around the body (Fase 1 of the register-allocation plan,
-	// docs/12-Register-Allocation-Extension-Plan.md). The one remaining slot holds the value live
-	// ACROSS the recursive call; everything whose range is call-free got a register.
+	// docs/12-Register-Allocation-Extension-Plan.md). Fase 5's load-of-a-register-resident-local
+	// aliasing keeps `n` in r8 across the recursive call with no copy, so the frame is empty and the
+	// function is frameless: no struct, no enter/leave.
 	CHECK_EQ(atO2("int factorial(int n) { if (n <= 1) return 1; return n * factorial(n - 1); }"),
 		"@text\n"
 		"\n"
 		"// factorial - test.c:1\n"
-		"struct __frame_factorial\n"
-		"    slot0: u32\n"
-		"endstruct\n"
 		"global factorial:\n"
 		"    pushm 0x0100          // test.c:1\n"
-		"    enter __frame_factorial // test.c:1\n"
 		"    mov r8, r0            // test.c:1\n"
 		".L0:\n"
-		"    mov r12, r8           // test.c:1\n"
-		"    ifgr r12, 1, .L2      // test.c:1\n"
+		"    ifgr r8, 1, .L2       // test.c:1\n"
 		".L1:\n"
 		"    li r12, 1             // test.c:1\n"
 		"    mov r0, r12           // test.c:1\n"
-		"    leave                 // test.c:1\n"
 		"    popm 0x0100           // test.c:1\n"
 		"    ret                   // test.c:1\n"
 		".L2:\n"
-		"    mov r5, r8            // test.c:1\n"
-		"    str [sp + __frame_factorial.slot0], r5 // test.c:1\n"
-		"    mov r12, r8           // test.c:1\n"
-		"    sub r6, r12, 1        // test.c:1\n"
-		"    mov r0, r6            // test.c:1\n"
+		"    sub r7, r8, 1         // test.c:1\n"
+		"    mov r0, r7            // test.c:1\n"
 		"    call factorial        // test.c:1\n"
-		"    mov r6, r0            // test.c:1\n"
-		"    ldr r4, [sp + __frame_factorial.slot0] // test.c:1\n"
-		"    imul r12, r4, r6      // test.c:1\n"
+		"    mov r7, r0            // test.c:1\n"
+		"    imul r12, r8, r7      // test.c:1\n"
 		"    mov r0, r12           // test.c:1\n"
-		"    leave                 // test.c:1\n"
 		"    popm 0x0100           // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
@@ -544,11 +528,10 @@ TEST(codegen, float_division_and_conversion_at_O2)
 		"// halveToInt - test.c:1\n"
 		"global halveToInt:\n"
 		".L0:\n"
-		"    mov f3, f0            // test.c:1\n"
 		"    la r4, 1073741824     // test.c:1\n"
-		"    mtf f2, r4            // test.c:1\n"
-		"    div f1, f3, f2        // test.c:1\n"
-		"    ftoii r3, f1          // test.c:1\n"
+		"    mtf f3, r4            // test.c:1\n"
+		"    div f2, f0, f3        // test.c:1\n"
+		"    ftoii r3, f2          // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
@@ -605,22 +588,16 @@ TEST(codegen, a_loop_at_O2)
 		"    li r3, 0              // test.c:1\n"
 		"    mov r7, r3            // test.c:1\n"
 		".L1:\n"
-		"    mov r3, r7            // test.c:1\n"
-		"    mov r2, r0            // test.c:1\n"
-		"    ifge r3, r2, .L4      // test.c:1\n"
+		"    ifge r7, r0, .L4      // test.c:1\n"
 		".L2:\n"
-		"    mov r3, r6            // test.c:1\n"
-		"    mov r2, r7            // test.c:1\n"
-		"    add r1, r3, r2        // test.c:1\n"
-		"    mov r6, r1            // test.c:1\n"
+		"    add r3, r6, r7        // test.c:1\n"
+		"    mov r6, r3            // test.c:1\n"
 		".L3:\n"
-		"    mov r3, r7            // test.c:1\n"
-		"    add r1, r3, 1         // test.c:1\n"
-		"    mov r7, r1            // test.c:1\n"
+		"    add r2, r7, 1         // test.c:1\n"
+		"    mov r7, r2            // test.c:1\n"
 		"    jp .L1                // test.c:1\n"
 		".L4:\n"
-		"    mov r3, r6            // test.c:1\n"
-		"    mov r0, r3            // test.c:1\n"
+		"    mov r0, r6            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
 
@@ -669,7 +646,7 @@ TEST(codegen, cmp_branch_fusion_is_what_collapses_the_materialized_comparison)
 	// Simplified counterpart: the comparison becomes a real 0/1 and the branch tests that value.
 	std::string separate = generateCasm(source, without(&support::OptimizationOptions::cmpBranchFusion));
 	CHECK(contains(separate, ".cmp0_true"));
-	CHECK(contains(separate, "ifeq r12, 0, .L2")); // ...tested against zero, as its own instruction
+	CHECK(contains(separate, "ifeq r3, 0, .L2")); // ...tested against zero, as its own instruction
 }
 
 TEST(codegen, a_float_branch_keeps_its_explicit_false_jump)
@@ -686,12 +663,12 @@ TEST(codegen, immediate_operands_keep_a_constant_out_of_a_register)
 	std::string_view source = "int bump(int a) { return a + 1; }";
 
 	std::string withImmediates = atO2(source);
-	CHECK(contains(withImmediates, "add r1, r3, 1"));
-	CHECK(!contains(withImmediates, "li r2, 1")); // nothing materializes the 1 at all
+	CHECK(contains(withImmediates, "add r2, r0, 1"));
+	CHECK(!contains(withImmediates, "li ")); // nothing materializes the 1 at all
 
 	std::string simplified = generateCasm(source, without(&support::OptimizationOptions::immediateOperands));
-	CHECK(contains(simplified, "li r2, 1"));
-	CHECK(contains(simplified, "add r1, r3, r2"));
+	CHECK(contains(simplified, "li r3, 1"));
+	CHECK(contains(simplified, "add r2, r0, r3"));
 }
 
 TEST(codegen, a_constant_too_large_for_the_immediate_field_is_materialized_anyway)
@@ -701,8 +678,8 @@ TEST(codegen, a_constant_too_large_for_the_immediate_field_is_materialized_anywa
 	// only accepts [0, 32767], where both readings agree. Past that the constant has to go through
 	// a register even with the peephole on.
 	std::string text = atO2("int bump(int a) { return a + 100000; }");
-	CHECK(contains(text, "la r2, 100000"));
-	CHECK(contains(text, "add r1, r3, r2"));
+	CHECK(contains(text, "la r3, 100000"));
+	CHECK(contains(text, "add r2, r0, r3"));
 }
 
 TEST(codegen, register_allocation_is_what_keeps_values_out_of_the_frame)
@@ -832,18 +809,16 @@ TEST(codegen, an_array_element_read_uses_the_indexed_load_form)
 		"// sum - test.c:1\n"
 		"global sum:\n"
 		".L0:\n"
-		"    mov r3, r0            // test.c:1\n"
-		"    mov r2, r1            // test.c:1\n"
-		"    mul r7, r2, 4         // test.c:1\n"
-		"    ldr r3, [r3 + r7]     // test.c:1\n"
-		"    mov r0, r3            // test.c:1\n"
+		"    mul r2, r1, 4         // test.c:1\n"
+		"    ldr r2, [r0 + r2]     // test.c:1\n"
+		"    mov r0, r2            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
 
 TEST(codegen, an_array_element_write_uses_the_indexed_store_form)
 {
 	std::string text = atO2("void put(int* a, int i, int v) { a[i] = v; }");
-	CHECK(contains(text, "str [r12 + r5], r3"));
+	CHECK(contains(text, "str [r0 + r12], r2"));
 	CHECK(!contains(text, "\n    add ")); // no separate address computation left
 }
 
@@ -855,8 +830,7 @@ TEST(codegen, a_struct_field_read_uses_a_constant_displacement_not_a_separate_ad
 		"// gety - test.c:1\n"
 		"global gety:\n"
 		".L0:\n"
-		"    mov r3, r0            // test.c:1\n"
-		"    ldr r3, [r3 + 4]      // test.c:1\n"
+		"    ldr r3, [r0 + 4]      // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
@@ -869,8 +843,8 @@ TEST(codegen, without_address_folding_every_element_address_is_computed_into_a_r
 	std::string folded = atO2(source);
 	std::string plain = generateCasm(source, without(&support::OptimizationOptions::addressFolding));
 
-	CHECK(contains(folded, "ldr r3, [r3 + r7]"));
-	CHECK(!contains(plain, "ldr r3, [r3 + r7]"));
+	CHECK(contains(folded, "ldr r2, [r0 + r2]"));
+	CHECK(!contains(plain, "ldr r2, [r0 + r2]"));
 	CHECK(contains(plain, "    add "));
 	CHECK(countOf(plain, "\n") > countOf(folded, "\n"));
 }
@@ -1056,12 +1030,13 @@ TEST(codegen, a_non_constant_global_initializer_is_diagnosed_rather_than_guessed
 TEST(codegen, a_struct_returning_function_takes_a_hidden_destination_pointer_in_arg0)
 {
 	// The visible parameter moves to r1 because r0 carries the destination - the ABI table's
-	// "argumentos visibles corridos uno". The callee returns that same pointer in ret0.
+	// "argumentos visibles corridos uno". The callee writes through that same pointer in place, so
+	// r0 never has to be moved anywhere and it still ends its life as the returned pointer.
 	std::string text = atO2(
 		"struct P { int x; int y; };"
 		"struct P scaled(int n) { struct P p; p.x = n; p.y = n; return p; }");
 	CHECK(contains(text, "scaled:"));
-	CHECK(contains(text, "mov r0, "));  // the destination pointer goes back out in ret0
+	CHECK(contains(text, "str [r0"));  // the destination is written through r0 directly
 	CHECK(contains(text, "r1"));        // n arrived one register along
 }
 
@@ -1326,10 +1301,9 @@ TEST(codegen, a_register_parameter_competes_for_the_pool_like_any_other_register
 
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
 {
-	// The keyword reorders preferences and nothing else: whatever it asked for, a value that must
-	// survive a call cannot live in a caller-saved register, and the frame that holds the spill
-	// stays in place.
-	std::string casm = atO2("int g(int v); int f(int n) { register int x = n; return g(x) + x; }");
+	// The keyword reorders preferences and nothing else: a volatile local needs a memory home
+	// whatever it asked for, so the frame stays.
+	std::string casm = atO2("int f(int n) { register volatile int x = n; return x + 1; }");
 	CHECK(contains(casm, "struct __frame_f"));
 }
 
@@ -1337,10 +1311,11 @@ TEST(codegen, a_call_free_temporary_takes_an_argument_register_in_a_calling_func
 {
 	// Fase 3: r0-r3/f0-f3 are only the argument registers while a call is being set up. A temporary
 	// whose live range is call-free, and which is not itself a call argument, may use one even in a
-	// function that calls - here `b + c` (computed after `g(a)` returns) lands in r3, which the
-	// pre-Fase-3 pool never handed out to a call-making function.
-	std::string casm = atO2("int g(int v); int f(int a, int b, int c, int d, int e, int h) { return g(a) + (b+c) + (d+e) + (h+a); }");
-	CHECK(contains(casm, "add r3, r7, r6"));
+	// function that calls - here, under enough pressure, `i` loaded out of its frame field lands in
+	// r3 and feeds the `(h + i)` add directly, a register the pre-Fase-3 pool never handed out to a
+	// call-making function.
+	std::string casm = atO2("int g(int v); int f(int a, int b, int c, int d, int e, int h, int i, int j) { return g(a) + (b+c) + (d+e) + (h+i) + (a+j); }");
+	CHECK(contains(casm, "add r6, r12, r3"));
 }
 
 // ---- machine builtins --------------------------------------------------------------------------
