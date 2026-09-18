@@ -87,6 +87,11 @@ namespace ceresc::ir
 		// perform for free (codegen.cpp's parameter settling). Signed means `sxtb`/`sxth`, unsigned
 		// an `and` mask - the same two forms IrUnOp::Narrow picks between.
 		bool isSigned = false;
+		// The local holds a `restrict`-qualified pointer, so accesses through it cannot alias
+		// anything else. The optimizer uses this to forward a load through the pointer from a store
+		// through the same pointer (ir_optimizer.cpp's forwardRestrictLoads). False is always safe:
+		// it only turns the optimization off.
+		bool isRestrict = false;
 	};
 
 	class IrFunction
@@ -168,11 +173,16 @@ namespace ceresc::ir
 		// (e.g. two `{ int x; }` blocks that are never live at the same time): this phase does no
 		// stack-slot coalescing, exactly the same "simplest thing that works" call §10 makes for
 		// register allocation.
-		u32 newLocalSlot(u32 sizeInBytes, bool isFloat, bool isVolatile = false, bool preferRegister = false)
+		u32 newLocalSlot(u32 sizeInBytes, bool isFloat, bool isVolatile = false, bool preferRegister = false, bool isRestrict = false)
 		{
-			_localSlots.push_back(IrLocalSlot{ sizeInBytes, isFloat, isVolatile, preferRegister });
+			_localSlots.push_back(IrLocalSlot{ sizeInBytes, isFloat, isVolatile, preferRegister, false, isRestrict });
 			return static_cast<u32>(_localSlots.size() - 1);
 		}
+
+		// The reuse counterpart of newLocalSlot(): when a dead scope's slot is handed to a new local
+		// it keeps its size (widenLocalSlot) but takes the new local's restrict-ness, which is a
+		// property of the TYPE rather than of the bytes.
+		void setLocalSlotRestrict(u32 index, bool isRestrict) noexcept { _localSlots[index].isRestrict = isRestrict; }
 
 		// Widens an already-reserved slot so it can also hold a second local of a different type -
 		// what IrBuilder's scope-based slot reuse needs when the local now taking over a dead

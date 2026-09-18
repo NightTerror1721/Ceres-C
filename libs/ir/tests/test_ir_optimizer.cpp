@@ -351,6 +351,44 @@ TEST(ir_optimizer, load_forwarding_still_works_for_a_local_of_a_matching_width)
 	CHECK(contains(text, "ret %2")); // %2 is the 7 - the second store replaced what the first made known
 }
 
+TEST(ir_optimizer, restrict_lets_a_load_forward_past_a_store_through_another_restrict_pointer)
+{
+	// *q cannot alias *p because both are restrict, so the reload of *p forwards to the constant
+	// straight through the intervening *q store.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.loadForwarding = true;
+	options.copyPropagation = true;
+	options.deadCodeElimination = true;
+
+	std::string text = optimizedIr("int f(int* restrict p, int* restrict q) { *p = 10; *q = 20; return *p; }", options, "f");
+	CHECK(contains(text, "ret %0")); // %0 is the 10, forwarded across the *q store
+}
+
+TEST(ir_optimizer, restrict_is_conservative_across_a_store_through_an_ordinary_pointer)
+{
+	// `q` is not restrict, so a store through it may alias *p after all - the reload has to stay.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.loadForwarding = true;
+	options.copyPropagation = true;
+	options.deadCodeElimination = true;
+
+	std::string text = optimizedIr("int f(int* restrict p, int* q) { *p = 10; *q = 20; return *p; }", options, "f");
+	CHECK(contains(text, "ret %8")); // %8 is the reload of *p, kept because *q may have clobbered it
+}
+
+TEST(ir_optimizer, restrict_forgets_everything_across_a_call)
+{
+	// A callee may write through any pointer it can reach, so a call clears whatever a restrict
+	// pointer was known to hold - the reload after the call has to stay.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.loadForwarding = true;
+	options.copyPropagation = true;
+	options.deadCodeElimination = true;
+
+	std::string text = optimizedIr("void g(void); int f(int* restrict p) { *p = 10; g(); return *p; }", options, "f");
+	CHECK(contains(text, "load.word"));
+}
+
 TEST(ir_optimizer, dead_store_elimination_drops_a_store_nothing_ever_reads)
 {
 	support::OptimizationOptions options = support::OptimizationOptions::none();

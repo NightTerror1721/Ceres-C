@@ -196,7 +196,7 @@ namespace ceresc::ir
 		}
 	}
 
-	u32 IrBuilder::newLocalSlotFor(u32 sizeInBytes, bool isFloat, bool isVolatile, bool preferRegister)
+	u32 IrBuilder::newLocalSlotFor(u32 sizeInBytes, bool isFloat, bool isVolatile, bool preferRegister, bool isRestrict)
 	{
 		u32 slot;
 		if (_options.localSlotReuse && !_freeLocalSlots.empty())
@@ -206,10 +206,11 @@ namespace ceresc::ir
 			// The slot keeps whichever size is larger: reusing a `char`'s slot for an `int` has to
 			// grow it, reusing an `int`'s for a `char` must not shrink it (IrFunction::widenLocalSlot).
 			_currentFunction->widenLocalSlot(slot, sizeInBytes, isFloat);
+			_currentFunction->setLocalSlotRestrict(slot, isRestrict);
 		}
 		else
 		{
-			slot = _currentFunction->newLocalSlot(sizeInBytes, isFloat, isVolatile, preferRegister);
+			slot = _currentFunction->newLocalSlot(sizeInBytes, isFloat, isVolatile, preferRegister, isRestrict);
 		}
 
 		if (!_scopeSlots.empty())
@@ -1832,7 +1833,8 @@ namespace ceresc::ir
 		LocalSymbol symbol;
 		symbol.kind = LocalSymbolKind::Local;
 		symbol.localSlot = newLocalSlotFor(node.type() ? node.type()->sizeInBytes() : 4u, node.type() && node.type()->isFloat(),
-			node.type() && node.type()->isVolatile(), node.storageClass() == ast::StorageClass::Register);
+			node.type() && node.type()->isVolatile(), node.storageClass() == ast::StorageClass::Register,
+			node.type() && node.type()->isRestrict());
 		declareSymbol(node.name(), symbol);
 
 		if (!node.initializer())
@@ -1899,7 +1901,8 @@ namespace ceresc::ir
 				// object they were accesses TO.
 				paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u,
 					param.type && param.type->isFloat(), param.type && param.type->isVolatile(),
-					param.isRegister, param.type && param.type->isSigned() });
+					param.isRegister, param.type && param.type->isSigned(),
+					param.type && param.type->isRestrict() });
 		}
 		function.reserveParamSlots(paramSlots);
 		// Slot reuse never crosses a function boundary: a slot freed by a scope in the previous

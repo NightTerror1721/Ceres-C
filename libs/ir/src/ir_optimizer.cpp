@@ -826,6 +826,114 @@ namespace ceresc::ir
 			return changed;
 		}
 
+		// ---- pass: restrict load forwarding ----------------------------------------------------------
+
+		// A load through a `restrict` pointer forwards from the most recent store through the SAME
+		// pointer, whatever stores through other pointers sit in between - restrict is the promise
+		// that no other pointer aliases the pointee. Only the direct form is recognized: the address
+		// has to be a load of a restrict pointer local's value (`*p`, where p is a restrict parameter
+		// or local). Pointer arithmetic (`p[i]`) has a computed address this pass does not trace back
+		// to the pointer, so it is simply not forwarded - a future pass can extend this.
+		//
+		// A store through any pointer other than the same restrict one, and any call, forgets every
+		// entry: such a store may alias a restrict pointee, and the compiler must stay correct when
+		// the pointer it is looking at is not provably the restrict pointer itself.
+		bool forwardRestrictLoads(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		{
+			if (!options.loadForwarding)
+				return false;
+
+			std::span<const IrLocalSlot> localSlots = function.localSlots();
+			std::vector<u32> frameAddrLocal = mapFrameAddrTemps(function);
+
+			// The instruction that defined each temporary - what lets this pass tell "the address is
+			// p's value" from a Load whose address is a FrameAddr naming a restrict local.
+			std::vector<const IrInstr*> definer(function.tempCount(), nullptr);
+			for (const auto& block : function.blocks())
+				for (const IrInstr* instr : block->instrs())
+					if (IrValue result = resultOf(*instr); result.isValid() && result.id < definer.size())
+						definer[result.id] = instr;
+
+			auto restrictLocalOf = [&](IrValue address) -> u32
+			{
+				if (!address.isValid() || address.id >= definer.size())
+					return ~0u;
+				const IrInstr* def = definer[address.id];
+				if (!def || def->opcode() != IrOpcode::Load)
+					return ~0u;
+				IrValue addr = def->as<IrLoadPayload>().address;
+				if (!addr.isValid() || addr.id >= frameAddrLocal.size())
+					return ~0u;
+				u32 local = frameAddrLocal[addr.id];
+				if (local == ~0u || local >= localSlots.size() || !localSlots[local].isRestrict)
+					return ~0u;
+				return local;
+			};
+
+			struct Known { IrValue value; IrMemSize size; bool isFloat; };
+
+			bool changed = false;
+			for (const auto& block : function.blocks())
+			{
+				std::unordered_map<u32, Known> known;
+				std::vector<IrInstr*> rewritten;
+				rewritten.reserve(block->instrs().size());
+				bool blockChanged = false;
+
+				for (IrInstr* instr : block->instrs())
+				{
+					if (instr->opcode() == IrOpcode::Store)
+					{
+						const auto& p = instr->as<IrStorePayload>();
+						u32 local = restrictLocalOf(p.address);
+						if (local != ~0u)
+						{
+							// A volatile store's effect cannot be named, so whatever was known stops
+							// being true; an ordinary one is the new known value.
+							if (p.isVolatile)
+								known.erase(local);
+							else
+								known[local] = Known{ p.value, p.size, p.isFloat };
+						}
+						else
+						{
+							known.clear(); // a store through any other pointer may alias
+						}
+						rewritten.push_back(instr);
+						continue;
+					}
+
+					if (instr->opcode() == IrOpcode::Load)
+					{
+						const auto& p = instr->as<IrLoadPayload>();
+						u32 local = restrictLocalOf(p.address);
+						auto it = (local == ~0u) ? known.end() : known.find(local);
+						if (local != ~0u && !p.isVolatile && it != known.end() &&
+							p.size == it->second.size && p.isFloat == it->second.isFloat)
+						{
+							rewritten.push_back(makeCopy(arena, instr->location(), p.result, it->second.value, p.isFloat));
+							blockChanged = true;
+							continue;
+						}
+						rewritten.push_back(instr);
+						continue;
+					}
+
+					if (instr->opcode() == IrOpcode::Call)
+						known.clear(); // the callee may write through any pointer it can reach
+
+					rewritten.push_back(instr);
+				}
+
+				if (blockChanged)
+				{
+					block->replaceInstrs(std::move(rewritten));
+					changed = true;
+				}
+			}
+			return changed;
+		}
+
 		// ---- pass: dead store elimination -------------------------------------------------------------
 
 		bool eliminateDeadStores(IrFunction& function, const OptimizationOptions& options)
@@ -1427,6 +1535,7 @@ namespace ceresc::ir
 				bool changed = false;
 				changed |= foldFunction(*function, arena, options);
 				changed |= forwardLoads(*function, arena, options);
+				changed |= forwardRestrictLoads(*function, arena, options);
 				changed |= propagateCopies(*function, arena, options);
 				changed |= eliminateDeadStores(*function, options);
 				changed |= threadJumps(*function, arena, options);

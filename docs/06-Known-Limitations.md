@@ -151,9 +151,13 @@ int, and `--emit-ast` prints them differently because they are different types. 
 follow the type-spec (`int volatile x` is `volatile int x`), and repeating one across two positions
 is still a duplicate.
 
-`restrict` is accepted only on pointer types and is recorded in the type system. The current
-optimizer does not yet use no-alias assumptions across arbitrary pointers, so the qualifier is a
-checked contract rather than an unsafe speculative transformation.
+`restrict` is accepted only on pointer types and is recorded in the type system. The optimizer uses it
+for one no-alias assumption: a load through a `restrict` pointer forwards from the most recent store
+through that *same* pointer, even when stores through other pointers sit in between (because restrict
+is the promise that nothing else aliases the pointee). Only the direct `*p` form is recognized —
+pointer arithmetic (`p[i]`) has a computed address that is not traced back to the pointer — and any
+store through an ordinary (non-`restrict`) pointer, or any call, is still treated as possibly aliasing,
+so the qualifier remains a checked contract first and a speculative transformation second.
 
 `register` moves a local to the front of the queue for a machine register, ahead of everything that
 did not ask. It only reorders preferences: every condition that keeps a local out of a register is a
