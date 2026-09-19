@@ -433,6 +433,79 @@ TEST(preprocessor, token_pasting_works_in_an_object_like_macro)
 	CHECK(contains(result.text, "int ab;"));
 }
 
+TEST(preprocessor, a_macro_body_may_span_lines_with_a_continuation_backslash)
+{
+	// The feature this whole suite grew for: a backslash immediately before the newline splices the
+	// next physical line onto this one, so a #define can be laid out over more than one line.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define SUM(a, b) \\\n"
+		"    ((a) + (b))\n"
+		"int x = SUM(2, 3);\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int x = ((2) + (3));"));
+}
+
+TEST(preprocessor, an_object_like_macro_body_may_span_lines)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define VALUE \\\n"
+		"    42\n"
+		"int x = VALUE;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int x = 42;"));
+}
+
+TEST(preprocessor, a_backslash_newline_splices_ordinary_code_lines)
+{
+	// Line continuation is not a macro feature - it is phase 2 of translation and applies to every
+	// line, so two halves of a statement may sit on separate physical lines.
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "int x = 1 + \\\n    2;\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK_EQ(countOf(result.text, "\n"), usize{ 1 });
+	CHECK(contains(result.text, "int x = 1 + "));
+	CHECK(contains(result.text, "2;"));
+	CHECK(!contains(result.text, "\\"));
+}
+
+TEST(preprocessor, a_directive_may_span_lines)
+{
+	// The splice happens before a line is recognised as a directive, so #if works across lines too.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define N 4\n"
+		"#if N == \\\n"
+		"    4\n"
+		"int selected;\n"
+		"#endif\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int selected;"));
+}
+
+TEST(preprocessor, a_continuation_backslash_survives_crlf_line_endings)
+{
+	// CRLF puts a \r between the backslash and the newline; the splice has to look past it.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define VALUE \\\r\n"
+		"    42\r\n"
+		"int x = VALUE;\r\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int x = 42;"));
+}
+
 TEST(preprocessor, error_and_warning_are_reported_only_in_active_branches)
 {
 	TempDirectory dir;

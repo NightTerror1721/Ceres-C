@@ -37,6 +37,28 @@ namespace ceresc::preprocessor
 			fs::path canonical = fs::weakly_canonical(fs::path(path), error);
 			return error ? path : canonical.string();
 		}
+		// True when a physical line ends in a backslash immediately before its newline, which is
+		// C's line continuation: the next physical line is spliced onto this one. A lone trailing
+		// `\r` (CRLF) sits after the backslash and does not count.
+		bool continuesWithBackslash(std::string_view line) noexcept
+		{
+			if (line.empty())
+				return false;
+			usize back = line.size() - 1;
+			if (line[back] == '\r' && back != 0)
+				--back;
+			return line[back] == '\\';
+		}
+		// The same line with the continuation backslash (and any CRLF `\r` after it) removed.
+		std::string_view stripContinuation(std::string_view line) noexcept
+		{
+			usize end = line.size();
+			if (end != 0 && line[end - 1] == '\r')
+				--end;
+			if (end != 0 && line[end - 1] == '\\')
+				--end;
+			return line.substr(0, end);
+		}
 		std::string_view withoutDirectiveComment(std::string_view text)
 		{
 			usize a = text.find("//"), b = text.find("/*"), comment = std::min(a, b);
@@ -514,13 +536,38 @@ namespace ceresc::preprocessor
 		std::ifstream input(path, std::ios::binary); if (!input) { _diagnostics.error(DiagId::CannotOpenFile, {}, "cannot open '{}'", path); return false; }
 		std::string contents{ std::istreambuf_iterator<char>(input), {} }; support::SourceId sourceId = _sourceManager.registerBuffer(path, std::move(contents)); const auto* buffer = _sourceManager.getBuffer(sourceId); if (!buffer) return false;
 		includeStack.push_back(canonical); u32 previousIncludeLevel = _includeLevel; _includeLevel = static_cast<u32>(includeStack.size()) - 1;
-		bool ok = true, inBlockComment = false; std::vector<Conditional> conditionals; u32 sourceLine = 0; std::string_view text = buffer->buffer();
+		bool ok = true, inBlockComment = false; std::vector<Conditional> conditionals; u32 sourceLine = 0, logicalLine = 0; std::string_view text = buffer->buffer();
 		auto active = [&] { return conditionals.empty() || conditionals.back().active; };
-		auto blank = [&] { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size() + 1), sourceId, sourceLine); out.text += '\n'; };
+		auto blank = [&] { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size() + 1), sourceId, logicalLine); out.text += '\n'; };
 		for (usize position = 0; position < text.size();)
 		{
-			usize newline = text.find('\n', position); bool last = newline == std::string_view::npos; std::string_view line = text.substr(position, (last ? text.size() : newline) - position); position = last ? text.size() : newline + 1; ++sourceLine;
-			support::SourceLocation here{ sourceId, sourceLine, 1, 0 }; std::string_view trimmed = trim(line);
+			// One logical line, spliced from as many physical lines as end in a continuation
+			// backslash. `logicalLine` names the first physical line the text came from, which is
+			// where __LINE__ and the line map both point; `sourceLine` still advances over every
+			// physical line so the next logical line is numbered correctly.
+			usize newline = text.find('\n', position); bool last = newline == std::string_view::npos;
+			std::string_view line = text.substr(position, (last ? text.size() : newline) - position);
+			position = last ? text.size() : newline + 1; logicalLine = ++sourceLine;
+			std::string spliced;
+			if (!last && continuesWithBackslash(line))
+			{
+				spliced = stripContinuation(line);
+				while (position < text.size())
+				{
+					newline = text.find('\n', position); last = newline == std::string_view::npos;
+					std::string_view physical = text.substr(position, (last ? text.size() : newline) - position);
+					position = last ? text.size() : newline + 1; ++sourceLine;
+					if (!last && continuesWithBackslash(physical))
+						spliced += stripContinuation(physical);
+					else
+					{
+						spliced += physical;
+						break;
+					}
+				}
+				line = spliced;
+			}
+			support::SourceLocation here{ sourceId, logicalLine, 1, 0 }; std::string_view trimmed = trim(line);
 			if (!inBlockComment && !trimmed.empty() && trimmed.front() == '#')
 			{
 				std::string_view directive = withoutDirectiveComment(trim(trimmed.substr(1)));
@@ -570,7 +617,7 @@ namespace ceresc::preprocessor
 				if (directive.empty()) { blank(); continue; }
 				std::string_view word = directive.substr(0, directive.find_first_of(" \t")); _diagnostics.error(DiagId::UnsupportedDirective, here, "'#{}' is not supported", word); ok = false; blank(); continue;
 			}
-			if (active()) { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size()+1), sourceId, sourceLine); out.text += expandMacros(line, here, inBlockComment); out.text += '\n'; } else blank();
+			if (active()) { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size()+1), sourceId, logicalLine); out.text += expandMacros(line, here, inBlockComment); out.text += '\n'; } else blank();
 		}
 		for (const Conditional& c : conditionals) { _diagnostics.error(DiagId::UnterminatedConditional, c.location, "unterminated conditional directive"); ok = false; }
 		includeStack.pop_back(); _includeLevel = previousIncludeLevel; return ok;

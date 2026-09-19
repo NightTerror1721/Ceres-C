@@ -20,6 +20,7 @@ into one buffer.
 | `#warning message` | Emits a warning without failing preprocessing. |
 | `#pragma once` | This file contributes nothing if it is included again. |
 | `#pragma warning(...)` | Turns one of this compiler's own warnings off, back on, or into an error. See [11-Diagnostics.md](11-Diagnostics.md). |
+| `\` at the end of a line | Splices the next physical line onto this one, so any line — a `#define` body, an `#if`, ordinary code — may span lines. |
 
 `#if` expressions support integer literals, parentheses, unary `+ - ! ~`, arithmetic, shifts,
 comparisons, equality, bitwise operators and `&&`/`||`, with C precedence. Undefined identifiers
@@ -96,8 +97,18 @@ int NAMEx;             // stays NAMEx - a different identifier
 
 A macro may expand into another one. A macro defined in terms of itself stops being rewritten after
 a bounded number of passes, with a warning, instead of looping forever. This is text substitution:
-an argument must fit on the same physical source line, and stringification and token pasting work on
-text rather than on tokens — see below.
+stringification and token pasting work on text rather than on tokens — see below.
+
+A backslash immediately before the newline splices the next physical line onto the current one, so a
+macro body can be laid out over several lines:
+
+```c
+#define SUM(a, b) \
+    ((a) + (b))
+```
+
+The splice happens before a line is recognised as a directive or expanded, so it applies to `#define`
+bodies, `#if` expressions, and ordinary code alike.
 
 ### Stringification and token pasting
 

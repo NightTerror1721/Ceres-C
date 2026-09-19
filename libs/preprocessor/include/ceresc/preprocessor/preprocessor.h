@@ -25,6 +25,8 @@
 //                      `#x` inside the body stringifies the argument, and `a ## b` pastes two
 //                      tokens into one.
 //   #undef NAME         Forgets one.
+//   \ at end of line    A backslash immediately before the newline splices the next physical line
+//                       onto this one, so a #define body, an #if or any other line may span lines.
 //   #if/#elif/#else/#endif and #ifdef/#ifndef conditional compilation.
 //   #error/#warning diagnostics from the source.
 //   #pragma once        This file contributes nothing if it is included again.
