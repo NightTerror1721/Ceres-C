@@ -332,6 +332,55 @@ TEST(codegen, comparison_used_as_a_condition_fuses_into_one_branch_at_O2)
 		"    ret                   // test.c:1\n");
 }
 
+TEST(codegen, a_short_circuit_boolean_used_as_a_value_keeps_a_register_and_no_frame)
+{
+	// `&&`/`||`/`!` used as a VALUE lower to a phi-shaped temporary (materializeBoolean,
+	// ir_builder.cpp): one result defined in two branch blocks and read in the join. The per-block
+	// register scan cannot hold a register across the branch, so until now the value always
+	// spilled - and in a leaf, that single spill was what opened a frame. The cross-block pass now
+	// keeps it in a register, so the function is frameless and touches no memory at all.
+	std::string casm = atO2("int isupper(int c) { return c >= 65 && c <= 90; }");
+	CHECK(!contains(casm, "struct __frame_isupper"));
+	CHECK(!contains(casm, "enter"));
+	CHECK(!contains(casm, "leave"));
+	CHECK(!contains(casm, "[sp +"));
+	CHECK(contains(casm, "li r3, 1"));
+	CHECK(contains(casm, "li r3, 0"));
+}
+
+TEST(codegen, a_ternary_value_keeps_a_register_and_no_frame)
+{
+	// visit(TernaryExpr&) emits the same phi shape - a Copy into one result in each branch - so
+	// `?:` used as a value gets the same treatment as `&&`/`||`/`!`.
+	std::string casm = atO2("int pick(int a, int b) { return a ? b : 0; }");
+	CHECK(!contains(casm, "struct __frame_pick"));
+	CHECK(!contains(casm, "enter"));
+	CHECK(!contains(casm, "[sp +"));
+}
+
+TEST(codegen, a_float_ternary_value_keeps_the_float_bank)
+{
+	// The cross-block pass picks the bank off the defining instruction, so a float `?:` lives in
+	// the float registers rather than spilling to an integer frame field.
+	std::string casm = atO2("float pick(float a, float b) { return a ? b : 0.0; }");
+	CHECK(!contains(casm, "struct __frame_pick"));
+	CHECK(!contains(casm, "[sp +"));
+	CHECK(contains(casm, "mov f3, f1"));
+}
+
+TEST(codegen, a_short_circuit_value_passed_to_a_call_uses_the_call_free_pool)
+{
+	// In a calling function the cross-block result takes a caller-saved register (r12 here) whose
+	// live range is call-free: it is set up as the argument, and the call clobbers it only after
+	// its last read. No frame is needed for it, so the whole function is frameless.
+	std::string casm = atO2("int g(int v); int pass(int a, int b) { return g(a && b); }");
+	CHECK(!contains(casm, "struct __frame_pass"));
+	CHECK(!contains(casm, "enter"));
+	CHECK(!contains(casm, "[sp +"));
+	CHECK(contains(casm, "li r12, 1"));
+	CHECK(contains(casm, "li r12, 0"));
+}
+
 TEST(codegen, comparison_used_as_a_condition_at_O0_materializes_then_branches)
 {
 	CHECK_EQ(atO0("int clamp(int a, int b) { if (a < b) return 1; return 0; }"),

@@ -437,6 +437,22 @@ TEST(e2e, a_short_circuit_condition_does_not_evaluate_its_right_hand_side)
 		"5");
 }
 
+TEST(e2e, a_short_circuit_boolean_used_as_a_value_is_right_at_every_level)
+{
+	// `&&`, `||`, `!` and `?:` as VALUES - not conditions - each lower to one temporary defined in
+	// two branch blocks and read in the join (materializeBoolean / visit(TernaryExpr&)). At -O0
+	// that value round-trips through a frame slot; at -O1/-O2 the cross-block register pass keeps
+	// it in a register. The three levels have to agree, which is what catches a miscompile here.
+	runsTheSameAtEveryLevel("boolean_values",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int a = 1; int b = 0;"
+		"    *term = 48 + (a && b) + (a || b) + (!b) + (a ? 2 : 0);" // 0 + 1 + 1 + 2 = 4
+		"    return 0;"
+		"}",
+		"4");
+}
+
 // ---- composite memory: arrays, pointers and structs (Fase 7) -----------------------------------
 //
 // The phase's own deliverables and exit criterion: `suma_array`, a function that fills and reads a

@@ -27,8 +27,11 @@
 //      this is the analysis that makes turning it on safe.
 //
 //   3. Register assignment. Locals first (they live for the whole function, so their registers are
-//      reserved for its whole length), then temporaries by a per-block linear scan that frees a
-//      register again after the temporary's last read.
+//      reserved for its whole length), then temporaries. A temporary that outlives its block - or
+//      is defined in several of them, the phi shape `&&`/`||`/`!` and `?:` lower to - is placed
+//      first and its register reserved in every block where it is live; the remaining, single-block
+//      temporaries then go through a per-block linear scan that frees a register again after the
+//      temporary's last read, avoiding those reservations.
 //
 //   4. Frame slots for everything left over, reusing one slot for several temporaries whose live
 //      ranges do not overlap.
