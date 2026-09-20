@@ -350,7 +350,9 @@ namespace ceresc::parser
 		// arguments MAY follow the ones named here, so outParams keeps describing exactly the fixed
 		// parameters and nothing else (ast::FunctionDecl::isVariadic()).
 		bool parseParamList(std::vector<Param>& outParams, bool& outIsVariadic);
-		Decl* parseTypedefDecl();
+		// The typedef itself, preceded by any struct/union/enum whose body it defined on the way
+		// (`typedef enum { A, B } T;`), or empty when it failed.
+		std::vector<Decl*> parseTypedefDecl();
 
 		// The variadic builtins (__builtin_va_start, __builtin_va_arg, __builtin_va_end and
 		// __builtin_va_copy), recognized by name in call position rather than declared by a header -
@@ -385,6 +387,20 @@ namespace ceresc::parser
 		// productions - see the header comment above.
 		const Type* parseStructTypeSpec(bool isUnion = false);
 		const Type* parseEnumTypeSpec();
+
+		// `struct { ... }`, `union { ... }` and `enum { ... }` with no tag get one made up: the tables
+		// below are keyed by tag, and nothing else about the type needs a name. The text lives in the
+		// arena because the tables and the AST hold string_views.
+		std::string_view makeAnonymousTag(std::string_view kind);
+		unsigned _anonymousTagCount = 0;
+
+		// Every struct/union/enum whose BODY the type-spec parser just read, in the order the bodies
+		// closed (an inner one before the one that contains it). A declaration that defines a tag as
+		// part of something else - `typedef enum { A, B } T;`, `enum { X, Y } v;`, `struct { ... } s;` -
+		// takes these and emits them ahead of itself, because that is what makes sema declare the
+		// enumerators and check the layout. A bare `enum E { ... };` already emits its own tag.
+		std::vector<Decl*> _definedTags;
+		std::vector<Decl*> takeDefinedTags();
 
 	private:
 		Token advance() noexcept;

@@ -341,6 +341,19 @@ TEST(parser, cast_to_pointer_type)
 	CHECK_EQ(printExpr("(int**)x"), "(cast int** x)");
 }
 
+TEST(parser, a_struct_union_or_enum_may_omit_its_tag_when_a_body_follows)
+{
+	// `typedef struct { ... } T;` and `enum { A, B };` are everywhere in C; only the tag is optional,
+	// a bare `struct;` or `enum x` with nothing after it is still an error.
+	CHECK(!parseFails("typedef struct { int a; int b; } Pair;"));
+	CHECK(!parseFails("typedef union { int i; float f; } Word;"));
+	CHECK(!parseFails("enum { A, B = 5, C };"));
+	CHECK(!parseFails("struct { int x; } origin;"));
+	CHECK(!parseFails("typedef enum { Off, On } Switch;"));
+	CHECK(parseFails("struct;"));
+	CHECK(parseFails("enum ;"));
+}
+
 TEST(parser, a_cast_is_a_valid_operand_of_a_unary_operator)
 {
 	// C's grammar is "unary-operator cast-expression", so none of these needs an extra pair of
@@ -856,7 +869,9 @@ TEST(parser, a_struct_field_declaration_may_name_several_fields)
 
 TEST(parser, struct_defined_and_instantiated_in_one_declaration)
 {
-	CHECK_EQ(printDecl("struct Point { int x; int y; } p;"), "(var p struct Point <null>)");
+	// The tag the declaration defines is emitted ahead of the variable: sema needs it to check the
+	// layout, and for an enum to declare the enumerators.
+	CHECK_EQ(printDecl("struct Point { int x; int y; } p;"), "(struct Point (fields (int x) (int y))) (var p struct Point <null>)");
 }
 
 TEST(parser, struct_used_as_a_variable_type_after_its_own_declaration)
@@ -898,7 +913,7 @@ TEST(parser, struct_redefinition_reports_a_diagnostic_but_keeps_the_latest_field
 TEST(parser, local_struct_declaration_and_instantiation_as_statements)
 {
 	CHECK_EQ(printStmt("struct Point { int x; };"), "(decl-stmt (struct Point (fields (int x))))");
-	CHECK_EQ(printStmt("struct Point { int x; int y; } p;"), "(decl-stmt (var p struct Point <null>))");
+	CHECK_EQ(printStmt("struct Point { int x; int y; } p;"), "(decl-stmt (struct Point (fields (int x) (int y))) (var p struct Point <null>))");
 }
 
 TEST(parser, a_broken_field_inside_a_struct_body_is_skipped)
@@ -935,7 +950,7 @@ TEST(parser, enum_allows_a_trailing_comma)
 
 TEST(parser, enum_defined_and_instantiated_in_one_declaration)
 {
-	CHECK_EQ(printDecl("enum Color { RED, GREEN } c;"), "(var c enum Color <null>)");
+	CHECK_EQ(printDecl("enum Color { RED, GREEN } c;"), "(enum Color (enumerators (RED) (GREEN))) (var c enum Color <null>)");
 }
 
 TEST(parser, enum_forward_declaration)

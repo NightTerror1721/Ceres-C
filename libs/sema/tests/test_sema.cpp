@@ -383,6 +383,42 @@ TEST(sema, assignment_between_incompatible_types_is_an_error)
 	CHECK(containsMessage(outcome, "incompatible type"));
 }
 
+TEST(sema, anonymous_struct_union_and_enum_types_work_like_tagged_ones)
+{
+	CheckOutcome outcome = checkSource(
+		"typedef struct { int a; char b; } Pair;"
+		"typedef union { int i; float f; } Word;"
+		"enum { Off, On = 5, Auto };"
+		"typedef enum { Red, Green } Color;"
+		"struct { int x; int y; } origin;"
+		"int main() {"
+		"    Pair p; Word w; Color c;"
+		"    p.a = On; p.b = 1; w.i = Auto; c = Green;"
+		"    origin.x = p.a + w.i + c;"
+		"    return sizeof(Pair) + sizeof(Word) + origin.x;"
+		"}");
+	CHECK(outcome.ok);
+
+	// Two anonymous structs are two different types, exactly as two differently tagged ones are.
+	CheckOutcome distinct = checkSource(
+		"struct { int a; } first; struct { int a; } second;"
+		"int main() { first = second; return 0; }");
+	CHECK(!distinct.ok);
+}
+
+TEST(sema, enumerators_defined_inside_a_typedef_or_a_variable_declaration_are_visible)
+{
+	// The tag was only emitted for a bare `enum E { ... };`, so these enumerators never reached the
+	// symbol table and every use was "undeclared identifier".
+	CHECK(checkSource("typedef enum Tag { A, B } T; int main() { return B; }").ok);
+	CHECK(checkSource("enum Mode { Off, On = 4 } mode; int main() { return On + mode; }").ok);
+	CHECK(checkSource("int main() { enum { X, Y } v = Y; return v + X; }").ok);
+	CHECK(checkSource("typedef struct { enum { Small = 1, Big = 2 } size; } Box; int main() { Box b; b.size = Big; return b.size; }").ok);
+	// ... and the layout of a struct defined inside a declaration is now checked like any other.
+	CheckOutcome selfContaining = checkSource("struct Node { struct Node inner; } n;");
+	CHECK(!selfContaining.ok);
+}
+
 TEST(sema, a_const_pointer_converts_to_a_pointer_to_const_void)
 {
 	// memcpy(dst, src, n) with a `const char* src`: the parameter is `const void*`.

@@ -129,9 +129,12 @@ type-spec              ::= "void" | "bool" | "float" | integer-type-spec
                                                      // IDENTIFIER: a typedef name, or
                                                      // __builtin_va_list
 struct-spec            ::= "struct" IDENTIFIER ("{" member-decl+ "}")?
+                         | "struct" "{" member-decl+ "}"       // no tag: `typedef struct { ... } T;`
 union-spec             ::= "union" IDENTIFIER ("{" member-decl+ "}")?
+                         | "union" "{" member-decl+ "}"
 member-decl            ::= base-type declarator ("," declarator)* ";"   // not a function: a struct holds objects
 enum-spec              ::= "enum" IDENTIFIER ("{" enumerator-list "}")?
+                         | "enum" "{" enumerator-list "}"       // no tag: `enum { A, B };`
 enumerator-list        ::= enumerator ("," enumerator)*
 enumerator             ::= IDENTIFIER ("=" INT_LITERAL)?
 

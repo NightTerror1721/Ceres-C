@@ -1,5 +1,7 @@
 #include <ceresc/parser/parser.h>
 
+#include <cstring>
+#include <format>
 #include <memory>
 #include <optional>
 
@@ -826,14 +828,23 @@ namespace ceresc::parser
 		SourceLocation location = _current.location();
 		advance(); // 'struct' or 'union'
 
-		if (!check(TokenKind::Identifier))
+		std::string_view tagName;
+		if (check(TokenKind::Identifier))
+		{
+			tagName = _current.lexeme();
+			advance();
+		}
+		else if (check(TokenKind::LBrace))
+		{
+			// `typedef struct { ... } T;` - the tag is optional in C when a body follows.
+			tagName = makeAnonymousTag(isUnion ? "union" : "struct");
+		}
+		else
 		{
 			_diagnostics.error(DiagId::ExpectedTagName, _current.location(), "expected a {} tag name", isUnion ? "union" : "struct");
 			advance();
 			return nullptr;
 		}
-		std::string_view tagName = _current.lexeme();
-		advance();
 
 		auto it = _structTable.find(tagName);
 		StructDecl* decl = (it != _structTable.end()) ? it->second : nullptr;
@@ -906,9 +917,26 @@ namespace ceresc::parser
 			}
 			expect(TokenKind::RBrace, "'}'");
 			decl->setFields(copyFieldsToArena(fields));
+			_definedTags.push_back(decl);
 		}
 
 		return isUnion ? Type::makeUnion(_arena, decl) : Type::makeStruct(_arena, decl);
+	}
+
+	std::vector<Decl*> Parser::takeDefinedTags()
+	{
+		std::vector<Decl*> tags = std::move(_definedTags);
+		_definedTags.clear();
+		return tags;
+	}
+
+	std::string_view Parser::makeAnonymousTag(std::string_view kind)
+	{
+		// Not a valid C identifier on purpose: no program can write a tag that collides with it.
+		std::string text = std::format("<anonymous {} {}>", kind, _anonymousTagCount++);
+		char* memory = static_cast<char*>(_arena.allocate(text.size() + 1, 1));
+		std::memcpy(memory, text.c_str(), text.size() + 1);
+		return std::string_view(memory, text.size());
 	}
 
 	const Type* Parser::parseEnumTypeSpec()
@@ -916,14 +944,22 @@ namespace ceresc::parser
 		SourceLocation location = _current.location();
 		advance(); // 'enum'
 
-		if (!check(TokenKind::Identifier))
+		std::string_view tagName;
+		if (check(TokenKind::Identifier))
+		{
+			tagName = _current.lexeme();
+			advance();
+		}
+		else if (check(TokenKind::LBrace))
+		{
+			tagName = makeAnonymousTag("enum"); // `enum { A, B };` - the usual way to name a few constants
+		}
+		else
 		{
 			_diagnostics.error(DiagId::ExpectedEnumTagName, _current.location(), "expected an enum tag name after 'enum'");
 			advance();
 			return nullptr;
 		}
-		std::string_view tagName = _current.lexeme();
-		advance();
 
 		auto it = _enumTable.find(tagName);
 		EnumDecl* decl = (it != _enumTable.end()) ? it->second : nullptr;
@@ -965,6 +1001,7 @@ namespace ceresc::parser
 			}
 			expect(TokenKind::RBrace, "'}'");
 			decl->setEnumerators(copyEnumeratorsToArena(enumerators));
+			_definedTags.push_back(decl);
 		}
 
 		return Type::makeEnum(_arena, decl);
@@ -998,10 +1035,9 @@ namespace ceresc::parser
 			case TokenKind::KwTypedef:
 			{
 				SourceLocation location = _current.location();
-				Decl* decl = parseTypedefDecl();
-				if (!decl)
+				std::vector<Decl*> decls = parseTypedefDecl();
+				if (decls.empty())
 					return nullptr;
-				std::vector<Decl*> decls{ decl };
 				return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(decls));
 			}
 			case TokenKind::Semicolon:
@@ -1305,9 +1341,11 @@ namespace ceresc::parser
 		DeclSpecifiers specifiers = parseDeclSpecifiers();
 		bool leadingRestrict = false;
 		SourceLocation specifierLocation{};
+		_definedTags.clear();
 		const Type* base = parseBaseType(specifiers.isConst, specifiers.isVolatile, leadingRestrict, specifierLocation);
 		if (!base)
 			return nullptr;
+		std::vector<Decl*> tags = takeDefinedTags(); // before a declarator or a body can define more
 
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator: parseBaseType()
 		// already registered/completed the tag (see parseStructTypeSpec()/parseEnumTypeSpec()), so
@@ -1315,12 +1353,12 @@ namespace ceresc::parser
 		if (check(TokenKind::Semicolon) && (base->isAggregate() || base->isEnum()))
 		{
 			advance();
-			Decl* tagDecl = base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl());
-			std::vector<Decl*> decls{ tagDecl };
-			return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(decls));
+			if (tags.empty())
+				tags.push_back(base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl()));
+			return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(tags));
 		}
 
-		std::vector<Decl*> decls;
+		std::vector<Decl*> decls = std::move(tags); // the tags this declaration defined come first
 		if (!parseInitDeclaratorList(location, base, specifiers, leadingRestrict, specifierLocation, decls))
 			return nullptr;
 		return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(decls));
@@ -1361,10 +1399,7 @@ namespace ceresc::parser
 		SourceLocation location = _current.location();
 
 		if (check(TokenKind::KwTypedef))
-		{
-			Decl* decl = parseTypedefDecl();
-			return decl ? std::vector<Decl*>{ decl } : std::vector<Decl*>{};
-		}
+			return parseTypedefDecl();
 
 		if (check(TokenKind::KwInterruptVector))
 		{
@@ -1386,19 +1421,23 @@ namespace ceresc::parser
 
 		bool leadingRestrict = false;
 		SourceLocation specifierLocation{};
+		_definedTags.clear();
 		const Type* base = parseBaseType(specifiers.isConst, specifiers.isVolatile, leadingRestrict, specifierLocation);
 		if (!base)
 			return {};
+		std::vector<Decl*> tags = takeDefinedTags(); // before a declarator or a body can define more
 
 		// `struct Foo { ... };` / `enum Bar { ... };` with no variable declarator - see
 		// parseDeclStatement()'s identical check for the local-statement equivalent.
 		if (check(TokenKind::Semicolon) && (base->isAggregate() || base->isEnum()))
 		{
 			advance();
-			return { base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl()) };
+			if (tags.empty())
+				tags.push_back(base->isAggregate() ? static_cast<Decl*>(base->structDecl()) : static_cast<Decl*>(base->enumDecl()));
+			return tags;
 		}
 
-		std::vector<Decl*> decls;
+		std::vector<Decl*> decls = std::move(tags); // the tags this declaration defined come first
 		if (!parseInitDeclaratorList(location, base, specifiers, leadingRestrict, specifierLocation, decls))
 			return {};
 		return decls;
@@ -1500,26 +1539,28 @@ namespace ceresc::parser
 		return _arena.create<ast::InterruptVectorDecl>(location, handlerName, number, numberLocation);
 	}
 
-	Decl* Parser::parseTypedefDecl()
+	std::vector<Decl*> Parser::parseTypedefDecl()
 	{
 		SourceLocation location = _current.location();
 		advance(); // 'typedef'
 
 		bool leadingRestrict = false;
 		SourceLocation specifierLocation{};
+		_definedTags.clear();
 		const Type* base = parseBaseType(false, false, leadingRestrict, specifierLocation);
 		if (!base)
-			return nullptr;
+			return {};
+		std::vector<Decl*> result = takeDefinedTags(); // `typedef enum { A, B } T;` defines A and B too
 
 		// A typedef is an ordinary declarator that names a TYPE instead of an object, which is what
 		// makes `typedef int Handler(int);` name a function type and `typedef int (*Fn)(int);` name
 		// a pointer to one - the same two declarators that would declare a function and a variable.
 		Declarator declarator = parseDeclarator(/*allowAbstract=*/false);
 		if (!declarator.ok)
-			return nullptr;
+			return {};
 		const Type* underlyingType = applyDeclarator(base, declarator, /*isParameter=*/false);
 		if (!underlyingType)
-			return nullptr;
+			return {};
 		if (leadingRestrict)
 		{
 			if (!underlyingType->isPointer())
@@ -1530,10 +1571,11 @@ namespace ceresc::parser
 		std::string_view name = declarator.name;
 
 		if (!expect(TokenKind::Semicolon, "';'"))
-			return nullptr;
+			return {};
 
 		_typedefTable[name] = underlyingType; // makes `name` usable as a type-spec from here on - see isTypeSpecStart(const Token&)/parseTypeSpec()
-		return _arena.create<ast::TypedefDecl>(location, name, underlyingType);
+		result.push_back(_arena.create<ast::TypedefDecl>(location, name, underlyingType));
+		return result;
 	}
 
 	Expr* Parser::parseInitializer()

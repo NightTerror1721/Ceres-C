@@ -1017,6 +1017,25 @@ TEST(e2e, a_ternary_result_never_takes_the_register_of_a_parameter_still_read_af
 		"ffffffff");
 }
 
+TEST(e2e, anonymous_struct_union_and_enum_compute_the_right_values)
+{
+	runsTheSameAtEveryLevel("anonymous_types",
+		"enum { One = 1, Two, Three };"
+		"typedef struct { int x; char y; } Pair;"
+		"typedef union { int i; char c; } Word;"
+		"typedef enum { Low = 10, High } Level;"
+		"struct { int total; } acc;"
+		"int main() {"
+		"    Pair p; Word w; Level l;"
+		"    p.x = Two; p.y = Three; w.i = 0; w.c = One; l = High;"
+		"    acc.total = p.x + p.y + w.i + (l - Low) + sizeof(Pair) - 8;"   // 2 + 3 + 1 + 1 + 0
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + acc.total;"
+		"    return 0;"
+		"}",
+		"7");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",
