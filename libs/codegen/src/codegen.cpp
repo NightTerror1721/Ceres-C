@@ -1237,13 +1237,21 @@ namespace ceresc::codegen
 		if (hasFields)
 		{
 			_emitter.raw(std::format("struct {}", _frameName));
+			bool hasWordField = placement.outgoingSlotCount() > 0;
 			for (u32 i = 0; i < placement.outgoingSlotCount(); ++i)
 				_emitter.raw(std::format("    outgoing{}: u32", i));
 			for (u32 i = 0; i < placement.slots().size(); ++i)
 			{
 				const FrameSlotInfo& slot = placement.slots()[i];
+				hasWordField = hasWordField || slot.sizeInBytes >= 4;
 				_emitter.raw(std::format("    {}: {}", slotFieldName(i), fieldTypeName(slot.sizeInBytes, slot.isFloat)));
 			}
+			// CASM rounds a struct's size up to its WIDEST field's alignment, and `enter` reserves exactly
+			// that many bytes. A frame of nothing but bytes or halfwords (a lone `char` parameter that spilled)
+			// would be 1 or 2 bytes, leaving sp misaligned for every function it calls - whose first word
+			// store then faults (AlignmentFault). One word field keeps the frame a multiple of 4.
+			if (!hasWordField)
+				_emitter.raw("    pad: u32");
 			_emitter.raw("endstruct");
 		}
 

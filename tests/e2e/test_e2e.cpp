@@ -1090,6 +1090,24 @@ TEST(e2e, an_array_size_written_as_arithmetic_is_computed)
 		"6");
 }
 
+TEST(e2e, a_frame_of_only_a_byte_keeps_the_stack_word_aligned)
+{
+	// g's only frame slot is its fifth parameter, a char that arrives on the stack and is needed by
+	// every call it makes. That frame used to be ONE byte, so sp was left odd and leaf()'s first word
+	// store faulted (AlignmentFault) - the program never reached its output.
+	runsTheSameAtEveryLevel("byte_only_frame",
+		"int sink[2];"
+		"void leaf(int x, int y, int z, char c) { int t[4]; t[0] = x; t[1] = y; t[2] = z; t[3] = c; sink[0] = t[0] + t[3]; }"
+		"void g(int a, int b, int c, int d, char e) { leaf(a, b, c, e); leaf(b, c, d, e); leaf(c, d, a, e); }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    g(1, 2, 3, 4, 5);"
+		"    *term = 48 + sink[0] + 9;"                // the last leaf: t[0] = c = 3 and t[3] = e = 5, so sink[0] = 8
+		"    return 0;"
+		"}",
+		"A");
+}
+
 TEST(e2e, a_const_struct_is_copied_by_value)
 {
 	runsTheSameAtEveryLevel("const_struct_copy",
