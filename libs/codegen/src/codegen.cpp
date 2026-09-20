@@ -217,6 +217,17 @@ namespace ceresc::codegen
 			return std::nullopt;
 		}
 
+		// The text of a float initializer. CASM types a literal by how it is SPELLED, and std::format
+		// prints 1.0f as "1": the assembler then refuses it for an f32 ("Expected a literal value of type
+		// f32"). So every finite value that would read as an integer gets a ".0".
+		std::string floatLiteralText(f32 value)
+		{
+			std::string text = std::format("{}", value);
+			if (text.find_first_of(".eEn") == std::string::npos) // no point, no exponent, not inf/nan
+				text += ".0";
+			return text;
+		}
+
 		// Escapes a decoded string literal's bytes back into valid CASM string-literal text
 		// (11-Data-Types-and-Literals.md's own escapes) - the PooledString this reads from already
 		// decoded `\n`/`\t`/etc. into real bytes (libs/lexer's own job), so re-emitting it verbatim
@@ -1513,7 +1524,7 @@ namespace ceresc::codegen
 		if (type->isFloat())
 		{
 			std::optional<f32> value = foldGlobalFloat(init);
-			return value ? std::optional<std::string>(std::format("{}", *value)) : std::nullopt;
+			return value ? std::optional<std::string>(floatLiteralText(*value)) : std::nullopt;
 		}
 		std::optional<i64> value = foldGlobalInt(init);
 		return value ? std::optional<std::string>(std::format("{}", *value)) : std::nullopt;
@@ -1752,7 +1763,7 @@ namespace ceresc::codegen
 				reportUnrepresentableInitializer(decl, decl.initializer());
 				return;
 			}
-			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, *value));
+			_emitter.raw(std::format("{} {}: {} = {}", let, name, casmType, floatLiteralText(*value)));
 		}
 		else
 		{

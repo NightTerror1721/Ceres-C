@@ -1036,6 +1036,24 @@ TEST(e2e, anonymous_struct_union_and_enum_compute_the_right_values)
 		"7");
 }
 
+TEST(e2e, a_float_global_with_a_whole_value_assembles)
+{
+	// std::format prints 1.0f as "1", which CASM reads as an integer and refuses for an f32: any
+	// global float holding a whole number (scalar or array element) used to fail to assemble.
+	runsTheSameAtEveryLevel("float_globals",
+		"float one = 1.0f;"
+		"float ten = 10;"
+		"float neg = -3.0f;"
+		"static const float table[4] = { 1.0f, 10.0f, 100.0f, 2.5f };"
+		"int main() {"
+		"    float total = one + ten + neg + table[0] + table[1] + table[2] + table[3];"   // 1+10-3+1+10+100+2.5
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (int)(total / 25.0f);"                                             // 121.5 / 25 = 4
+		"    return 0;"
+		"}",
+		"4");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",
