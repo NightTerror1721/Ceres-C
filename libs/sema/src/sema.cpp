@@ -1531,6 +1531,9 @@ namespace ceresc::sema
 					return false;
 			}
 		}
+		// `(void*)0` - what NULL is - and `(char*)table`: a cast of a constant is a constant.
+		if (const auto* cast = dynamic_cast<const ast::CastExpr*>(expr))
+			return isConstantInitializer(cast->operand());
 		if (const auto* name = dynamic_cast<const ast::NameExpr*>(expr))
 		{
 			// An array or a function name decays to its own address. (A plain variable is a value, and

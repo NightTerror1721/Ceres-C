@@ -107,6 +107,9 @@ The object may itself be `static`, at file scope or in a block - `static const s
 with `cells` a `static` array - since a `static` object has a fixed address too. An automatic local or a
 parameter does not, so `static int* p = &local;` is still refused (`E3017`).
 
+A cast leaves a constant a constant: `(void*)0` - which is what `NULL` expands to, so `{ "a", NULL, "c" }`
+is a valid table - and `(char*)table` or `(float)3`.
+
 What is still refused is an address **with an offset**: `&a[i]` is an address constant in C, but it is
 the address of `a` plus a displacement, and there is no way to spell that displacement into the
 initializer. Write the base pointer and add the offset at run time instead:

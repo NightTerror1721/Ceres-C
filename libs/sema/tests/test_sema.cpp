@@ -1345,6 +1345,10 @@ TEST(sema, a_static_initializer_may_be_the_address_of_an_object_with_static_stor
 	CHECK(checkSource("int f(int a) { return a; }\nint main() { static int local[2]; static int* p = local; static int x; "
 		"static int* q = &x; return f(1) + (p == q); }").ok);
 
+	// A cast of a constant is a constant: NULL is `((void*)0)`, and a table is often reached as `(char*)table`.
+	CHECK(checkSource("static const char* names[3] = { \"a\", ((void*)0), \"c\" };\nstatic int* none = (int*)0;\n"
+		"static char big[8];\nstatic char* bytes = (char*)big;\nstatic float f = (float)3;\nint main() { return 0; }").ok);
+
 	// An automatic local has no fixed address, and the value of a plain variable is not known until run time.
 	CheckOutcome automatic = checkSource("int main() { int a[2]; static int* p = a; return 0; }");
 	CHECK(!automatic.ok);

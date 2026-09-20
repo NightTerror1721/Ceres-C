@@ -197,6 +197,10 @@ namespace ceresc::codegen
 				std::optional<i64> operand = foldGlobalInt(unary->operand());
 				return operand ? std::optional<i64>(-*operand) : std::nullopt;
 			}
+			// `(void*)0`, which is what NULL expands to, and `(char)65`: a cast does not change the
+			// bits a constant is written as - the image is written at the declared width anyway.
+			if (const auto* cast = dynamic_cast<const CastExpr*>(expr))
+				return foldGlobalInt(cast->operand());
 			return std::nullopt;
 		}
 
@@ -214,6 +218,8 @@ namespace ceresc::codegen
 				std::optional<f32> operand = foldGlobalFloat(unary->operand());
 				return operand ? std::optional<f32>(-*operand) : std::nullopt;
 			}
+			if (const auto* cast = dynamic_cast<const CastExpr*>(expr))       // `(float)3`
+				return foldGlobalFloat(cast->operand());
 			return std::nullopt;
 		}
 
@@ -1410,6 +1416,8 @@ namespace ceresc::codegen
 				return false;
 			if (dynamic_cast<const StringLiteralExpr*>(expr))
 				return true;
+			if (const auto* cast = dynamic_cast<const ast::CastExpr*>(expr))   // `(char*)buffer` is still that address
+				return isAddressConstant(cast->operand());
 			if (const auto* unary = dynamic_cast<const ast::UnaryExpr*>(expr))
 				return unary->op() == ast::UnaryOp::AddressOf;
 			if (const auto* name = dynamic_cast<const ast::NameExpr*>(expr))
@@ -1435,6 +1443,10 @@ namespace ceresc::codegen
 			}
 			return it->second;
 		}
+
+		// A cast leaves an address as it was: `(char*)table`, `(void*)&x`.
+		if (const auto* cast = dynamic_cast<const CastExpr*>(expr))
+			return addressConstantSymbol(cast->operand());
 
 		if (const auto* unary = dynamic_cast<const UnaryExpr*>(expr); unary && unary->op() == UnaryOp::AddressOf)
 		{

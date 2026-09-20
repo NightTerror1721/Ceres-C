@@ -1157,6 +1157,24 @@ TEST(e2e, a_static_object_can_be_initialized_with_the_address_of_another)
 		"2");
 }
 
+TEST(e2e, a_cast_constant_can_initialize_a_static_object)
+{
+	runsTheSameAtEveryLevel("static_cast_initializer",
+		"static const char* names[3] = { \"a\", ((void*)0), \"c\" };"
+		"static int* none = (int*)0;"
+		"static char big[8];"
+		"static char* bytes = (char*)big;"
+		"static float three = (float)3;"
+		"char plain = (char)65;"
+		"int main() {"
+		"    bytes[2] = 4;"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (names[0][0] == 'a') + (names[1] == 0) * 2 + (names[2][0] == 'c') + (none == 0) + big[2] - 4 + (plain == 'A') + (three > 2.5f);"   // 1 + 2 + 1 + 1 + 0 + 1 + 1 = 7
+		"    return 0;"
+		"}",
+		"7");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",
