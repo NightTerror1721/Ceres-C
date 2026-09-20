@@ -323,8 +323,9 @@ namespace ceresc::parser
 		bool parseInitDeclaratorList(support::SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
 			bool leadingRestrict, support::SourceLocation specifierLocation, std::vector<Decl*>& outDecls);
 
+		// `unsizedArray`: the declarator omitted the array's size - it is taken from the initializer here.
 		Decl* finishVarDecl(support::SourceLocation location, std::string_view name, const Type* type,
-			const DeclSpecifiers& specifiers);
+			const DeclSpecifiers& specifiers, bool unsizedArray = false);
 
 		// §3's `initializer ::= assignment-expr | "{" initializer-list "}"` - the ONE production
 		// that can produce an InitListExpr (expr.h's own note on why that node lives in the Expr
@@ -401,6 +402,16 @@ namespace ceresc::parser
 		// enumerators and check the layout. A bare `enum E { ... };` already emits its own tag.
 		std::vector<Decl*> _definedTags;
 		std::vector<Decl*> takeDefinedTags();
+
+		// `int a[] = { 1, 2, 3 };` and `char s[] = "hi";` - an array whose outermost size is left out and
+		// taken from its initializer. Only a VARIABLE declarator may do it: finishDeclarator() raises
+		// _allowUnsizedArray around its applyDeclarator() call, which then builds the array with size 0 and
+		// sets _unsizedArrayPending; finishVarDecl() replaces it with the real length once the initializer
+		// has been read. Everywhere else (a struct member, a typedef, a cast) the omitted size is still an error.
+		bool _allowUnsizedArray = false;
+		bool _unsizedArrayPending = false;
+		// The number of elements an initializer gives an array of `element`, or -1 when it cannot say.
+		static i64 inferArrayLength(const Type* element, const Expr* initializer);
 
 	private:
 		Token advance() noexcept;

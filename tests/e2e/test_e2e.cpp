@@ -1054,6 +1054,30 @@ TEST(e2e, a_float_global_with_a_whole_value_assembles)
 		"4");
 }
 
+TEST(e2e, an_array_sized_by_its_initializer_has_the_right_size_and_contents)
+{
+	runsTheSameAtEveryLevel("inferred_array_size",
+		"static const int primes[] = { 2, 3, 5, 7, 11 };"
+		"char greeting[] = \"hey\";"
+		"struct P { int x; int y; };"
+		"struct P points[] = { {1, 2}, {3, 4}, {5, 6} };"
+		"int grid[][2] = { {1, 2}, {3, 4} };"
+		"int main() {"
+		"    int local[] = { 10, 20, 30, 40 };"
+		"    char word[] = \"ab\";"
+		"    int sum = 0; int i;"
+		"    for (i = 0; i < sizeof(primes) / sizeof(primes[0]); i = i + 1) sum = sum + primes[i];"          // 28
+		"    sum = sum + sizeof(greeting) + greeting[2] - 'y';"                                              // + 4 + 0
+		"    sum = sum + sizeof(points) / sizeof(points[0]) + points[2].y;"                                  // + 3 + 6
+		"    sum = sum + sizeof(grid) / sizeof(grid[0]) + grid[1][0];"                                       // + 2 + 3
+		"    sum = sum + sizeof(local) / 4 + local[3] + sizeof(word);"                                       // + 4 + 40 + 3
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 'A' + (sum - 28 - 4 - 9 - 5 - 47);"                                                     // sum = 28+4+9+5+47 = 93 -> 'A'
+		"    return 0;"
+		"}",
+		"A");
+}
+
 TEST(e2e, a_const_struct_is_copied_by_value)
 {
 	runsTheSameAtEveryLevel("const_struct_copy",

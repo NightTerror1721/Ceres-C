@@ -1480,7 +1480,12 @@ namespace ceresc::parser
 			return nullptr;
 
 		const DeclaratorSuffix* signature = nullptr;
+		_allowUnsizedArray = true;
+		_unsizedArrayPending = false;
 		const Type* type = applyDeclarator(base, declarator, /*isParameter=*/false, &signature);
+		_allowUnsizedArray = false;
+		bool unsizedArray = _unsizedArrayPending;
+		_unsizedArrayPending = false;
 		if (!type)
 			return nullptr;
 
@@ -1502,7 +1507,7 @@ namespace ceresc::parser
 		}
 		if (outIsFunctionDefinition)
 			*outIsFunctionDefinition = false;
-		return finishVarDecl(location, declarator.name, type, specifiers);
+		return finishVarDecl(location, declarator.name, type, specifiers, unsizedArray);
 	}
 
 	Decl* Parser::parseInterruptVectorDecl()
@@ -1622,8 +1627,33 @@ namespace ceresc::parser
 		return _arena.create<ast::InitListExpr>(location, copyArgsToArena(elements));
 	}
 
+	i64 Parser::inferArrayLength(const Type* element, const Expr* initializer)
+	{
+		if (!element || !initializer)
+			return -1;
+		// `char s[] = "abc"` - the characters and the terminating NUL
+		if (const auto* text = dynamic_cast<const ast::StringLiteralExpr*>(initializer))
+		{
+			bool isCharElement = element->isChar() || element->isSChar() || element->isUChar();
+			return isCharElement ? static_cast<i64>(text->value().view().size()) + 1 : -1;
+		}
+		if (const auto* list = dynamic_cast<const ast::InitListExpr*>(initializer))
+		{
+			// An array of arrays takes one brace group per row (`int m[][2] = { {1,2}, {3,4} }`); a flat
+			// list would need the row width to be divided by, which this subset's initializers do not do.
+			if (element->isArray())
+			{
+				for (const Expr* item : list->elements())
+					if (!dynamic_cast<const ast::InitListExpr*>(item))
+						return -1;
+			}
+			return static_cast<i64>(list->elementCount());
+		}
+		return -1;
+	}
+
 	Decl* Parser::finishVarDecl(SourceLocation location, std::string_view name, const Type* type,
-		const DeclSpecifiers& specifiers)
+		const DeclSpecifiers& specifiers, bool unsizedArray)
 	{
 		if (specifiers.isInterrupt)
 		{
@@ -1637,6 +1667,26 @@ namespace ceresc::parser
 			// parseInitializer(), not parseAssignment(): a declarator is the one position §3's
 			// grammar allows a brace initializer-list in.
 			initializer = parseInitializer();
+		}
+
+		if (unsizedArray && type && type->isArray())
+		{
+			const Type* element = type->arrayElementType();
+			i64 length = inferArrayLength(element, initializer);
+			if (length > 0)
+			{
+				type = Type::makeArray(_arena, element, static_cast<u32>(length), type->isConst(), type->isVolatile());
+			}
+			else
+			{
+				if (!initializer || !dynamic_cast<const ast::InitListExpr*>(initializer))
+					_diagnostics.error(DiagId::ArraySizeRequired, location,
+						"array size is required here: give it a size, or an initializer to take the size from");
+				else
+					_diagnostics.error(DiagId::ArraySizeRequired, location,
+						"cannot infer the size of this array from its initializer: give it a size");
+				type = Type::makePointer(_arena, element); // recovers as a pointer, as the other size errors do
+			}
 		}
 
 		if (specifiers.isInline)
@@ -1978,10 +2028,18 @@ namespace ceresc::parser
 			{
 				// `int a[]` is legal for a parameter's outermost dimension and nowhere else, because
 				// that dimension is not part of the type in the first place - see the decay below.
+				if (_allowUnsizedArray && !isParameter && i == 0 && !declarator.nested)
+				{
+					// `int a[] = ...`: the size comes from the initializer, which finishVarDecl() reads next
+					_unsizedArrayPending = true;
+					base = Type::makeArray(_arena, base, 0);
+					note(nullptr);
+					continue;
+				}
 				if (!(isParameter && outermost))
 				{
 					_diagnostics.error(DiagId::ArraySizeRequired, suffix.location,
-						"array size is required here (this version cannot infer it from an initializer)");
+						"array size is required here (only a variable's initializer can give it)");
 				}
 				base = Type::makePointer(_arena, base); // decays, or recovers as a pointer
 				note(nullptr);

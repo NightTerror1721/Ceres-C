@@ -457,6 +457,36 @@ TEST(sema, a_const_struct_can_be_copied_into_a_plain_one)
 	CHECK(!dropped.ok);
 }
 
+TEST(sema, an_array_takes_its_size_from_its_initializer)
+{
+	CheckOutcome outcome = checkSource(
+		"int a[] = { 1, 2, 3 };"
+		"char s[] = \"hello\";"
+		"struct P { int x; int y; }; struct P ps[] = { {1, 2}, {3, 4} };"
+		"int m[][2] = { {1, 2}, {3, 4}, {5, 6} };"
+		"int total() { int local[] = { 4, 5 }; char word[] = \"hi\"; "
+		"  return sizeof(a) + sizeof(s) + sizeof(ps) + sizeof(m) + sizeof(local) + sizeof(word); }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, an_array_without_a_size_or_an_initializer_is_still_an_error)
+{
+	CheckOutcome none = checkSource("int a[];");
+	CHECK(!none.ok);
+	CHECK(containsMessage(none, "array size is required"));
+	CheckOutcome scalar = checkSource("int a[] = 5;");
+	CHECK(!scalar.ok);
+	CheckOutcome member = checkSource("struct S { int n; int items[]; };");
+	CHECK(!member.ok);
+	CheckOutcome pointer = checkSource("int f() { int (*p)[] = 0; return 0; }");
+	CHECK(!pointer.ok);
+	CheckOutcome flatRows = checkSource("int m[][2] = { 1, 2, 3, 4 };");
+	CHECK(!flatRows.ok);
+	CHECK(containsMessage(flatRows, "cannot infer"));
+	CheckOutcome wrongString = checkSource("int a[] = \"text\";");
+	CHECK(!wrongString.ok);
+}
+
 // ---- control flow --------------------------------------------------------------------------------------
 
 TEST(sema, break_outside_a_loop_or_switch_is_an_error)

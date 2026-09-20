@@ -188,7 +188,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2034` | A function declared to return a function. |
 | `E2035` | A function declared to return an array. |
 | `E2036` | An array of `void`, or of functions. |
-| `E2037` | An array with no size, where the size cannot be inferred. |
+| `E2037` | An array with no size where nothing can give it one: no initializer, a scalar or flat list for an array of arrays, a struct member, a cast. Only a variable's initializer infers the outermost size. |
 
 ### `3xxx` — sema
 
