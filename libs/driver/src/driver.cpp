@@ -213,6 +213,22 @@ namespace ceresc::driver
 		// It is a declarations file, never assembled into an object of its own: an `import` in a unit
 		// being assembled with -c contributes no bytes, only names and shapes. That is also why a
 		// unit importing declarations of symbols it defines itself is not a redefinition.
+		// The addresses only the linker can know (CeresASM 12-Labels-and-Symbols.md). A C unit may
+		// legitimately say `extern char __heap_start;` to reach one, but declaring it here would
+		// make the assembler refuse the whole program ("is defined by the linker, so a program
+		// cannot declare it"). An object needs no declaration to name one: the link resolves it
+		// like any other name it does not define.
+		bool isLinkerSymbol(std::string_view name)
+		{
+			static constexpr std::string_view names[] = {
+				"__text_start", "__text_end", "__rodata_start", "__rodata_end", "__data_start",
+				"__data_end", "__bss_start", "__bss_end", "__heap_start" };
+			for (std::string_view candidate : names)
+				if (name == candidate)
+					return true;
+			return false;
+		}
+
 		std::string buildDeclarationsFile(const std::vector<CompiledUnit>& units)
 		{
 			std::vector<codegen::ExternalDeclaration> functions;
@@ -223,6 +239,9 @@ namespace ceresc::driver
 			{
 				for (const codegen::ExternalDeclaration& declaration : unit.exports)
 				{
+					if (!declaration.isFunction && !declaration.isDefinition && isLinkerSymbol(declaration.name))
+						continue;
+
 					// One entry per NAME across the whole program: the same function is normally
 					// declared by every unit that calls it and defined by one, and CASM would report
 					// the second declaration as a redefinition.
