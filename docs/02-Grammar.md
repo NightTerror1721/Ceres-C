@@ -172,7 +172,8 @@ shift-expr             ::= additive-expr (("<<" | ">>") additive-expr)*
 additive-expr          ::= multiplicative-expr (("+" | "-") multiplicative-expr)*
 multiplicative-expr    ::= cast-expr (("*" | "/" | "%") cast-expr)*
 cast-expr              ::= "(" type-name ")" cast-expr | unary-expr
-unary-expr             ::= ("&" | "*" | "-" | "!" | "~" | "++" | "--") unary-expr
+unary-expr             ::= ("&" | "*" | "-" | "!" | "~") cast-expr   // so `*(T*)p` and `-(int)x` need no extra parentheses
+                         | ("++" | "--") unary-expr
                          | "sizeof" ("(" type-name ")" | unary-expr)
                          | "alignof" "(" type-name ")"
                          | postfix-expr

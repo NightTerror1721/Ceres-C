@@ -359,11 +359,14 @@ namespace ceresc::parser
 		SourceLocation location = _current.location();
 		switch (_current.kind())
 		{
-			case TokenKind::Ampersand: advance(); return wrapUnary(UnaryOp::AddressOf, location, parseUnary());
-			case TokenKind::Star: advance(); return wrapUnary(UnaryOp::Deref, location, parseUnary());
-			case TokenKind::Minus: advance(); return wrapUnary(UnaryOp::Negate, location, parseUnary());
-			case TokenKind::Bang: advance(); return wrapUnary(UnaryOp::LogicalNot, location, parseUnary());
-			case TokenKind::Tilde: advance(); return wrapUnary(UnaryOp::BitwiseNot, location, parseUnary());
+			// C's grammar: unary-operator cast-expression. The operand is a cast-expr, not a unary-expr,
+			// or `*(T*)p`, `-(int)x`, `!(bool)x` and `~(unsigned)x` cannot be written without an extra
+			// pair of parentheses. ++/-- stay unary-expr, as in C: `++(int)x` is not an lvalue anyway.
+			case TokenKind::Ampersand: advance(); return wrapUnary(UnaryOp::AddressOf, location, parseCast());
+			case TokenKind::Star: advance(); return wrapUnary(UnaryOp::Deref, location, parseCast());
+			case TokenKind::Minus: advance(); return wrapUnary(UnaryOp::Negate, location, parseCast());
+			case TokenKind::Bang: advance(); return wrapUnary(UnaryOp::LogicalNot, location, parseCast());
+			case TokenKind::Tilde: advance(); return wrapUnary(UnaryOp::BitwiseNot, location, parseCast());
 			case TokenKind::PlusPlus: advance(); return wrapUnary(UnaryOp::PreIncrement, location, parseUnary());
 			case TokenKind::MinusMinus: advance(); return wrapUnary(UnaryOp::PreDecrement, location, parseUnary());
 			case TokenKind::KwSizeof: return parseSizeof(location);

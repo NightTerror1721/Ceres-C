@@ -341,6 +341,19 @@ TEST(parser, cast_to_pointer_type)
 	CHECK_EQ(printExpr("(int**)x"), "(cast int** x)");
 }
 
+TEST(parser, a_cast_is_a_valid_operand_of_a_unary_operator)
+{
+	// C's grammar is "unary-operator cast-expression", so none of these needs an extra pair of
+	// parentheses. The operand used to be parsed as a unary-expr, which rejected all of them.
+	CHECK_EQ(printExpr("*(int*)p"), "(* (cast int* p))");
+	CHECK_EQ(printExpr("-(int)x"), "(- (cast int x))");
+	CHECK_EQ(printExpr("!(bool)x"), "(! (cast bool x))");
+	CHECK_EQ(printExpr("~(unsigned)x"), "(~ (cast unsigned int x))");
+	CHECK_EQ(printExpr("&*(int*)p"), "(& (* (cast int* p)))");
+	CHECK_EQ(printExpr("*(const int*)p"), "(* (cast const int* p))");
+	CHECK_EQ(printExpr("*(volatile int*)p"), "(* (cast volatile int* p))");
+}
+
 TEST(parser, casts_chain_right_associatively)
 {
 	CHECK_EQ(printExpr("(int)(float)x"), "(cast int (cast float x))");
