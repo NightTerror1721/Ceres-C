@@ -1108,6 +1108,21 @@ TEST(e2e, a_frame_of_only_a_byte_keeps_the_stack_word_aligned)
 		"A");
 }
 
+TEST(e2e, a_ternary_with_a_pointer_and_zero_yields_the_pointer_or_null)
+{
+	runsTheSameAtEveryLevel("ternary_pointer_zero",
+		"char* pick(int c, char* p) { return c ? p : 0; }"
+		"char* pick2(int c, char* p) { return c ? 0 : p; }"
+		"int main() {"
+		"    char text[4]; text[0] = 'k';"
+		"    char* a = pick(1, text); char* b = pick(0, text); char* c = pick2(1, text); char* d = pick2(0, text);"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (a == text) + (b == 0) * 2 + (c == 0) * 4 + (d == text) * 8;"   // 1 + 2 + 4 + 8 = 15 -> '?'
+		"    return 0;"
+		"}",
+		"?");
+}
+
 TEST(e2e, a_const_struct_is_copied_by_value)
 {
 	runsTheSameAtEveryLevel("const_struct_copy",

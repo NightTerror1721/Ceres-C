@@ -457,6 +457,24 @@ TEST(sema, a_const_struct_can_be_copied_into_a_plain_one)
 	CHECK(!dropped.ok);
 }
 
+TEST(sema, a_ternary_may_pair_a_pointer_with_zero_or_another_pointer)
+{
+	CheckOutcome outcome = checkSource(
+		"char* a(int c, char* p) { return c ? p : 0; }"
+		"char* b(int c, char* p) { return c ? 0 : p; }"
+		"const char* d(int c, const char* p, char* q) { return c ? p : q; }"
+		"void* e(int c, char* p, void* q) { return c ? p : q; }"
+		"int* f(int c, int* p) { int* r = c ? p : 0; return r; }");
+	CHECK(outcome.ok);
+	// Only the literal 0 counts, and a pointer cannot be paired with a struct.
+	CheckOutcome nonzero = checkSource("char* a(int c, char* p) { return c ? p : 1; }");
+	CHECK(!nonzero.ok);
+	CheckOutcome variable = checkSource("char* a(int c, char* p, int n) { return c ? p : n; }");
+	CHECK(!variable.ok);
+	CheckOutcome aggregate = checkSource("struct S { int x; }; char* a(int c, char* p, struct S s) { return c ? p : s; }");
+	CHECK(!aggregate.ok);
+}
+
 TEST(sema, an_array_takes_its_size_from_its_initializer)
 {
 	CheckOutcome outcome = checkSource(

@@ -1184,6 +1184,16 @@ namespace ceresc::sema
 		_lastExprType = resultType;
 	}
 
+	namespace
+	{
+		// The literal 0: the only integer a ternary may pair with a pointer (C's null pointer constant).
+		bool isNullPointerConstant(const Expr* expr)
+		{
+			const auto* literal = dynamic_cast<const ast::IntLiteralExpr*>(expr);
+			return literal && literal->value() == 0;
+		}
+	}
+
 	void Sema::visit(ast::TernaryExpr& node)
 	{
 		const Type* condType = decayArray(checkExpr(node.cond()));
@@ -1198,6 +1208,18 @@ namespace ceresc::sema
 			resultType = thenType;
 		else if (isArithmeticType(thenType) && isArithmeticType(elseType))
 			resultType = commonArithmeticType(thenType, elseType);
+		else if (thenType && elseType && thenType->isPointer() && elseType->isPointer() &&
+			(isAssignable(thenType, elseType) || isAssignable(elseType, thenType)))
+		{
+			// `c ? p : q` with two pointers: the result is the one that can hold the other - the
+			// pointer to const over the plain one, `void*` over a typed one - and it is an error
+			// only when neither direction is a conversion this subset allows.
+			resultType = isAssignable(thenType, elseType) ? thenType : elseType;
+		}
+		else if (thenType && elseType && thenType->isPointer() && isIntegerType(elseType) && isNullPointerConstant(node.elseExpr()))
+			resultType = thenType; // `c ? p : 0`
+		else if (thenType && elseType && elseType->isPointer() && isIntegerType(thenType) && isNullPointerConstant(node.thenExpr()))
+			resultType = elseType; // `c ? 0 : p`
 		else
 			_diagnostics.error(DiagId::IncompatibleTernaryOperands, node.location(), "incompatible operand types ('{}' and '{}') in ternary expression", typeName(thenType), typeName(elseType));
 
