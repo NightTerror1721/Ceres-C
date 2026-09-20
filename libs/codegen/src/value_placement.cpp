@@ -542,8 +542,13 @@ namespace ceresc::codegen
 					if (liveness.liveOut[b][t])
 						liveOutAny[t] = true;
 
-			std::vector<u32> crossInt = allocatableIntRegisters(hasCalls);
-			std::vector<u32> crossFloat = allocatableFloatRegisters(hasCalls);
+			// What is LEFT after the locals took theirs - freeInt/freeFloat, not a fresh allocatable
+			// pool. A leaf keeps its register-resident locals in the caller-saved registers, and a
+			// parameter in a leaf stays in the one it arrived in (r0-r3), so a fresh pool would hand a
+			// `?:` or `&&` result the register of a parameter that is still read after it, and quietly
+			// overwrite that parameter.
+			std::vector<u32> crossInt = freeInt;
+			std::vector<u32> crossFloat = freeFloat;
 
 			for (u32 t = 0; t < tempCount; ++t)
 			{

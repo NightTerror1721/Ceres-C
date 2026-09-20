@@ -986,6 +986,37 @@ TEST(e2e, a_const_global_lives_in_rodata_and_is_still_readable)
 		"ok5");
 }
 
+TEST(e2e, a_ternary_result_never_takes_the_register_of_a_parameter_still_read_after_it)
+{
+	// A leaf keeps its parameters in r0-r3. The ternary's result is a temporary that lives across
+	// several blocks, and the pass that places those used to start from a fresh register pool - so it
+	// could land in r3, the register of `out`, which is only read once the loop is over. The digits came
+	// out as garbage at -O1 and -O2 and correct at -O0, which is why this runs at every level.
+	runsTheSameAtEveryLevel("ternary_temp_vs_param",
+		"static int utoa_base(unsigned int v, int base, int upper, char* out) {"
+		"    char tmp[34];"
+		"    int n = 0;"
+		"    if (v == 0) { tmp[0] = 48; n = 1; }"
+		"    while (v != 0) {"
+		"        int d = (int)(v % (unsigned int)base);"
+		"        tmp[n] = (char)(d < 10 ? 48 + d : (upper ? 65 : 97) + (d - 10));"
+		"        n++;"
+		"        v /= (unsigned int)base;"
+		"    }"
+		"    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];"
+		"    out[n] = 0;"
+		"    return n;"
+		"}"
+		"int main() {"
+		"    char buf[40];"
+		"    char* term = (char*)0xFF000004;"
+		"    int n = utoa_base(4294967295u, 16, 0, buf);"
+		"    for (int i = 0; i < n; i++) *term = buf[i];"
+		"    return 0;"
+		"}",
+		"ffffffff");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",
