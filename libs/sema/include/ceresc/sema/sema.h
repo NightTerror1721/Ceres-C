@@ -224,8 +224,10 @@ namespace ceresc::sema
 		// what a variable with static storage (a global, or a `static` local) needs its initializer
 		// to be. Deliberately syntactic: it recognizes the shapes that are constant rather than
 		// trying to evaluate them, because the evaluation itself belongs to libs/codegen, which is
-		// where the target's own arithmetic lives.
-		bool isConstantInitializer(const ast::Expr* expr) const;
+		// where the target's own arithmetic lives. The address of an object or function with static storage
+		// counts as a constant too - `&x`, an array's name, a function's name - because the link fills
+		// it in; that needs the scope, hence not const.
+		bool isConstantInitializer(const ast::Expr* expr);
 		void collectLabels(ast::Stmt* stmt, std::vector<std::string_view>& out);
 
 		static const ast::Type* errorRecoveryType() noexcept;

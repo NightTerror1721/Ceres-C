@@ -1333,6 +1333,31 @@ TEST(sema, a_static_local_needs_a_compile_time_initializer)
 	CHECK(containsMessage(outcome, "compile-time constant"));
 }
 
+TEST(sema, a_static_initializer_may_be_the_address_of_an_object_with_static_storage)
+{
+	// The link fills the address in, so it is as constant as a number: an array's name, `&x`, a
+	// function's name - for a `static` object or a global, at file scope or in a block.
+	CHECK(checkSource("static int cells[3];\nstatic int g;\nstatic int* p = cells;\nstatic int* q = &g;\n"
+		"int main() { return 0; }").ok);
+	CHECK(checkSource("struct S { int w; const int* px; };\nstatic const int cells[3] = { 1, 2, 3 };\n"
+		"static const struct S s = { 3, cells };\nstatic const struct S* table[2] = { &s, &s };\n"
+		"int main() { return s.w; }").ok);
+	CHECK(checkSource("int f(int a) { return a; }\nint main() { static int local[2]; static int* p = local; static int x; "
+		"static int* q = &x; return f(1) + (p == q); }").ok);
+
+	// An automatic local has no fixed address, and the value of a plain variable is not known until run time.
+	CheckOutcome automatic = checkSource("int main() { int a[2]; static int* p = a; return 0; }");
+	CHECK(!automatic.ok);
+	CHECK(containsMessage(automatic, "compile-time constant"));
+	CheckOutcome address = checkSource("int main() { int x; static int* p = &x; return 0; }");
+	CHECK(!address.ok);
+	CHECK(containsMessage(address, "compile-time constant"));
+	CheckOutcome parameter = checkSource("int f(int* a) { static int* p = a; return 0; }\nint main() { return 0; }");
+	CHECK(!parameter.ok);
+	CheckOutcome dereference = checkSource("int g;\nint main() { static int* p = &*&g; return 0; }");
+	CHECK(!dereference.ok);
+}
+
 TEST(sema, an_extern_declaration_in_a_block_cannot_have_an_initializer)
 {
 	CheckOutcome outcome = checkSource("int main() { extern int n = 1; return n; }");

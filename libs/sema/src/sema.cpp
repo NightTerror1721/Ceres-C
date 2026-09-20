@@ -1472,7 +1472,29 @@ namespace ceresc::sema
 		}
 	}
 
-	bool Sema::isConstantInitializer(const ast::Expr* expr) const
+	namespace
+	{
+		// Has a name, in an initializer, a fixed address? A global does (`static` or not), and so does a
+		// `static` or `extern` local and any function; an automatic local or a parameter lives in a
+		// frame and has none.
+		bool hasStaticStorage(const Symbol* symbol)
+		{
+			if (!symbol)
+				return false;
+			if (symbol->kind == SymbolKind::Function)
+				return true;
+			if (symbol->kind != SymbolKind::Variable)
+				return false;
+			if (symbol->isGlobal)
+				return true;
+			if (!symbol->varDecl)
+				return false;
+			const ast::StorageClass storage = symbol->varDecl->storageClass();
+			return storage == ast::StorageClass::Static || storage == ast::StorageClass::Extern;
+		}
+	}
+
+	bool Sema::isConstantInitializer(const ast::Expr* expr)
 	{
 		if (!expr)
 			return true;
@@ -1493,16 +1515,30 @@ namespace ceresc::sema
 		}
 		if (auto* unary = dynamic_cast<const ast::UnaryExpr*>(expr))
 		{
-			// `-1` and `!0` are constants; `&x` and `*p` are not, and neither is `++x`.
+			// `-1` and `!0` are constants; `*p` is not, and neither is `++x`. `&x` is, when x has
+			// static storage: the address is fixed once the program is linked.
 			switch (unary->op())
 			{
 				case ast::UnaryOp::Negate:
 				case ast::UnaryOp::LogicalNot:
 				case ast::UnaryOp::BitwiseNot:
 					return isConstantInitializer(unary->operand());
+				case ast::UnaryOp::AddressOf:
+					if (const auto* name = dynamic_cast<const ast::NameExpr*>(unary->operand()))
+						return hasStaticStorage(currentScope().lookup(name->name()));
+					return false;
 				default:
 					return false;
 			}
+		}
+		if (const auto* name = dynamic_cast<const ast::NameExpr*>(expr))
+		{
+			// An array or a function name decays to its own address. (A plain variable is a value, and
+			// its value is not known until the program runs.)
+			const Symbol* symbol = currentScope().lookup(name->name());
+			if (!hasStaticStorage(symbol))
+				return false;
+			return symbol->kind == SymbolKind::Function || (symbol->type && symbol->type->isArray());
 		}
 		return false;
 	}

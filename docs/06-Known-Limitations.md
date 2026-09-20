@@ -103,6 +103,10 @@ CeresASM relocations patch a word in `.data` and `.rodata`, not just `.text` —
 [25-Separate-Compilation.md](https://github.com/Krampus1721/CeresASM/blob/main/docs/25-Separate-Compilation.md) —
 so the address is left for the link to fill in, exactly like an instruction operand's is.
 
+The object may itself be `static`, at file scope or in a block - `static const struct S s = { 3, cells };`
+with `cells` a `static` array - since a `static` object has a fixed address too. An automatic local or a
+parameter does not, so `static int* p = &local;` is still refused (`E3017`).
+
 What is still refused is an address **with an offset**: `&a[i]` is an address constant in C, but it is
 the address of `a` plus a displacement, and there is no way to spell that displacement into the
 initializer. Write the base pointer and add the offset at run time instead:

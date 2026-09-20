@@ -1138,6 +1138,25 @@ TEST(e2e, a_const_struct_is_copied_by_value)
 		"3");
 }
 
+TEST(e2e, a_static_object_can_be_initialized_with_the_address_of_another)
+{
+	runsTheSameAtEveryLevel("static_address_initializer",
+		"struct S { int w; const int* px; };"
+		"static const int cells[3] = { 4, 5, 6 };"
+		"static int counter;"
+		"static const struct S s = { 3, cells };"
+		"static int* cp = &counter;"
+		"static const struct S* table[2] = { &s, &s };"
+		"int main() {"
+		"    static int local[2]; static int* lp = local; lp[1] = 7;"
+		"    *cp = 2;"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + s.px[1] - 5 + counter + (table[1]->w - 3) + (local[1] - 7);"   // 5 - 5 + 2 + 0 + 0 -> '2'
+		"    return 0;"
+		"}",
+		"2");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",
