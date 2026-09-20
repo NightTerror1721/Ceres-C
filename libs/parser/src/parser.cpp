@@ -1844,6 +1844,61 @@ namespace ceresc::parser
 		return false;
 	}
 
+	namespace
+	{
+		// The value of an integer constant expression made of literals - what an array size may be
+		// (`[64]`, `[BUF + 8]`, `[4 * 512]`, `[1 << 6]`, `[(2 + 3) * 4]` - macros have already expanded to
+		// literals by now). Anything that needs a symbol (sizeof, an enumerator, a variable) is not
+		// folded here: the parser has none of that information yet, so it is reported, not guessed.
+		bool foldArraySizeExpr(const Expr* expr, i64& out)
+		{
+			if (const auto* literal = dynamic_cast<const ast::IntLiteralExpr*>(expr))
+			{
+				if (literal->value() > 0x7FFFFFFFFFFFFFFFull)
+					return false;
+				out = static_cast<i64>(literal->value());
+				return true;
+			}
+			if (const auto* unary = dynamic_cast<const ast::UnaryExpr*>(expr))
+			{
+				i64 operand = 0;
+				if (!foldArraySizeExpr(unary->operand(), operand))
+					return false;
+				switch (unary->op())
+				{
+					case UnaryOp::Negate: out = -operand; return true;
+					case UnaryOp::BitwiseNot: out = ~operand; return true;
+					case UnaryOp::LogicalNot: out = operand == 0 ? 1 : 0; return true;
+					default: return false;
+				}
+			}
+			if (const auto* binary = dynamic_cast<const ast::BinaryExpr*>(expr))
+			{
+				i64 left = 0, right = 0;
+				if (!foldArraySizeExpr(binary->lhs(), left) || !foldArraySizeExpr(binary->rhs(), right))
+					return false;
+				// Anything past ~2^40 is not an array size and would only risk overflowing the i64 below.
+				if (left > (1ll << 40) || left < -(1ll << 40) || right > (1ll << 40) || right < -(1ll << 40))
+					return false;
+				switch (binary->op())
+				{
+					case BinaryOp::Add: out = left + right; return true;
+					case BinaryOp::Sub: out = left - right; return true;
+					case BinaryOp::Mul: out = left * right; return true;
+					case BinaryOp::Div: if (right == 0) return false; out = left / right; return true;
+					case BinaryOp::Mod: if (right == 0) return false; out = left % right; return true;
+					case BinaryOp::Shl: if (right < 0 || right > 40) return false; out = left << right; return true;
+					case BinaryOp::Shr: if (right < 0 || right > 40) return false; out = left >> right; return true;
+					case BinaryOp::BitAnd: out = left & right; return true;
+					case BinaryOp::BitOr: out = left | right; return true;
+					case BinaryOp::BitXor: out = left ^ right; return true;
+					default: return false;
+				}
+			}
+			return false;
+		}
+	}
+
 	void Parser::parseDeclaratorSuffixes(Declarator& declarator)
 	{
 		for (;;)
@@ -1859,24 +1914,25 @@ namespace ceresc::parser
 					// a pointer anyway - applyDeclarator() is what knows whether this is one.
 					suffix.hasArraySize = false;
 				}
-				else if (!check(TokenKind::LiteralInt))
-				{
-					_diagnostics.error(DiagId::ExpectedArraySize, _current.location(), "expected an integer constant for the array size but found '{}'",
-						_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
-					// Resync on the ']' so one bad dimension does not cost the declarator the rest.
-					while (!check(TokenKind::RBracket) && !check(TokenKind::Semicolon) && !check(TokenKind::Comma) && !isAtEnd())
-						advance();
-				}
 				else
 				{
 					SourceLocation sizeLocation = _current.location();
-					u64 rawSize = _current.integralValue();
-					advance();
-					if (rawSize == 0 || rawSize > 0xFFFFFFFFull)
+					std::string_view firstToken = _current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme();
+					Expr* sizeExpr = parseAssignment();
+					i64 size = 0;
+					if (!sizeExpr || !foldArraySizeExpr(sizeExpr, size))
+					{
+						_diagnostics.error(DiagId::ExpectedArraySize, sizeLocation,
+							"expected an integer constant for the array size (a literal, or arithmetic on literals) but found '{}'", firstToken);
+						// Resync on the ']' so one bad dimension does not cost the declarator the rest.
+						while (!check(TokenKind::RBracket) && !check(TokenKind::Semicolon) && !check(TokenKind::Comma) && !isAtEnd())
+							advance();
+					}
+					else if (size <= 0 || size > 0xFFFFFFFFll)
 						_diagnostics.error(DiagId::InvalidArraySize, sizeLocation, "array size must be a positive integer that fits in 32 bits");
 					else
 					{
-						suffix.arraySize = static_cast<u32>(rawSize);
+						suffix.arraySize = static_cast<u32>(size);
 						suffix.hasArraySize = true;
 					}
 				}

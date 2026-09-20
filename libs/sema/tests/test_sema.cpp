@@ -469,6 +469,25 @@ TEST(sema, an_array_takes_its_size_from_its_initializer)
 	CHECK(outcome.ok);
 }
 
+TEST(sema, an_array_size_may_be_arithmetic_on_literals)
+{
+	CheckOutcome outcome = checkSource(
+		"int a[64]; int b[4 * 512]; int c[1 << 6]; int d[(2 + 3) * 4]; int e[4 + 8]; char f[100 - 1]; int g[7 % 4]; int h[2 * 3][2 + 2];"
+		"int total() { return sizeof(a) + sizeof(b) + sizeof(c) + sizeof(d) + sizeof(e) + sizeof(f) + sizeof(g) + sizeof(h); }");
+	CHECK(outcome.ok);
+	CheckOutcome zero = checkSource("int a[2 - 2];");
+	CHECK(!zero.ok);
+	CheckOutcome negative = checkSource("int a[1 - 5];");
+	CHECK(!negative.ok);
+	CheckOutcome divide = checkSource("int a[4 / 0];");
+	CHECK(!divide.ok);
+	CheckOutcome variable = checkSource("int n = 4; int a[n];");
+	CHECK(!variable.ok);
+	CHECK(containsMessage(variable, "integer constant"));
+	CheckOutcome sized = checkSource("int a[sizeof(int)];");
+	CHECK(!sized.ok);
+}
+
 TEST(sema, an_array_without_a_size_or_an_initializer_is_still_an_error)
 {
 	CheckOutcome none = checkSource("int a[];");

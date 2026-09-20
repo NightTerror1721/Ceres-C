@@ -1078,6 +1078,18 @@ TEST(e2e, an_array_sized_by_its_initializer_has_the_right_size_and_contents)
 		"A");
 }
 
+TEST(e2e, an_array_size_written_as_arithmetic_is_computed)
+{
+	runsTheSameAtEveryLevel("array_size_arithmetic",
+		"int a[3 * 4]; char b[16 + 16]; int c[1 << 3][2 + 1];"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (sizeof(a) / 4 - 10) + (sizeof(b) - 30) + (sizeof(c) / 4 - 22);"   // 12-10 + 32-30 + 24-22 = 6
+		"    return 0;"
+		"}",
+		"6");
+}
+
 TEST(e2e, a_const_struct_is_copied_by_value)
 {
 	runsTheSameAtEveryLevel("const_struct_copy",
