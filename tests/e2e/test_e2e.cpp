@@ -1054,6 +1054,21 @@ TEST(e2e, a_float_global_with_a_whole_value_assembles)
 		"4");
 }
 
+TEST(e2e, a_const_struct_is_copied_by_value)
+{
+	runsTheSameAtEveryLevel("const_struct_copy",
+		"struct P { int x; int y; };"
+		"static const struct P origin = { 3, 4 };"
+		"int sum(const struct P* p) { struct P copy = *p; copy.x = copy.x + 10; return copy.x + copy.y + p->x; }"
+		"int main() {"
+		"    struct P local; local = origin; local.y = 1;"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + (sum(&origin) - 17) + local.y + origin.y - 5;"   // (13+4+3=20) - 17 + 1 + 4 - 5 = 3
+		"    return 0;"
+		"}",
+		"3");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",

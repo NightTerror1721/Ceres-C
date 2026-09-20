@@ -439,6 +439,24 @@ TEST(sema, a_const_pointer_does_not_convert_to_a_plain_void_pointer)
 	CHECK(!dropped.ok);
 }
 
+TEST(sema, a_const_struct_can_be_copied_into_a_plain_one)
+{
+	// `struct T copy = *p` with `const struct T* p` is a copy, not an alias: it must type-check.
+	CheckOutcome outcome = checkSource(
+		"struct T { int a; int b; }; union U { int i; char c; };"
+		"int f(const struct T* p) { struct T copy = *p; struct T other; other = *p; return copy.a + other.b; }"
+		"int g(const union U* p) { union U copy = *p; return copy.i; }"
+		"struct T h(const struct T* p) { return *p; }");
+	CHECK(outcome.ok);
+	// Two different tags are still two different types, and a const pointer still cannot lose its const.
+	CheckOutcome other = checkSource("struct A { int a; }; struct B { int a; };"
+		"int f(const struct A* p) { struct B b = *p; return b.a; }");
+	CHECK(!other.ok);
+	CHECK(containsMessage(other, "incompatible type"));
+	CheckOutcome dropped = checkSource("struct T { int a; }; int f(const struct T* p) { struct T* q = p; return q->a; }");
+	CHECK(!dropped.ok);
+}
+
 // ---- control flow --------------------------------------------------------------------------------------
 
 TEST(sema, break_outside_a_loop_or_switch_is_an_error)

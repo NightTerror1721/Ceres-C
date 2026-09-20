@@ -198,6 +198,12 @@ namespace ceresc::sema
 		}
 		if (target->isPointer() && isArithmeticType(source))
 			return true; // permissive: this subset does not track "null pointer constant" specially
+		// A struct or union converts to one of the same tag whatever qualifiers either side carries:
+		// `struct T copy = *constPtr;` makes a NEW object, it does not hand out an alias to the
+		// read-only one (that is what the pointer rule above guards). Different tags stay incompatible.
+		if (target->isAggregate() && target->kind() == source->kind() && target->structDecl() &&
+			target->structDecl() == source->structDecl())
+			return true;
 		return false;
 	}
 
