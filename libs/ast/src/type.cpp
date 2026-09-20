@@ -220,7 +220,11 @@ namespace ceresc::ast
 			return type;
 		switch (type->kind())
 		{
-			case TypeKind::Void:   return type; // `const void` is not a thing you can have one of
+			// No case for Void: it falls through to the compound path below. `const void` is not an
+			// object you can declare (sema still rejects a `void` variable), but it is exactly what
+			// `const void*` points at - the type of memcpy's source and memcmp's operands. An earlier
+			// version returned the type unchanged here, which quietly turned every `const void*` into
+			// `void*` and made passing a `const char*` to a `const void*` parameter an error.
 			case TypeKind::Bool:   return type->isVolatile() ? &Type::ConstVolatileBool : &Type::ConstBool;
 			case TypeKind::Char:   return type->isVolatile() ? &Type::ConstVolatileChar : &Type::ConstChar;
 			case TypeKind::UChar:  return type->isVolatile() ? &Type::ConstVolatileUChar : &Type::ConstUChar;

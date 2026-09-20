@@ -383,6 +383,26 @@ TEST(sema, assignment_between_incompatible_types_is_an_error)
 	CHECK(containsMessage(outcome, "incompatible type"));
 }
 
+TEST(sema, a_const_pointer_converts_to_a_pointer_to_const_void)
+{
+	// memcpy(dst, src, n) with a `const char* src`: the parameter is `const void*`.
+	CheckOutcome outcome = checkSource(
+		"int f(const void* p); int g(const char* s) { return f(s); }"
+		"int h(const int* s) { const void* q = s; return f(q); }"
+		"int k(char* s) { return f(s); }");
+	CHECK(outcome.ok);
+}
+
+TEST(sema, a_const_pointer_does_not_convert_to_a_plain_void_pointer)
+{
+	// The other half of the rule: the qualifier must not be forgotten on the way.
+	CheckOutcome outcome = checkSource("int f(void* p); int g(const char* s) { return f(s); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "incompatible type"));
+	CheckOutcome dropped = checkSource("int g(const void* s) { void* p = s; return p != 0; }");
+	CHECK(!dropped.ok);
+}
+
 // ---- control flow --------------------------------------------------------------------------------------
 
 TEST(sema, break_outside_a_loop_or_switch_is_an_error)

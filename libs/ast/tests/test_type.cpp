@@ -51,6 +51,19 @@ TEST(type, withConst_preserves_volatile_and_qualifies_array_elements)
 	CHECK(qualified->arrayElementType()->isConst());
 }
 
+TEST(type, withConst_on_void_keeps_the_qualifier)
+{
+	// `const void*` is what memcpy's source and memcmp's operands are. withConst() used to hand
+	// `void` back unchanged, so every `const void*` silently became `void*`.
+	support::Arena arena;
+	const Type* constVoid = Type::withConst(arena, &Type::Void);
+	CHECK(constVoid->isVoid());
+	CHECK(constVoid->isConst());
+	CHECK(!(*constVoid == Type::Void));
+	CHECK(!Type::Void.isConst());
+	CHECK(Type::withoutQualifiers(arena, constVoid) == &Type::Void);
+}
+
 TEST(type, structurally_equal_compound_types_compare_equal)
 {
 	support::Arena arena;
