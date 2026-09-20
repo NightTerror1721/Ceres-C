@@ -349,7 +349,7 @@ namespace ceresc::preprocessor
 				usize call = i; while (call < current.size() && (current[call] == ' ' || current[call] == '\t')) ++call;
 				if (call == current.size() || current[call] != '(') { next += name; continue; }
 				usize pos = call + 1, argStart = pos, depth = 0; std::vector<std::string> args; bool closed = false;
-				for (; pos < current.size(); ++pos) { char ch = current[pos]; if (ch == '(') ++depth; else if (ch == ')' && depth-- == 0) { args.emplace_back(trim(current.substr(argStart, pos - argStart))); closed = true; ++pos; break; } else if (ch == ',' && depth == 0) { args.emplace_back(trim(current.substr(argStart, pos - argStart))); argStart = pos + 1; } }
+				for (; pos < current.size(); ++pos) { char ch = current[pos]; if (ch == '"' || ch == '\'') { usize close = pos + 1; while (close < current.size() && current[close] != ch) { if (current[close] == '\\') ++close; ++close; } if (close < current.size()) { pos = close; continue; } } if (ch == '(') ++depth; else if (ch == ')' && depth-- == 0) { args.emplace_back(trim(current.substr(argStart, pos - argStart))); closed = true; ++pos; break; } else if (ch == ',' && depth == 0) { args.emplace_back(trim(current.substr(argStart, pos - argStart))); argStart = pos + 1; } }
 				if (closed && args.size() == 1 && args.front().empty())
 					args.clear();
 				if (!closed || (!args.empty() && macro.parameters.empty() && !macro.variadic)) { _diagnostics.error(DiagId::MalformedMacroInvocation, location, "malformed invocation of macro '{}'", name); next += name; continue; }

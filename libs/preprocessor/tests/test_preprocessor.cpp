@@ -246,6 +246,27 @@ TEST(preprocessor, a_macro_is_not_substituted_inside_a_literal_or_a_comment)
 	CHECK(contains(result.text, "int ceres;"));
 }
 
+TEST(preprocessor, a_comma_inside_a_literal_does_not_split_a_macro_argument)
+{
+	// C only separates arguments at a comma outside any string or character literal. Splitting inside
+	// one turned `SECTION("length, copy")` into a two-argument call and a hard error.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define ONE(x) [x]\n"
+		"#define TWO(a, b) <a|b>\n"
+		"char* s = ONE(\"a, b, c\");\n"
+		"char c = ONE(',');\n"
+		"char* t = TWO(\"x,y\", \"z)\");\n"
+		"char* u = ONE(\"quote \\\", still one\");\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "char* s = [\"a, b, c\"];"));
+	CHECK(contains(result.text, "char c = [','];"));
+	CHECK(contains(result.text, "char* t = <\"x,y\"|\"z)\">;"));
+	CHECK(contains(result.text, "[\"quote \\\", still one\"]"));
+}
+
 TEST(preprocessor, a_block_comment_spanning_lines_hides_directives_and_macro_names)
 {
 	TempDirectory dir;
