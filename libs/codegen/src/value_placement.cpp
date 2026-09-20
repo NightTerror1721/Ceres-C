@@ -390,11 +390,73 @@ namespace ceresc::codegen
 			}
 		}
 
+		// One liveness solution serves the register pass below, the slot-sharing pass after it, and
+		// the aliasing pass just below the former - the analysis is the expensive part, and nothing
+		// before it changes the CFG.
+		Liveness liveness;
+		if (options.registerAllocation && tempCount > 0)
+			liveness = computeLiveness(function);
+
 		// A Load whose address is a virtual FrameAddr reads a register-resident local, so its result
 		// is exactly that register's value - an alias, not a value that needs a home of its own. This
 		// is what keeps a local that lives in a callee-saved register from being copied to a frame
 		// field around a call: the copy never exists, and every read of the local goes straight back
 		// to the register that holds it for the function's whole lifetime.
+		//
+		// The alias is only valid while that register keeps the value the Load captured. A Store to
+		// the same local rewrites the register, so a load whose result is still live when such a store
+		// runs must NOT alias: re-reading the register later would see the new value, not the snapshot
+		// the load took. This is the same interference the spill-slot sharing below computes, but over
+		// a register a Store clobbers rather than a frame field two temporaries share.
+		std::vector<bool> loadResultClobbered(tempCount, false);
+		if (options.registerAllocation && tempCount > 0)
+		{
+			std::vector<std::vector<u32>> loadsOfLocal(localCount);
+			for (const auto& block : function.blocks())
+			{
+				for (const IrInstr* instr : block->instrs())
+				{
+					if (instr->opcode() != IrOpcode::Load)
+						continue;
+					const auto& p = instr->as<IrLoadPayload>();
+					if (!p.address.isValid() || p.address.id >= tempCount)
+						continue;
+					u32 local = frameAddrLocal[p.address.id];
+					if (local == kInvalidLocal || _locals[local].kind != PlacementKind::Register)
+						continue;
+					if (p.result.isValid() && p.result.id < tempCount)
+						loadsOfLocal[local].push_back(p.result.id);
+				}
+			}
+
+			for (usize b = 0; b < function.blocks().size(); ++b)
+			{
+				std::span<IrInstr* const> instrs = function.blocks()[b]->instrs();
+				std::vector<bool> live = liveness.liveOut[b];
+				for (usize raw = instrs.size(); raw-- > 0;)
+				{
+					const IrInstr& instr = *instrs[raw];
+					if (instr.opcode() == IrOpcode::Store)
+					{
+						const auto& p = instr.as<IrStorePayload>();
+						u32 local = (p.address.isValid() && p.address.id < tempCount) ? frameAddrLocal[p.address.id] : kInvalidLocal;
+						if (local != kInvalidLocal && local < localCount)
+							for (u32 r : loadsOfLocal[local])
+								if (live[r])
+									loadResultClobbered[r] = true;
+					}
+					IrValue result = resultOf(instr);
+					if (result.isValid() && result.id < tempCount)
+						live[result.id] = false;
+					forEachOperand(instr, [&](IrValue value)
+					{
+						if (value.isValid() && value.id < tempCount)
+							live[value.id] = true;
+					});
+				}
+			}
+		}
+
 		for (const auto& block : function.blocks())
 		{
 			for (const IrInstr* instr : block->instrs())
@@ -411,15 +473,11 @@ namespace ceresc::codegen
 				IrValue result = p.result;
 				if (!result.isValid() || result.id >= tempCount)
 					continue;
+				if (loadResultClobbered[result.id])
+					continue;
 				_temps[result.id] = Placement{ PlacementKind::Alias, _locals[local].index, _locals[local].isFloat };
 			}
 		}
-
-		// One liveness solution serves both the register pass below and the slot-sharing pass after
-		// it - the analysis is the expensive part, and nothing between them changes the CFG.
-		Liveness liveness;
-		if (options.registerAllocation && tempCount > 0)
-			liveness = computeLiveness(function);
 
 		// Registers reserved per block by a cross-block temporary (the pass just below): once such a
 		// value takes one, no other value may in any block where it is live. Declared here, outside

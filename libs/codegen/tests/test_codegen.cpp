@@ -566,6 +566,23 @@ TEST(codegen, recursion_at_O2)
 		"    ret                   // test.c:1\n");
 }
 
+TEST(codegen, a_load_aliased_to_a_register_is_snapshotted_before_a_store_redefines_it)
+{
+	// `buf[i++] = ...` reads `i` twice: once to store the digit and once, later, to compute the
+	// array index. `i` lives in a register, so Fase 5 aliases its load to that register - but the
+	// increment is a Store to `i` that rewrites the register in between, so the index-add would read
+	// the post-increment value and the store would land one past the last digit (the most significant
+	// one, which is the only byte that then goes missing). The aliased load must instead be a copy
+	// taken before the increment, which the store then folds as its index.
+	std::string casm = atO2(
+		"int f(unsigned v) { char buf[3]; int i = 0; while (v > 0) { buf[i++] = (char)(48 + (v % 10)); v /= 10; } return buf[0]; }");
+	CHECK(contains(casm, "mov r1, r6"));          // the snapshot of i, taken before the increment
+	CHECK(contains(casm, "add r7, r1, 1"));       // i + 1 computed from the snapshot, not from i itself
+	CHECK(contains(casm, "mov r6, r7"));          // i = i + 1
+	CHECK(contains(casm, "strb [r2 + r1], r3"));  // the store indexes by the snapshot
+	CHECK(!contains(casm, "strb [r2 + r6]"));     // ...not by the register the increment just clobbered
+}
+
 TEST(codegen, float_division_and_conversion_at_O2)
 {
 	// The float bank throughout (`mov f3, f0`, `div f1, ...` - the assembler picks FMOV/FDIV from
