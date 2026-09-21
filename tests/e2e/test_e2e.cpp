@@ -300,6 +300,17 @@ TEST(e2e, recursive_factorial_produces_the_right_value)
 		"6");
 }
 
+TEST(e2e, an_extern_array_of_unknown_size_is_completed_by_its_definition_in_the_same_unit)
+{
+	// 16 bytes once the definition has given it four elements, and the last of them is 4
+	runsTheSameAtEveryLevel("extern_array_completed",
+		"extern int t[];\n"
+		"int last(void) { return t[3]; }\n"
+		"int t[4] = { 1, 2, 3, 4 };\n"
+		"int main() { return last() + (int)sizeof(t); }\n",
+		"", 20);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

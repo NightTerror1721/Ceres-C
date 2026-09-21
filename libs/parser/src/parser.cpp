@@ -1689,6 +1689,13 @@ namespace ceresc::parser
 			{
 				type = Type::makeArray(_arena, element, static_cast<u32>(length), type->isConst(), type->isVolatile());
 			}
+			else if (!initializer && specifiers.storageClass == ast::StorageClass::Extern)
+			{
+				// `extern int table[];` names an array some other unit defines. This one needs no size to
+				// index it, and it must not invent one, so the type keeps the size 0 that means "not known here":
+				// it decays to a pointer and can be subscripted, sizeof refuses it, and a definition of the
+				// same name later in the unit (or an earlier one) gives it its size.
+			}
 			else
 			{
 				if (!initializer || !dynamic_cast<const ast::InitListExpr*>(initializer))

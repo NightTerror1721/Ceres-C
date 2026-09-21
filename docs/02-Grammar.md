@@ -73,6 +73,12 @@ A name may be declared more than once at file scope as long as the declarations 
 one has an initializer. That is exactly what a header's `extern` plus the defining source file is,
 and it is why headers work.
 
+An `extern` array may leave its size out: `extern int table[];`, `extern char names[][4];` (only the
+outermost size can be missing). It decays to a pointer and can be indexed like any array; what it cannot do is
+be measured, because this unit does not know its size - `sizeof(table)` is E3082 - and a definition of the
+same name in the unit, before or after, gives it its size (a different size or element type is E3005). Without
+`extern`, and without an initializer to count, an array still needs its size (E2037).
+
 ## Grammar
 
 The EBNF `libs/parser` implements. Uppercase names are token kinds from `libs/lexer`.

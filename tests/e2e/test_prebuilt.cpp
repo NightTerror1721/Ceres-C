@@ -285,3 +285,45 @@ TEST(prebuilt, the_declarations_file_a_build_writes_for_itself_cannot_be_one_the
 	options.declsFiles = { theirs.string() };
 	CHECK_EQ(ceresc::driver::run(options), 1);
 }
+
+TEST(prebuilt, an_extern_array_without_a_size_is_read_from_the_object_that_defines_it)
+{
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("extern_array");
+	std::optional<Built> lib = buildObject(scratch, *ceresDir, "lib",
+		"int table[3] = { 10, 20, 30 };\n"
+		"char names[2][4] = { \"ab\", \"cd\" };\n"
+		"int touched[2];\n");
+	CHECK(lib.has_value());
+	if (!lib) return;
+
+	// Read, written through, and passed on as a pointer - all without this unit knowing a size.
+	const char* program =
+		"extern int table[];\n"
+		"extern char names[][4];\n"
+		"extern int touched[];\n"
+		"int sum(int* v) { return v[0] + v[1] + v[2]; }\n"
+		"int main(void)\n"
+		"{\n"
+		"    touched[1] = 7;\n"
+		"    return sum(table) + names[1][0] + touched[1];\n"   // 60 + 'c' (99) + 7
+		"}\n";
+	CHECK_EQ(runProgram(scratch, *ceresDir, program, { lib->object }, { lib->decls }), 166);
+}
+
+TEST(prebuilt, an_extern_array_without_a_size_links_against_an_archive)
+{
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("extern_array_archive");
+	std::optional<Built> lib = buildObject(scratch, *ceresDir, "lib", "int table[3] = { 1, 2, 4 };\nint fill(void) { return 0; }\n");
+	CHECK(lib.has_value());
+	if (!lib) return;
+	std::optional<fs::path> archive = buildArchive(scratch, *ceresDir, "lib", { lib->object });
+	CHECK(archive.has_value());
+	if (!archive) return;
+
+	CHECK_EQ(runProgram(scratch, *ceresDir, "extern int table[];\nint main(void) { return table[0] + table[1] + table[2]; }\n",
+		{ *archive }, { lib->decls }), 7);
+}

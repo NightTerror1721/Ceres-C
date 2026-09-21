@@ -1949,11 +1949,11 @@ namespace ceresc::codegen
 			{
 				typeText = fieldTypeName(type->sizeInBytes(), type->isFloat());
 			}
-			// `extern struct S x;` with S only declared: the type has no size yet, so the shape would
-			// come out as `u32[0]` and the assembler rejects a zero-length array. Nothing is stored
+			// `extern struct S x;` with S only declared, or `extern int t[];` with no size: the type has no
+			// size here, so the shape would come out as `u32[0]` and the assembler rejects a zero-length array. Nothing is stored
 			// here (this is a declaration), and the definition - which has a real size - replaces this
 			// entry when the driver merges the units, so any non-empty placeholder will do.
-			if (typeText == "u32[0]")
+			if (typeText.find("[0]") != std::string::npos)
 				typeText = "u8[1]";
 			declarations.push_back(ExternalDeclaration{ std::string(variable->name()), false, !variable->isExternDeclaration(),
 				variable->initializer() != nullptr, std::move(section), std::move(typeText) });

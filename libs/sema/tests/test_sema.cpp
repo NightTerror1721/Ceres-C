@@ -522,6 +522,56 @@ TEST(sema, an_array_without_a_size_or_an_initializer_is_still_an_error)
 	CHECK(containsMessage(flatRows, "cannot infer"));
 	CheckOutcome wrongString = checkSource("int a[] = \"text\";");
 	CHECK(!wrongString.ok);
+	CheckOutcome staticNone = checkSource("static int a[];");
+	CHECK(!staticNone.ok);
+	CheckOutcome externInitializer = checkSource("extern int a[] = { 1, 2 };\nint n = sizeof(a);");
+	CHECK(externInitializer.ok);   // that one is a definition, and the initializer gives the size
+}
+
+// ---- extern arrays of unknown size ---------------------------------------------------------------------
+
+TEST(sema, an_extern_array_may_leave_its_size_to_the_unit_that_defines_it)
+{
+	CHECK(checkSource("extern int table[];\nint main() { return table[2]; }").ok);
+	CHECK(checkSource("extern char names[][4];\nint main() { return names[1][2]; }").ok);
+	CHECK(checkSource("extern int table[];\nint main() { int* p = table; return p[0]; }").ok);
+	CHECK(checkSource("extern int table[];\nint sum(int* v) { return v[0]; }\nint main() { return sum(table); }").ok);
+	CHECK(checkSource("int main() { extern int table[]; return table[0]; }").ok);
+	CHECK(checkSource("extern const char words[];\nint main() { return words[0]; }").ok);
+}
+
+TEST(sema, the_size_of_an_extern_array_is_not_known_and_sizeof_says_so)
+{
+	CheckOutcome whole = checkSource("extern int table[];\nint n = sizeof(table);");
+	CHECK(!whole.ok);
+	CHECK(containsMessage(whole, "size is not known"));
+	CHECK(containsMessage(whole, "int[]"));
+	CHECK(!checkSource("extern int table[];\nint main() { return sizeof table; }").ok);
+	// What is known is still there to ask about
+	CHECK(checkSource("extern int table[];\nint n = sizeof(table[0]);").ok);
+	CHECK(checkSource("extern char names[][4];\nint n = sizeof(names[0]);").ok);
+	CHECK(!checkSource("extern char names[][4];\nint n = sizeof(names);").ok);
+}
+
+TEST(sema, a_definition_gives_an_extern_array_its_size_whichever_comes_first)
+{
+	CHECK(checkSource("extern int t[];\nint t[4] = { 1, 2, 3, 4 };\nint n = sizeof(t);").ok);
+	CHECK(checkSource("int t[4] = { 1, 2, 3, 4 };\nextern int t[];\nint n = sizeof(t);").ok);
+	CHECK(checkSource("extern int t[];\nextern int t[];\nint t[4];\nextern int t[4];").ok);
+	// Until the definition, the size is unknown
+	CHECK(!checkSource("extern int t[];\nint n = sizeof(t);\nint t[4];").ok);
+}
+
+TEST(sema, an_extern_array_and_its_definition_must_agree_apart_from_the_size)
+{
+	CheckOutcome size = checkSource("extern int t[];\nint t[4];\nint t[5];");
+	CHECK(!size.ok);
+	CHECK(containsMessage(size, "different type"));
+	CHECK(!checkSource("extern int t[4];\nextern int t[5];").ok);
+	CHECK(!checkSource("extern int t[];\nchar t[4];").ok);
+	CHECK(!checkSource("extern int t[];\nconst int t[4] = { 1, 2, 3, 4 };").ok);
+	CHECK(!checkSource("extern char m[][4];\nchar m[2][5];").ok);
+	CHECK(!checkSource("extern int t[];\nint t;").ok);
 }
 
 // ---- control flow --------------------------------------------------------------------------------------

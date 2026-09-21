@@ -188,7 +188,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2034` | A function declared to return a function. |
 | `E2035` | A function declared to return an array. |
 | `E2036` | An array of `void`, or of functions. |
-| `E2037` | An array with no size where nothing can give it one: no initializer, a scalar or flat list for an array of arrays, a struct member, a cast. Only a variable's initializer infers the outermost size. |
+| `E2037` | An array with no size where nothing can give it one: no initializer (and not an `extern` declaration), a scalar or flat list for an array of arrays, a struct member, a cast. Only a variable's initializer infers the outermost size, and `extern int t[];` may leave it unknown. |
 
 ### `3xxx` — sema
 
@@ -275,6 +275,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3079` | A field of an `enum` whose definition has not been seen. |
 | `E3080` | A field of a `struct` whose definition has not been seen. |
 | `E3081` | A `struct` that contains itself by value. |
+| `E3082` | `sizeof` of an array whose size is not known in this unit (`extern int t[];`). |
 
 ### `4xxx` — codegen
 

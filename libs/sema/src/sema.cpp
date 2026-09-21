@@ -1133,6 +1133,13 @@ namespace ceresc::sema
 		if (!node.isTypeArgument())
 			checkExpr(node.argumentExpr()); // non-evaluated context, but still checked for errors, same as real C
 
+		const Type* measured = node.isTypeArgument() ? node.argumentType() : node.argumentExpr()->type();
+		if (measured && measured->isArray() && measured->arraySize() == 0)
+		{
+			_diagnostics.error(DiagId::SizeofIncompleteArray, node.location(),
+				"invalid application of 'sizeof' to '{}': the array's size is not known here", typeName(measured));
+		}
+
 		node.setType(&Type::UInt);
 		_lastExprType = &Type::UInt;
 	}
@@ -1535,6 +1542,20 @@ namespace ceresc::sema
 			const ast::StorageClass storage = symbol->varDecl->storageClass();
 			return storage == ast::StorageClass::Static || storage == ast::StorageClass::Extern;
 		}
+
+		// Do two declarations of one name mean the same type? An array whose size is not known (`extern int t[];`,
+		// size 0) agrees with the same array of any size: they are one object, and the known size is what it has.
+		bool sameOrCompletes(const Type* a, const Type* b)
+		{
+			if (*a == *b)
+				return true;
+			if (!a->isArray() || !b->isArray())
+				return false;
+			if (a->arraySize() != b->arraySize() && a->arraySize() != 0 && b->arraySize() != 0)
+				return false;
+			return a->isConst() == b->isConst() && a->isVolatile() == b->isVolatile() &&
+				*a->arrayElementType() == *b->arrayElementType();
+		}
 	}
 
 	bool Sema::isConstantInitializer(const ast::Expr* expr)
@@ -1629,7 +1650,7 @@ namespace ceresc::sema
 		Symbol* previous = symbol.isGlobal ? _globalScope->lookupInThisScope(node.name()) : nullptr;
 		if (previous && previous->kind == SymbolKind::Variable)
 		{
-			bool sameType = previous->type && node.type() && *previous->type == *node.type();
+			bool sameType = previous->type && node.type() && sameOrCompletes(previous->type, node.type());
 			if (!sameType)
 			{
 				_diagnostics.error(DiagId::ConflictingTypes, node.location(), "redeclaration of '{}' with a different type ('{}' after '{}')",
@@ -1652,6 +1673,10 @@ namespace ceresc::sema
 				// actually has the value - which is what checkStorageClass() and codegen both read.
 				previous->varDecl = &node;
 			}
+
+			// `extern int t[];` and then `int t[4] = ...;`: from here on the array has its size.
+			if (sameType && previous->type->isArray() && previous->type->arraySize() == 0 && node.type()->arraySize() != 0)
+				previous->type = node.type();
 		}
 		else
 		{

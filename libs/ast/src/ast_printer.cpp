@@ -200,7 +200,7 @@ namespace ceresc::ast
 
 				return typeName(pointee) + "*" + suffix;
 			}
-			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + "[" + std::to_string(type->arraySize()) + "]";
+			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + (type->arraySize() == 0 ? std::string("[]") : "[" + std::to_string(type->arraySize()) + "]");
 			case TypeKind::Struct: return prefix + "struct " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Union: return prefix + "union " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Enum: return prefix + "enum " + std::string(type->enumDecl() ? type->enumDecl()->name() : std::string_view("<anonymous>"));

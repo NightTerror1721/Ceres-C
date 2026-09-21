@@ -212,6 +212,7 @@ namespace ceresc::support
 		FieldIncompleteEnum              = 3079,
 		FieldIncompleteStruct            = 3080,
 		FieldByValueCycle                = 3081,
+		SizeofIncompleteArray            = 3082,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 
