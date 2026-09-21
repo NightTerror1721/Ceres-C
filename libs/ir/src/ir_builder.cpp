@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <unordered_set>
 
 namespace ceresc::ir
 {
@@ -171,7 +172,52 @@ namespace ceresc::ir
 		}
 
 		unit.accept(*this);
+		markFunctionsNamedByData(unit);
 		return std::move(_module);
+	}
+
+	namespace
+	{
+		// The names an initializer takes the address of: `f`, `&f`, `(void*)f`, inside braces or not. Only
+		// what codegen can write into a static image matters here (see addressConstantSymbol()); whatever
+		// else the expression holds is not this pass's business.
+		void collectAddressNames(const ast::Expr* expr, std::unordered_set<std::string_view>& names)
+		{
+			if (!expr)
+				return;
+			if (const auto* list = dynamic_cast<const ast::InitListExpr*>(expr))
+			{
+				for (const ast::Expr* element : list->elements())
+					collectAddressNames(element, names);
+			}
+			else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(expr))
+				collectAddressNames(cast->operand(), names);
+			else if (const auto* unary = dynamic_cast<const ast::UnaryExpr*>(expr))
+			{
+				if (unary->op() == ast::UnaryOp::AddressOf)
+					collectAddressNames(unary->operand(), names);
+			}
+			else if (const auto* name = dynamic_cast<const ast::NameExpr*>(expr))
+				names.insert(name->name());
+		}
+	}
+
+	// A function whose address sits in the initializer of a global or of a `static` local is reached by a
+	// pointer the data image holds, not by any instruction: unused-function elimination has to be told.
+	void IrBuilder::markFunctionsNamedByData(ast::TranslationUnit& unit)
+	{
+		std::unordered_set<std::string_view> names;
+		for (ast::Decl* decl : unit.decls())
+			if (const auto* variable = dynamic_cast<const ast::VarDecl*>(decl))
+				collectAddressNames(variable->initializer(), names);
+		for (const IrStaticLocal& local : _module.staticLocals())
+			if (local.decl)
+				collectAddressNames(local.decl->initializer(), names);
+		if (names.empty())
+			return;
+		for (const auto& function : _module.functions())
+			if (names.contains(function->name()))
+				function->setAddressTakenByData(true);
 	}
 
 	// ---- scope / symbol helpers -----------------------------------------------------------------

@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // IrBuilder - an AstVisitor (libs/ast) that lowers the annotated AST from sema into IR.
@@ -143,6 +144,10 @@ namespace ceresc::ir
 		void visit(ast::TranslationUnit& node) override;
 
 	private:
+		// Marks the functions whose address a global's or a static local's initializer holds, so that
+		// unused-function elimination keeps them. Run once, after everything is lowered.
+		void markFunctionsNamedByData(ast::TranslationUnit& unit);
+
 		enum class LocalSymbolKind : u8 { Local, Global, EnumConstant };
 
 		// A name IrBuilder knows how to lower a reference to - see the header comment above for why

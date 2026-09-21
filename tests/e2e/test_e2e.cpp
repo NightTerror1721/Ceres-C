@@ -1175,6 +1175,26 @@ TEST(e2e, a_cast_constant_can_initialize_a_static_object)
 		"7");
 }
 
+TEST(e2e, a_static_function_named_only_by_a_data_initializer_is_kept)
+{
+	// Nothing calls `twice` or `plus_one` by name: their addresses sit in the initializers of a table and of
+	// a static local, and that is the only reason unused-function elimination must leave them alone.
+	runsTheSameAtEveryLevel("static_function_in_table",
+		"static int twice(int a) { return a * 2; }"
+		"static int plus_one(int a) { return a + 1; }"
+		"static int minus_one(int a) { return a - 1; }"
+		"struct Ops { int (*apply)(int); int (*undo)(int); };"
+		"static const struct Ops ops = { twice, minus_one };"
+		"static int (*table[2])(int) = { plus_one, twice };"
+		"int main() {"
+		"    static int (*local)(int) = plus_one;"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + ops.apply(2) + table[0](1) + table[1](1) + local(0) + ops.undo(1) - 8;"   // 4 + 2 + 2 + 1 + 0 - 8 + 48 -> '1'
+		"    return 0;"
+		"}",
+		"1");
+}
+
 TEST(e2e, a_variadic_function_sums_its_argument_tail)
 {
 	runsTheSameAtEveryLevel("variadic_sum",

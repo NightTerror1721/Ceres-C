@@ -121,6 +121,10 @@ namespace ceresc::ir
 		// only through the vector table, an edge with no instruction at the far end) and codegen,
 		// which has to save every register and end in `iret`.
 		bool _isInterruptHandler = false;
+		// Named by the initializer of a global or a `static` local (`static const struct ops o = { read };`).
+		// That address is written into the data image and no instruction anywhere mentions it, so
+		// unused-function elimination would otherwise drop a `static` function that is very much in use.
+		bool _addressTakenByData = false;
 
 	public:
 		IrFunction(std::string_view name, const ast::Type* returnType) noexcept :
@@ -147,6 +151,8 @@ namespace ceresc::ir
 		void setLinkage(bool external, bool inlineHint) noexcept { _externalLinkage = external; _inlineHint = inlineHint; }
 		void setVariadic(bool variadic) noexcept { _isVariadic = variadic; }
 		void setInterruptHandler(bool isHandler) noexcept { _isInterruptHandler = isHandler; }
+		bool isAddressTakenByData() const noexcept { return _addressTakenByData; }
+		void setAddressTakenByData(bool taken) noexcept { _addressTakenByData = taken; }
 
 		BasicBlock& createBlock()
 		{

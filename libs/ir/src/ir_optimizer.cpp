@@ -1012,7 +1012,10 @@ namespace ceresc::ir
 			{
 				// An interrupt handler is a root whatever its linkage: the machine reaches it through
 				// the vector table, and no instruction anywhere names it.
-				if (function->name() != "main" && !function->hasExternalLinkage() && !function->isInterruptHandler())
+				// Likewise one whose address a data initializer holds: that reference is bytes in the
+				// image, not an instruction, so no walk over the bodies below could ever find it.
+				if (function->name() != "main" && !function->hasExternalLinkage() && !function->isInterruptHandler() &&
+					!function->isAddressTakenByData())
 					continue;
 				reached[function->name()] = true;
 				worklist.push_back(function->name());
