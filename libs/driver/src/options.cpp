@@ -60,7 +60,7 @@ namespace ceresc::driver
 		out <<
 			"usage: ceresc <file.c|file.casm>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
-			"               [--ceres-path <dir>]\n"
+			"               [--ceres-path <dir|file>]\n"
 			"               [-Werror] [-O<level>] [-f<opt>]\n"
 			"       ceresc --version | --help\n"
 			"\n"
@@ -76,7 +76,8 @@ namespace ceresc::driver
 			"  --run               assemble, link and run the program with `ceres asm`/`ceres run`\n"
 			"  --clean             after --run, remove generated .casm, .decls.casm, .cobj and .cres files\n"
 			"  --clean-keep-casm   after --run, keep generated .casm but remove .decls.casm, .cobj and .cres\n"
-			"  --ceres-path <dir>  where to find the `ceres` binary (default: look it up on PATH)\n"
+			"  --ceres-path <path> where to find `ceres`: its directory, or the executable itself. Without it the\n"
+			"                      CERES_PATH environment variable says, and then PATH\n"
 			"  -Werror             treat warnings as errors\n"
 			"  --version           print the version and stop\n"
 			"  --help, -h          print this text\n"

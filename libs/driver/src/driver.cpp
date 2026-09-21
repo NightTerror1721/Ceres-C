@@ -1,5 +1,7 @@
 #include <ceresc/driver/driver.h>
 
+#include <ceresc/driver/ceres_locator.h>
+
 #include <ceresc/ast/ast_printer.h>
 #include <ceresc/codegen/codegen.h>
 #include <ceresc/ir/ir_builder.h>
@@ -324,6 +326,20 @@ namespace ceresc::driver
 			return 1;
 		}
 
+		// Where `ceres` is, found before any work is done: a build that compiles for a minute and then cannot
+		// launch its assembler has wasted the minute (ceres_locator.h has the rules).
+		fs::path ceresBinary;
+		if (options.run)
+		{
+			CeresLookup lookup = locateCeres(options.ceresPath, CeresEnvironment::fromProcess());
+			if (!lookup.found())
+			{
+				std::cerr << lookup.error;
+				return 1;
+			}
+			ceresBinary = lookup.executable;
+		}
+
 		bool singleOutput = (cInputs.size() == 1 && casmInputs.empty() && !options.run);
 
 		std::vector<CompiledUnit> units;
@@ -472,17 +488,6 @@ namespace ceresc::driver
 
 		// ---- assemble, link and run ------------------------------------------------------------------
 		//
-		// Bare "ceres" (relying on PATH + PATHEXT resolution) when no directory was given; the
-		// explicit filename otherwise - joining a directory with a bare "ceres" on a case-
-		// insensitive filesystem can resolve to an unrelated same-named directory instead of the
-		// executable (as CeresASM's own checkout has at its root: `Ceres/`, the library tree).
-#if defined(_WIN32)
-		constexpr std::string_view kCeresExecutableName = "ceres.exe";
-#else
-		constexpr std::string_view kCeresExecutableName = "ceres";
-#endif
-		fs::path ceresBinary = options.ceresPath.empty() ? fs::path("ceres") : (fs::path(options.ceresPath) / kCeresExecutableName);
-
 		std::vector<fs::path> casmFiles;
 		for (const CompiledUnit& unit : units)
 			casmFiles.push_back(unit.casmPath);
