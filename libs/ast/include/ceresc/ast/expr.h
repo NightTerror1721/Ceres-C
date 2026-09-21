@@ -3,6 +3,7 @@
 #include <ceresc/support/source_location.h>
 #include <ceresc/support/string_pool.h>
 #include "type.h"
+#include <optional>
 #include <span>
 #include <string_view>
 #include <variant>
@@ -73,6 +74,7 @@ namespace ceresc::ast
 	protected:
 		support::SourceLocation _location;
 		const Type* _type = nullptr;
+		std::optional<i64> _constantValue;
 
 	public:
 		explicit Expr(support::SourceLocation location) noexcept : _location(location) {}
@@ -81,6 +83,13 @@ namespace ceresc::ast
 		support::SourceLocation location() const noexcept { return _location; }
 		const Type* type() const noexcept { return _type; }
 		void setType(const Type* type) noexcept { _type = type; }
+
+		// The value sema worked out for an expression that is a compile-time integer constant - `2 + 3`,
+		// `sizeof(a) / sizeof(a[0])`, an enumerator - recorded where the value is needed at compile time (a
+		// global's or a static's initializer, which becomes bytes in the image). Code generation reads it
+		// instead of evaluating the tree a second time. Empty for everything else, and for a plain literal.
+		std::optional<i64> constantValue() const noexcept { return _constantValue; }
+		void setConstantValue(i64 value) noexcept { _constantValue = value; }
 
 		virtual void accept(AstVisitor& visitor) = 0;
 	};

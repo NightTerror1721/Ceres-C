@@ -186,6 +186,9 @@ namespace ceresc::codegen
 		// still. `nullopt` asks the caller to diagnose rather than guess.
 		std::optional<i64> foldGlobalInt(const Expr* expr)
 		{
+			// What sema already folded: `2 + 3`, `sizeof(a) / sizeof(a[0])`, an enumerator (Expr::constantValue).
+			if (expr && expr->constantValue())
+				return expr->constantValue();
 			if (const auto* lit = dynamic_cast<const IntLiteralExpr*>(expr))
 				return static_cast<i64>(lit->value());
 			if (const auto* lit = dynamic_cast<const CharLiteralExpr*>(expr))
@@ -206,6 +209,8 @@ namespace ceresc::codegen
 
 		std::optional<f32> foldGlobalFloat(const Expr* expr)
 		{
+			if (expr && expr->constantValue())
+				return static_cast<f32>(*expr->constantValue());   // `float f = 2 * 3;`: an integer constant, converted
 			// FloatLiteralExpr keeps its value as f64 until something truncates it (expr.h), and
 			// `float` is the only floating type this subset has (§3/§14) - so the narrowing is the
 			// intended one, spelled out rather than left implicit for the compiler to warn about.

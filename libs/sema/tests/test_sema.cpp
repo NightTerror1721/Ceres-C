@@ -714,6 +714,25 @@ TEST(sema, a_function_pointer_only_converts_to_one_of_the_same_signature)
 	CHECK(checkSource("int main() { int (*p)(int) = 0; return 0; }").ok);
 }
 
+TEST(sema, arithmetic_on_constants_is_a_valid_static_initializer)
+{
+	CHECK(checkSource("static int y = 2 + 3; int main() { return y; }").ok);
+	CHECK(checkSource("enum { N = 4 }; static int y = N * 2 + 1; int main() { return y; }").ok);
+	CHECK(checkSource("static int a[4]; static int n = sizeof(a) / sizeof(a[0]); int main() { return n; }").ok);
+	CHECK(checkSource("static int y = 1 ? 10 : 20; int main() { return y; }").ok);
+	CHECK(checkSource("static unsigned int y = 1u << 31; int main() { return 0; }").ok);
+	CHECK(checkSource("struct S { int a; int b; }; static struct S s = { 1 + 1, 2 * 3 }; int main() { return s.a; }").ok);
+	CHECK(checkSource("static const int t[] = { 1 + 1, -(2 * 3), 8 >> 1 }; int main() { return t[0]; }").ok);
+	CHECK(checkSource("static float f = 2 * 3; int main() { return 0; }").ok);
+	CHECK(checkSource("int g = 10 * 10 + 1; int main() { return g; }").ok);
+
+	// What is not a constant is still refused: a variable, a division by zero, a comma, a call.
+	CHECK(!checkSource("int x = 3; static int y = x + 1; int main() { return y; }").ok);
+	CHECK(!checkSource("static int y = 1 / 0; int main() { return y; }").ok);
+	CHECK(!checkSource("static int y = (1, 2); int main() { return y; }").ok);
+	CHECK(!checkSource("int f(void); static int y = f() + 1; int main() { return y; }").ok);
+}
+
 TEST(sema, a_null_pointer_constant_converts_to_a_function_pointer_too)
 {
 	// NULL is ((void*)0): a void*, which the types alone would refuse for a function pointer.
@@ -1356,7 +1375,10 @@ TEST(sema, a_static_local_needs_a_compile_time_initializer)
 {
 	// Its initial value becomes bytes in the loaded image, so there is no moment at which a
 	// run-time expression could be evaluated for it.
-	CheckOutcome expression = checkSource("int main() { static int n = 1 + 2; return n; }");
+	// Arithmetic on constants is one (see arithmetic_on_constants_is_a_valid_static_initializer): it is the
+	// run-time expressions that are not.
+	CHECK(checkSource("int main() { static int n = 1 + 2; return n; }").ok);
+	CheckOutcome expression = checkSource("int seed(void);\nint main() { static int n = 1 + seed(); return n; }");
 	CHECK(!expression.ok);
 	CHECK(containsMessage(expression, "compile-time constant"));
 

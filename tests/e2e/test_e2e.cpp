@@ -175,6 +175,35 @@ TEST(e2e, a_function_whose_frame_outgrows_a_16_bit_displacement_still_assembles_
 		std::format("{}{}{}{}", middle / 10, middle % 10, value / 10, value % 10));
 }
 
+TEST(e2e, arithmetic_on_constants_fills_a_static_initializer)
+{
+	// 6, then table[0] = 2, table[1] = 8, table[2] + 5 = 3, the count of the table = 3, the top two
+	// bits of the wrapped unsigned = 3, the float = 3, and the struct's two fields, 3 and 6.
+	runsTheSameAtEveryLevel("constant_initializers",
+		"enum { A = 2, B = 3 };"
+		"struct P { int x; int y; };"
+		"static int product = A * B;"
+		"static const int table[] = { 1 + 1, A << 2, B - 5 };"
+		"static int count = sizeof(table) / sizeof(table[0]);"
+		"static unsigned int big = 0xFFFFFFFFu - 1;"
+		"static float three = 1 * 3;"
+		"static struct P p = { A + 1, B * 2 };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + product;"
+		"    *term = 48 + table[0];"
+		"    *term = 48 + table[1];"
+		"    *term = 48 + table[2] + 5;"
+		"    *term = 48 + count;"
+		"    *term = 48 + (big >> 30);"
+		"    *term = 48 + (int)three;"
+		"    *term = 48 + p.x;"
+		"    *term = 48 + p.y;"
+		"    return 0;"
+		"}",
+		"628333336");
+}
+
 TEST(e2e, the_comma_operator_runs_its_left_side_first_and_yields_its_right_side)
 {
 	runsTheSameAtEveryLevel("comma_operator",

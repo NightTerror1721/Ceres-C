@@ -173,6 +173,19 @@ namespace ceresc::sema
 		}
 	}
 
+	void Sema::recordConstant(Expr* expr)
+	{
+		if (!expr || expr->constantValue())
+			return;
+		// A literal is already its own value. What is worth folding is what is built from them.
+		if (dynamic_cast<ast::BinaryExpr*>(expr) || dynamic_cast<ast::TernaryExpr*>(expr) ||
+			dynamic_cast<ast::SizeofExpr*>(expr) || dynamic_cast<ast::NameExpr*>(expr) || dynamic_cast<ast::UnaryExpr*>(expr))
+		{
+			if (std::optional<i64> value = evalConstantExpr(expr))
+				expr->setConstantValue(*value);
+		}
+	}
+
 	bool Sema::isAssignable(const Type* target, const Type* source, const Expr* sourceExpr) noexcept
 	{
 		if (target && target->isPointer() && isNullPointerConstant(sourceExpr))
@@ -270,6 +283,7 @@ namespace ceresc::sema
 		}
 
 		const Type* initType = decayArray(checkExpr(init));
+		recordConstant(init);
 
 		if (type && type->isArray())
 		{
@@ -577,6 +591,10 @@ namespace ceresc::sema
 
 		if (auto* sizeofExpr = dynamic_cast<ast::SizeofExpr*>(expr))
 		{
+			// A constant asked for before the enclosing declaration's initializer was checked: the operand has
+			// no type yet, and its type is all sizeof needs.
+			if (!sizeofExpr->isTypeArgument() && sizeofExpr->argumentExpr() && !sizeofExpr->argumentExpr()->type() && !_scopes.empty())
+				checkExpr(sizeofExpr->argumentExpr());
 			const Type* argType = sizeofExpr->isTypeArgument() ? sizeofExpr->argumentType()
 				: (sizeofExpr->argumentExpr() ? sizeofExpr->argumentExpr()->type() : nullptr);
 			if (!argType)
@@ -1529,6 +1547,14 @@ namespace ceresc::sema
 		{
 			return true;
 		}
+		// Arithmetic on constants - `2 + 3`, `sizeof(a) / sizeof(a[0])`, `FLAG_A | FLAG_B`, `n ? 1 : 2` - is a
+		// constant, and its value is what goes in the image.
+		if (dynamic_cast<const ast::BinaryExpr*>(expr) || dynamic_cast<const ast::TernaryExpr*>(expr) ||
+			dynamic_cast<const ast::SizeofExpr*>(expr))
+		{
+			recordConstant(const_cast<Expr*>(expr));
+			return expr->constantValue().has_value();
+		}
 		if (auto* list = dynamic_cast<const ast::InitListExpr*>(expr))
 		{
 			for (const ast::Expr* element : list->elements())
@@ -1564,6 +1590,11 @@ namespace ceresc::sema
 			// An array or a function name decays to its own address. (A plain variable is a value, and
 			// its value is not known until the program runs.)
 			const Symbol* symbol = currentScope().lookup(name->name());
+			if (symbol && symbol->kind == SymbolKind::EnumConstant)
+			{
+				recordConstant(const_cast<Expr*>(expr));      // an enumerator is a constant, and a number
+				return true;
+			}
 			if (!hasStaticStorage(symbol))
 				return false;
 			return symbol->kind == SymbolKind::Function || (symbol->type && symbol->type->isArray());

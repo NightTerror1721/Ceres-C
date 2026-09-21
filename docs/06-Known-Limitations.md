@@ -86,6 +86,15 @@ mapping.
 The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
 NAME is then an ordinary name for the capped type and says nothing further.
 
+### Arithmetic in a static initializer
+
+A global or a `static` is initialized from a constant expression, and arithmetic on constants is one: `static int n = 2 + 3;`,
+`{ 64, 4 * 20 }` in a table, `FLAG_A | FLAG_B` with enumerators, `sizeof(table) / sizeof(table[0])`, `LIMIT > 4 ? 1 : 2`, `1u << 31`.
+Sema records each value on the expression (`Expr::constantValue`) and code generation writes it into the image at the
+declared width. What still is not a constant is a variable, a call, a comma, a division by zero, and a
+floating-point expression (`1.0f / 3`); an integer constant converts to a `float` target (`float f = 2 * 3;`).
+An enumerator or `sizeof` as an array *size* is still refused (E2031): that path takes only literals.
+
 ### No address constant with an offset in a static initializer
 
 C lets a file-scope object be initialized with the address of another object — a string literal,

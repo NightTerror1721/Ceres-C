@@ -238,6 +238,9 @@ namespace ceresc::sema
 		// enum constant or a bare function name), which needs a symbol lookup against the current
 		// scope - see sema.cpp.
 		bool isLValue(const ast::Expr* expr);
+		// Records on `expr` the value of a compile-time integer constant expression (Expr::constantValue),
+		// for the initializer of a global or a static, where code generation needs it as a number.
+		void recordConstant(ast::Expr* expr);
 		static bool isAssignable(const ast::Type* target, const ast::Type* source) noexcept;
 		// The same for a value that is an expression, which can be more than its type says: a null
 		// pointer constant (0, or 0 cast to `void*`, which is what NULL expands to) converts to any
