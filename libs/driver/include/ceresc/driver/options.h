@@ -66,6 +66,7 @@ namespace ceresc::driver
 		bool cleanKeepCasm = false;
 
 		std::string ceresPath;       // --ceres-path <dir or executable> - empty means "CERES_PATH, then PATH" (ceres_locator.h)
+		std::vector<std::string> runArguments;   // --run-arg <arg>, in order: more for `ceres run` after the program's name
 		bool warningsAsErrors = false; // -Werror
 		bool showVersion = false;    // --version: print the version and stop, before anything else
 

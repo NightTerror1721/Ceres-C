@@ -656,7 +656,9 @@ namespace ceresc::driver
 			return linkResult < 0 ? 1 : linkResult;
 		}
 
-		int runResult = runSubprocess(ceresBinary, { "run", programPath.string() });
+		std::vector<std::string> runArgs{ "run", programPath.string() };
+		runArgs.insert(runArgs.end(), options.runArguments.begin(), options.runArguments.end());
+		int runResult = runSubprocess(ceresBinary, runArgs);
 		if (runResult < 0)
 			std::cerr << "ceresc: could not launch `ceres run`\n";
 		if (runResult == 0 && (options.clean || options.cleanKeepCasm))

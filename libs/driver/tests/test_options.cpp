@@ -425,3 +425,14 @@ TEST(options, the_usage_text_mentions_objects_archives_and_declarations)
 	CHECK(contains(result.output, "--decls"));
 	CHECK(contains(result.output, "--emit-decls"));
 }
+
+TEST(options, run_arg_collects_the_extra_arguments_for_ceres_run_in_order)
+{
+	ParseResult result = parse({ "ceresc", "main.c", "--run", "--run-arg", "--port", "--run-arg", "0=stick.img" });
+	CHECK(result.options.has_value());
+	if (!result.options) return;
+	CHECK_EQ(result.options->runArguments.size(), usize{ 2 });
+	CHECK_EQ(result.options->runArguments[0], std::string{ "--port" });
+	CHECK_EQ(result.options->runArguments[1], std::string{ "0=stick.img" });
+	CHECK(!parse({ "ceresc", "main.c", "--run", "--run-arg" }).options.has_value());
+}

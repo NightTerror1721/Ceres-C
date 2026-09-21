@@ -372,3 +372,24 @@ TEST(prebuilt, hand_written_assembly_meets_c_through_a_prefixed_name_or_an_asm_l
 		"int main(void) { return mine(3) + half(2) + counter; }\n";   // 6 + 8 + 5
 	CHECK_EQ(runProgram(scratch, *ceresDir, program, { hand }, {}), 19);
 }
+
+TEST(prebuilt, run_arg_hands_extra_arguments_to_ceres_run)
+{
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("run_arg");
+	const fs::path stick = scratch.write("stick.img", std::string(3 * 512, 'x'));
+
+	// Port 0 is the one selected at start; its sector count is at offset 0x2C of the peripheral device
+	ceresc::driver::Options options;
+	options.inputPaths.push_back(scratch.write("main.c", "int main(void) { return *(volatile unsigned int*)0xFF0A002C; }\n").string());
+	options.outputPath = (scratch.dir / "main.cres").string();
+	options.run = true;
+	options.ceresPath = ceresDir->string();
+	options.runArguments = { "--port", "0=" + stick.string() };
+	CHECK_EQ(ceresc::driver::run(options), 3);   // three sectors
+
+	// The same program without the argument sees an empty port
+	options.runArguments.clear();
+	CHECK_EQ(ceresc::driver::run(options), 0);
+}

@@ -61,7 +61,7 @@ namespace ceresc::driver
 			"usage: ceresc <file.c|file.casm|file.cobj|file.car>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
 			"               [--decls <file.casm>]... [--emit-decls <file.casm>]\n"
-			"               [--ceres-path <dir|file>]\n"
+			"               [--ceres-path <dir|file>] [--run-arg <arg>]...\n"
 			"               [-Werror] [-O<level>] [-f<opt>]\n"
 			"       ceresc --version | --help\n"
 			"\n"
@@ -186,6 +186,14 @@ namespace ceresc::driver
 					options.declsFiles.push_back(std::move(*value));
 				else
 					options.emitDeclsPath = std::move(*value);
+				continue;
+			}
+			if (arg == "--run-arg")
+			{
+				std::optional<std::string> value = valueFor(arg, "--run-arg", i);
+				if (!value)
+					return std::nullopt;
+				options.runArguments.push_back(std::move(*value));
 				continue;
 			}
 			if (arg == "--ceres-path")
