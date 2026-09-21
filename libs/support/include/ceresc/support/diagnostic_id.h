@@ -129,6 +129,7 @@ namespace ceresc::support
 		ArraySizeRequired              = 2037,
 		ExpectedStaticAssertMessage    = 2038,
 		ExpectedAsmLabel               = 2039,
+		ExpectedDesignator             = 2040,
 
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
 
@@ -220,6 +221,10 @@ namespace ceresc::support
 		AsmLabelNotAtFileScope           = 3085,
 		InvalidAsmLabel                  = 3086,
 		ConflictingAsmLabel              = 3087,
+		InvalidDesignator                = 3088,
+		DesignatorIndexNotConstant       = 3089,
+		DesignatorIndexOutOfRange        = 3090,
+		UnionMemberDesignator            = 3091,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 

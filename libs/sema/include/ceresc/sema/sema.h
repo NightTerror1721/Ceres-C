@@ -105,6 +105,7 @@ namespace ceresc::sema
 		void visit(ast::EnumDecl& node) override;
 		void visit(ast::TypedefDecl& node) override;
 		void visit(ast::InterruptVectorDecl& node) override;
+		void visit(ast::DesignatedInitExpr& node) override;
 		void visit(ast::StaticAssertDecl& node) override;
 		void visit(ast::TranslationUnit& node) override;
 
@@ -207,6 +208,12 @@ namespace ceresc::sema
 		// The brace-list half of checkInitializer(), split out only so the recursion reads as
 		// "list against aggregate" instead of one function with two unrelated halves.
 		void checkInitList(const ast::Type* type, ast::InitListExpr& list);
+		// A list that names what its elements are for (`{ .x = 1, [3] = 2 }`) is rewritten into the positional
+		// list it means - a zero where nothing was said - before anything else looks at it.
+		void normalizeInitList(const ast::Type* type, ast::InitListExpr& list);
+		std::optional<usize> designatedIndex(const ast::Type* type, const ast::Designator& designator);
+		ast::InitListExpr* makeInitList(support::SourceLocation location, const std::vector<ast::Expr*>& elements);
+		ast::Expr* zeroInitializerFor(const ast::Type* type, support::SourceLocation location);
 		// True for a type a string literal may initialize an array OF - `char`/`signed char`/
 		// `unsigned char`, i.e. exactly the one-byte integer types.
 		static bool isCharType(const ast::Type* type) noexcept;

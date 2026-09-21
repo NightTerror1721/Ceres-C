@@ -778,18 +778,13 @@ TEST(parser, an_empty_brace_initializer_is_rejected)
 	CHECK_EQ(unit->decls().size(), usize(2));
 }
 
-TEST(parser, a_trailing_comma_in_a_brace_initializer_is_rejected_but_the_values_are_kept)
+TEST(parser, a_trailing_comma_in_a_brace_initializer_is_accepted)
 {
-	support::Arena arena;
-	support::DiagnosticEngine diagnostics;
-	support::StringPool pool;
-	lexer::Lexer lexer("int arr[3] = { 1, 2, };", testSourceId(), diagnostics, pool);
-	Parser parser(lexer, arena, diagnostics);
-
-	ast::TranslationUnit* unit = parser.parseTranslationUnit();
-	CHECK(unit != nullptr);
-	CHECK(diagnostics.hasErrors());
-	CHECK_EQ(unit->decls().size(), usize(1)); // the list itself survives - see parseInitializer()
+	CHECK_EQ(printUnit("int arr[3] = { 1, 2, };"), "(unit (var arr int[3] (init-list 1 2)))");
+	CHECK_EQ(printUnit("int m[2][2] = { { 1, 2, }, { 3, 4, }, };"), "(unit (var m int[2][2] (init-list (init-list 1 2) (init-list 3 4))))");
+	CHECK(parseFails("int arr[3] = { 1, 2,, };"));   // one comma, and only at the end
+	CHECK(parseFails("int arr[3] = { , };"));
+	CHECK(parseFails("int arr[3] = { };"));           // still needs an element
 }
 
 TEST(parser, an_unterminated_brace_initializer_does_not_hang)
@@ -1403,4 +1398,36 @@ TEST(parser, an_asm_label_needs_a_string_in_parentheses)
 	CHECK(parseFails("int f(int) __asm__ \"g\";"));
 	// An identifier called __asm__ that is not followed by '(' is just an identifier
 	CHECK(!parseFails("int __asm__ = 1;"));
+}
+
+// ---- designated initializers -------------------------------------------------------------------------------------
+
+TEST(parser, an_element_of_a_brace_list_may_say_which_member_or_index_it_is_for)
+{
+	CHECK_EQ(printUnit("struct P p = { .x = 1, .y = 2 };"), "(unit (var p struct P (init-list (designated .x 1) (designated .y 2))))");
+	CHECK_EQ(printUnit("int a[6] = { [4] = 9, 1 };"), "(unit (var a int[6] (init-list (designated [4] 9) 1)))");
+	CHECK_EQ(printUnit("struct L l = { .b.y = 3, .a[1] = 2 };"), "(unit (var l struct L (init-list (designated .b .y 3) (designated .a [1] 2))))");
+	CHECK_EQ(printUnit("int a[4] = { [1 + 1] = 5, };"), "(unit (var a int[4] (init-list (designated [(+ 1 1)] 5))))");
+	CHECK_EQ(printUnit("struct P v[2] = { [1] = { .y = 2 } };"), "(unit (var v struct P[2] (init-list (designated [1] (init-list (designated .y 2))))))");
+}
+
+TEST(parser, a_designator_takes_a_name_or_an_index_and_an_equals_sign)
+{
+	CHECK(parseFails("struct P p = { .x 1 };"));
+	CHECK(parseFails("struct P p = { .= 1 };"));
+	CHECK(parseFails("int a[2] = { [0 = 1 };"));
+	CHECK(parseFails("int a[2] = { [] = 1 };"));
+	CHECK(parseFails("int a[2] = { [0] };"));
+	CHECK(parseFails("struct P p = { .x = };"));
+}
+
+TEST(parser, the_length_of_an_array_with_designators_is_the_highest_position_reached_plus_one)
+{
+	CHECK_EQ(printUnit("int a[] = { [5] = 1 };"), "(unit (var a int[6] (init-list (designated [5] 1))))");
+	CHECK_EQ(printUnit("int a[] = { [5] = 1, 2, 3 };"), "(unit (var a int[8] (init-list (designated [5] 1) 2 3)))");
+	CHECK_EQ(printUnit("int a[] = { 1, [3] = 2 };"), "(unit (var a int[4] (init-list 1 (designated [3] 2))))");
+	CHECK_EQ(printUnit("int a[] = { [4] = 1, [2] = 2 };"), "(unit (var a int[5] (init-list (designated [4] 1) (designated [2] 2))))");
+	CHECK_EQ(printUnit("int m[][2] = { [2] = { 1, 2 } };"), "(unit (var m int[2][3] (init-list (designated [2] (init-list 1 2)))))");
+	CHECK(parseFails("int a[] = { [n] = 1 };"));          // not a constant the parser can fold: no size to take
+	CHECK(parseFails("struct P p[] = { .x = 1 };"));       // a member designator does not count elements
 }

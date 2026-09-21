@@ -352,6 +352,44 @@ TEST(e2e, names_that_are_reserved_words_of_the_assembler_work_at_every_level)
 		"", 41);
 }
 
+TEST(e2e, designated_initializers_fill_globals_and_locals_the_same_way_at_every_level)
+{
+	// 7+3+2+5+9+1+1+2+7+8+4+20+40+5+6+105+24 = 249
+	runsTheSameAtEveryLevel("designated_initializers",
+		"struct P { int x; int y; };\n"
+		"struct L { struct P a; struct P b; int tag; char name[4]; };\n"
+		"struct P origin = { .y = 7 };\n"
+		"struct L line = { .b.y = 3, .a = { 1, 2 }, .tag = 5, .name = { 'h', 'i' } };\n"
+		"int sparse[6] = { [4] = 9, 1 };\n"
+		"int grown[] = { [5] = 1, 2 };\n"
+		"struct P pts[3] = { [2] = { .x = 8 }, [0].y = 4 };\n"
+		"int last(void) { return sizeof(grown) / sizeof(grown[0]); }\n"
+		"int main(void)\n"
+		"{\n"
+		"    int local[4] = { [1] = 20, [3] = 40, };\n"
+		"    struct L m = { .a.x = 1, .a.y = 2, .b = { .y = 6, .x = 5 }, };\n"
+		"    return origin.y + line.b.y + line.a.y + line.tag + sparse[4] + sparse[5] + grown[5] + grown[6] + last()\n"
+		"        + pts[2].x + pts[0].y + local[1] + local[3] + m.b.x + m.b.y + line.name[1] + (int)sizeof(sparse);\n"
+		"}\n",
+		"", 249);
+}
+
+TEST(e2e, everything_a_designator_did_not_name_is_zero_even_over_old_stack_contents)
+{
+	// The local array sits on a stack that a call just dirtied: the unnamed elements must still be 0
+	runsTheSameAtEveryLevel("designated_zero_fill",
+		"int dirty(void) { int a[8] = { 9, 9, 9, 9, 9, 9, 9, 9 }; return a[0]; }\n"
+		"struct S { int a; int b; int c; };\n"
+		"int main(void)\n"
+		"{\n"
+		"    dirty();\n"
+		"    int v[8] = { [6] = 1 };\n"
+		"    struct S s = { .b = 2 };\n"
+		"    return v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[7] + s.a + s.c + v[6] * 10 + s.b;\n"
+		"}\n",
+		"", 12);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

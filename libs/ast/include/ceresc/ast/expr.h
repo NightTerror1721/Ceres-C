@@ -531,7 +531,42 @@ namespace ceresc::ast
 	public:
 		std::span<Expr* const> elements() const noexcept { return { _elements, _elementCount }; }
 		u32 elementCount() const noexcept { return _elementCount; }
+		// Sema replaces a list that used designators with the positional list they mean (see
+		// DesignatedInitExpr), so everything after it sees a plain one.
+		void setElements(std::span<Expr* const> elements) noexcept { _elements = elements.data(); _elementCount = static_cast<u32>(elements.size()); }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<InitListExpr>, "InitListExpr must be trivially destructible (Arena-allocated)");
+
+	// One step of a designation: `.name` or `[index]`.
+	struct Designator
+	{
+		bool isField = false;
+		std::string_view field;             // when isField
+		Expr* index = nullptr;              // otherwise: a constant expression
+		support::SourceLocation location;
+	};
+	static_assert(TriviallyDestructible<Designator>, "Designator must be trivially destructible (Arena-allocated)");
+
+	// `.x = 1`, `[3] = 2`, `.a.b[1] = 3`: an element of a brace list that says which member or index it is for.
+	// It lives only as far as sema, which normalizes the list it stands in into positional elements (with a
+	// zero where nothing was named), so the parts that lower and emit initializers never meet one.
+	class DesignatedInitExpr final : public Expr
+	{
+	private:
+		const Designator* _designators;
+		u32 _count;
+		Expr* _value;
+
+	public:
+		DesignatedInitExpr(support::SourceLocation location, std::span<const Designator> designators, Expr* value) noexcept :
+			Expr(location), _designators(designators.data()), _count(static_cast<u32>(designators.size())), _value(value)
+		{}
+
+	public:
+		std::span<const Designator> designators() const noexcept { return { _designators, _count }; }
+		Expr* value() const noexcept { return _value; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<DesignatedInitExpr>, "DesignatedInitExpr must be trivially destructible (Arena-allocated)");
 }

@@ -2036,6 +2036,11 @@ namespace ceresc::ir
 		// Codegen writes it straight from the AST, the same way it writes a global's `let`.
 	}
 
+	void IrBuilder::visit(ast::DesignatedInitExpr&)
+	{
+		// Sema turns every designated element into a positional one before lowering; none reaches here.
+	}
+
 	void IrBuilder::visit(ast::StaticAssertDecl&)
 	{
 		// Nothing to lower: sema has already decided it, and it emits no code and no data.

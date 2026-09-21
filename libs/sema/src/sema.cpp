@@ -301,6 +301,202 @@ namespace ceresc::sema
 		}
 	}
 
+	// ---- designated initializers ---------------------------------------------------------------------------------
+
+	namespace
+	{
+		bool containsDesignator(const ast::InitListExpr& list)
+		{
+			for (const Expr* element : list.elements())
+			{
+				if (dynamic_cast<const ast::DesignatedInitExpr*>(element))
+					return true;
+				if (const auto* nested = dynamic_cast<const ast::InitListExpr*>(element); nested && containsDesignator(*nested))
+					return true;
+			}
+			return false;
+		}
+
+		// The type of the element a position stands for, or null past the end (which sema reports anyway).
+		const Type* elementTypeAt(const Type* type, usize index)
+		{
+			if (type->isArray())
+				return type->arrayElementType();
+			if (type->isAggregate() && type->structDecl() && index < type->structDecl()->fields().size())
+				return type->structDecl()->fields()[index].type;
+			return nullptr;
+		}
+	}
+
+	ast::InitListExpr* Sema::makeInitList(support::SourceLocation location, const std::vector<ast::Expr*>& elements)
+	{
+		std::span<Expr* const> stored;
+		if (!elements.empty())
+		{
+			Expr** memory = static_cast<Expr**>(_arena.allocate(sizeof(Expr*) * elements.size(), alignof(Expr*)));
+			for (usize i = 0; i < elements.size(); ++i)
+				memory[i] = elements[i];
+			stored = std::span<Expr* const>(memory, elements.size());
+		}
+		return _arena.create<ast::InitListExpr>(location, stored);
+	}
+
+	// What stands for "all zero" where a list skipped an element: a scalar's own zero, and for an aggregate a list
+	// that sets its first scalar to zero, which is what leaves the rest zero as well.
+	ast::Expr* Sema::zeroInitializerFor(const Type* type, support::SourceLocation location)
+	{
+		if (type && (type->isArray() || type->isAggregate()))
+		{
+			const Type* first = nullptr;
+			if (type->isArray())
+				first = type->arrayElementType();
+			else if (type->structDecl() && type->structDecl()->isComplete() && !type->structDecl()->fields().empty())
+				first = type->structDecl()->fields().front().type;
+			Expr* inner = first ? zeroInitializerFor(first, location) : static_cast<Expr*>(_arena.create<ast::IntLiteralExpr>(location, u64{ 0 }));
+			return makeInitList(location, { inner });
+		}
+		if (type && type->isFloat())
+			return _arena.create<ast::FloatLiteralExpr>(location, 0.0);
+		return _arena.create<ast::IntLiteralExpr>(location, u64{ 0 });
+	}
+
+	// Which element a designator names in `type`: an index in an array, a field's position in a struct. Reports what
+	// is wrong with it and returns nothing when it cannot be used.
+	std::optional<usize> Sema::designatedIndex(const Type* type, const ast::Designator& designator)
+	{
+		if (type->isArray())
+		{
+			if (designator.isField)
+			{
+				_diagnostics.error(DiagId::InvalidDesignator, designator.location, "a member designator '.{}' cannot initialize the array '{}'", designator.field, typeName(type));
+				return std::nullopt;
+			}
+			checkExpr(designator.index);
+			std::optional<i64> index = evalConstantExpr(designator.index);
+			if (!index)
+			{
+				_diagnostics.error(DiagId::DesignatorIndexNotConstant, designator.index->location(), "the index of an array designator must be an integer constant expression");
+				return std::nullopt;
+			}
+			if (*index < 0 || (type->arraySize() != 0 && *index >= static_cast<i64>(type->arraySize())))
+			{
+				_diagnostics.error(DiagId::DesignatorIndexOutOfRange, designator.index->location(), "the designator index {} is outside '{}', which holds {}",
+					*index, typeName(type), type->arraySize());
+				return std::nullopt;
+			}
+			return static_cast<usize>(*index);
+		}
+
+		if (!designator.isField)
+		{
+			_diagnostics.error(DiagId::InvalidDesignator, designator.location, "an index designator cannot initialize '{}'", typeName(type));
+			return std::nullopt;
+		}
+		ast::StructDecl* decl = type->structDecl();
+		if (!decl || !decl->isComplete())
+		{
+			_diagnostics.error(DiagId::IncompleteTypeInitializer, designator.location, "cannot initialize an incomplete type '{}'", typeName(type));
+			return std::nullopt;
+		}
+		std::span<const FieldDecl> fields = decl->fields();
+		for (usize i = 0; i < fields.size(); ++i)
+		{
+			if (fields[i].name != designator.field)
+				continue;
+			if (type->isUnion() && i != 0)
+			{
+				_diagnostics.error(DiagId::UnionMemberDesignator, designator.location,
+					"'.{}' is not the first member of '{}': only the first member of a union can be initialized in this version", designator.field, typeName(type));
+				return std::nullopt;
+			}
+			return i;
+		}
+		_diagnostics.error(DiagId::NoSuchMember, designator.location, "no member named '{}' in '{}'", designator.field, typeName(type));
+		return std::nullopt;
+	}
+
+	void Sema::normalizeInitList(const Type* type, ast::InitListExpr& list)
+	{
+		if (!type || !containsDesignator(list))
+			return;
+
+		std::vector<Expr*> slots;               // by position; null is a place nothing named
+		usize position = 0;
+		const bool isArrayOrAggregate = type->isArray() || type->isAggregate();
+
+		for (Expr* element : list.elements())
+		{
+			auto* designated = dynamic_cast<ast::DesignatedInitExpr*>(element);
+			if (!designated)
+			{
+				if (slots.size() <= position)
+					slots.resize(position + 1, nullptr);
+				slots[position++] = element;
+				continue;
+			}
+			if (!isArrayOrAggregate)
+			{
+				_diagnostics.error(DiagId::InvalidDesignator, designated->location(), "a designated initializer needs an array, struct or union, not '{}'", typeName(type));
+				if (slots.size() <= position)
+					slots.resize(position + 1, nullptr);
+				slots[position++] = designated->value();   // no more messages about it than this one
+				continue;
+			}
+
+			std::span<const ast::Designator> designators = designated->designators();
+			std::optional<usize> index = designatedIndex(type, designators.front());
+			if (!index)
+				continue;
+			if (slots.size() <= *index)
+				slots.resize(*index + 1, nullptr);
+
+			if (designators.size() == 1)
+			{
+				slots[*index] = designated->value();
+			}
+			else
+			{
+				// `.a.b = v`: the rest of the path goes to the sub-object, as an element of a list of its own.
+				// Several designations of one sub-object accumulate in that list, and it is normalized in turn.
+				Expr* rest = _arena.create<ast::DesignatedInitExpr>(designated->location(), designators.subspan(1), designated->value());
+				auto* sub = dynamic_cast<ast::InitListExpr*>(slots[*index]);
+				if (!sub)
+				{
+					sub = makeInitList(designated->location(), {});
+					slots[*index] = sub;
+				}
+				std::vector<Expr*> parts(sub->elements().begin(), sub->elements().end());
+				parts.push_back(rest);
+				sub->setElements(makeInitList(designated->location(), parts)->elements());
+			}
+			position = *index + 1;
+		}
+
+		for (usize i = 0; i < slots.size(); ++i)
+		{
+			if (!slots[i])
+			{
+				const Type* elementType = elementTypeAt(type, i);
+				slots[i] = elementType ? zeroInitializerFor(elementType, list.location())
+					: static_cast<Expr*>(_arena.create<ast::IntLiteralExpr>(list.location(), u64{ 0 }));
+			}
+			if (auto* nested = dynamic_cast<ast::InitListExpr*>(slots[i]))
+			{
+				if (const Type* elementType = elementTypeAt(type, i))
+					normalizeInitList(elementType, *nested);
+			}
+		}
+		list.setElements(makeInitList(list.location(), slots)->elements());
+	}
+
+	void Sema::visit(ast::DesignatedInitExpr& node)
+	{
+		// Only a designation that is not inside a list being initialized gets here (the rest were rewritten away).
+		_diagnostics.error(DiagId::InvalidDesignator, node.location(), "a designator can only appear in a brace initializer list");
+		node.setType(errorRecoveryType());
+		_lastExprType = errorRecoveryType();
+	}
+
 	void Sema::checkInitList(const Type* type, ast::InitListExpr& list)
 	{
 		std::span<Expr* const> elements = list.elements();
@@ -1659,6 +1855,11 @@ namespace ceresc::sema
 	{
 		if (node.type() && node.type()->isVoid())
 			_diagnostics.error(DiagId::VoidVariable, node.location(), "variable '{}' declared with type 'void'", node.name());
+
+		// Before anything looks at the initializer: a list with designators is rewritten into the positional one it
+		// means, which is the only kind the checks below (and code generation after them) understand.
+		if (auto* list = dynamic_cast<ast::InitListExpr*>(node.initializer()))
+			normalizeInitList(node.type(), *list);
 
 		checkStorageClass(node);
 		checkAsmLabel(node, &currentScope() == _globalScope);

@@ -1718,29 +1718,76 @@ namespace ceresc::parser
 		std::vector<Expr*> elements;
 		while (true)
 		{
-			Expr* element = parseInitializer(); // an element is itself an `initializer` - nesting
+			// an element is itself an `initializer` - nesting - possibly with a designation in front of it
+			Expr* element = (check(TokenKind::Dot) || check(TokenKind::LBracket)) ? parseDesignatedInit() : parseInitializer();
 			if (!element)
 				return nullptr;
 			elements.push_back(element);
 
 			if (!check(TokenKind::Comma))
 				break;
-			SourceLocation commaLocation = _current.location();
 			advance(); // ','
 			if (check(TokenKind::RBrace))
-			{
-				// `{ 1, 2, }` - real C allows it, §3's grammar does not. Reported where the comma
-				// actually is rather than at the brace, and the list is kept: the values are all
-				// there, so there is nothing to recover from beyond the stray comma itself.
-				_diagnostics.error(DiagId::TrailingCommaInInitializerList, commaLocation, "a trailing ',' in an initializer list is not accepted in this version");
-				break;
-			}
+				break; // `{ 1, 2, }`
 		}
 
 		if (!expect(TokenKind::RBrace, "'}'"))
 			return nullptr;
 
 		return _arena.create<ast::InitListExpr>(location, copyArgsToArena(elements));
+	}
+
+	namespace
+	{
+		bool foldArraySizeExpr(const Expr* expr, i64& out);   // defined below, with the array declarators
+	}
+
+	// `.name` and `[index]` in any run, then `=`, then the value: `.pos.x = 1`, `[2] = 5`, `[1].name = "a"`.
+	Expr* Parser::parseDesignatedInit()
+	{
+		SourceLocation location = _current.location();
+		std::vector<ast::Designator> designators;
+		while (check(TokenKind::Dot) || check(TokenKind::LBracket))
+		{
+			ast::Designator designator;
+			designator.location = _current.location();
+			if (match(TokenKind::Dot))
+			{
+				if (!check(TokenKind::Identifier))
+				{
+					_diagnostics.error(DiagId::ExpectedDesignator, _current.location(), "expected a member name after '.' in a designator");
+					return nullptr;
+				}
+				designator.isField = true;
+				designator.field = _current.lexeme();
+				advance();
+			}
+			else
+			{
+				advance(); // '['
+				designator.index = parseTernary();
+				if (!designator.index || !expect(TokenKind::RBracket, "']'"))
+					return nullptr;
+			}
+			designators.push_back(designator);
+		}
+		if (!expect(TokenKind::Equal, "'=' after a designator"))
+			return nullptr;
+
+		Expr* value = parseInitializer();
+		if (!value)
+			return nullptr;
+
+		void* memory = _arena.allocate(sizeof(ast::Designator) * designators.size(), alignof(ast::Designator));
+		if (!memory)
+		{
+			_diagnostics.error(DiagId::OutOfMemory, location, "out of memory allocating a designation");
+			return nullptr;
+		}
+		ast::Designator* stored = static_cast<ast::Designator*>(memory);
+		for (usize i = 0; i < designators.size(); ++i)
+			stored[i] = designators[i];
+		return _arena.create<ast::DesignatedInitExpr>(location, std::span<const ast::Designator>(stored, designators.size()), value);
 	}
 
 	i64 Parser::inferArrayLength(const Type* element, const Expr* initializer)
@@ -1757,13 +1804,29 @@ namespace ceresc::parser
 		{
 			// An array of arrays takes one brace group per row (`int m[][2] = { {1,2}, {3,4} }`); a flat
 			// list would need the row width to be divided by, which this subset's initializers do not do.
-			if (element->isArray())
+			//
+			// A designator can move the position: `{ [5] = 1 }` holds six, and the count is the highest position
+			// reached plus one. Only an index that folds to a constant here can be counted.
+			i64 position = 0;
+			i64 length = 0;
+			for (const Expr* item : list->elements())
 			{
-				for (const Expr* item : list->elements())
-					if (!dynamic_cast<const ast::InitListExpr*>(item))
+				const Expr* value = item;
+				if (const auto* designated = dynamic_cast<const ast::DesignatedInitExpr*>(item))
+				{
+					const ast::Designator& first = designated->designators().front();
+					i64 index = 0;
+					if (first.isField || !foldArraySizeExpr(first.index, index) || index < 0)
 						return -1;
+					position = index;
+					value = designated->designators().size() == 1 ? designated->value() : nullptr;
+				}
+				if (element->isArray() && value && !dynamic_cast<const ast::InitListExpr*>(value))
+					return -1;
+				++position;
+				length = position > length ? position : length;
 			}
-			return static_cast<i64>(list->elementCount());
+			return length;
 		}
 		return -1;
 	}

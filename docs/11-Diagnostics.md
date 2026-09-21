@@ -173,7 +173,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2019` | A declaration was needed at file scope and something else was there. |
 | `E2020` | `__interrupt_vector` with no handler name. |
 | `E2021` | `{}` as an initializer. |
-| `E2022` | A trailing `,` in an initializer list. |
+| `E2022` | (No longer reported: a trailing `,` in an initializer list is accepted.) |
 | `E2023` | `__interrupt` on something that is not a function. |
 | `E2024` | `inline` on something that is not a function. |
 | `E2025` | `auto` on a function. |
@@ -191,6 +191,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2037` | An array with no size where nothing can give it one: no initializer (and not an `extern` declaration), a scalar or flat list for an array of arrays, a struct member, a cast. Only a variable's initializer infers the outermost size, and `extern int t[];` may leave it unknown. |
 | `E2038` | `_Static_assert(cond, x)` where `x` is not a string literal. |
 | `E2039` | `__asm__(x)` after a declarator where `x` is not a string literal. |
+| `E2040` | A designator that is not `.name` or `[index]`, or a `.` with no member name after it. |
 
 ### `3xxx` — sema
 
@@ -283,6 +284,10 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3085` | An `__asm__("label")` on a declaration that is not at file scope. |
 | `E3086` | An asm label that is not a plain identifier (letters, digits, `_`; not starting with a digit). |
 | `E3087` | Two declarations of one name that give it different asm labels. |
+| `E3088` | A designator in an initializer that does not fit what it initializes: `.x` for an array, `[i]` for a struct, or any designator for a scalar. A designator outside a brace list is the same code. |
+| `E3089` | An array designator whose index is not an integer constant expression. |
+| `E3090` | An array designator whose index is outside the array. |
+| `E3091` | A designator for a member of a `union` other than the first. |
 
 ### `4xxx` — codegen
 

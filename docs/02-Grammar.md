@@ -79,6 +79,20 @@ be measured, because this unit does not know its size - `sizeof(table)` is E3082
 same name in the unit, before or after, gives it its size (a different size or element type is E3005). Without
 `extern`, and without an initializer to count, an array still needs its size (E2037).
 
+### Designated initializers and the trailing comma
+
+A brace list may name what an element is for, as in C99: `.field = v`, `[index] = v`, and paths of them
+(`.pos.x = 1`, `[2].name = "a"`, `[1][2] = 5`). Positional elements after a designator continue from the next
+member or index, whatever is not named is zero, and a later designation of the same place wins. The size of
+`int a[] = { [5] = 1 }` is 6: the highest position reached plus one (which the parser can only count when the
+index is a literal or arithmetic on literals). A trailing comma is accepted (`{ 1, 2, }`); `{}` still is not.
+
+Sema rewrites such a list into the plain positional one it means - with a zero, or a list holding a zero, where
+nothing was named - before anything else looks at it, so static and local initializers work unchanged. A member
+that does not exist is E3046, a designator that does not fit what it initializes E3088, an index that is not
+constant E3089 or outside the array E3090. Only the first member of a `union` can be designated (E3091), as it
+is the only one a union initializer reaches at all.
+
 ### `_Static_assert` and `__func__`
 
 `_Static_assert(condition, "message");` is checked while compiling and produces no code. The condition is an
@@ -122,8 +136,10 @@ declarator             ::= ("*" type-qualifier*)* direct-declarator
 direct-declarator      ::= (IDENTIFIER | "(" declarator ")")? declarator-suffix*
 declarator-suffix      ::= "[" INT_LITERAL? "]"      // size required except on a parameter
                          | "(" param-list? ")"
-initializer            ::= assignment-expr | "{" initializer-list "}"
-initializer-list       ::= initializer ("," initializer)*
+initializer            ::= assignment-expr | "{" initializer-list ","? "}"
+initializer-list       ::= (designation? initializer) ("," designation? initializer)*
+designation            ::= designator+ "="
+designator             ::= "." IDENTIFIER | "[" constant-expr "]"
 typedef-decl           ::= "typedef" base-type declarator ";"
 interrupt-vector-decl  ::= "__interrupt_vector" "(" constant-expr "," IDENTIFIER ")" ";"
 

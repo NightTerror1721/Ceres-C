@@ -1803,3 +1803,78 @@ TEST(sema, an_asm_label_is_a_plain_identifier_at_file_scope)
 	CHECK(containsMessage(local, "file scope"));
 	CHECK(!checkSource("int main() { static int n __asm__(\"the_n\"); return n; }").ok);
 }
+
+// ---- designated initializers -------------------------------------------------------------------------------------
+
+TEST(sema, designated_initializers_are_accepted_for_structs_arrays_and_both_nested)
+{
+	const char* declarations =
+		"struct P { int x; int y; };\n"
+		"struct L { struct P a; struct P b; int tag; char name[4]; float f; };\n"
+		"union U { int i; char c[4]; };\n";
+	auto ok = [&](const char* text) { return checkSource(std::string(declarations) + text).ok; };
+	CHECK(ok("struct P p = { .y = 2 };"));
+	CHECK(ok("struct P p = { .y = 2, .x = 1 };"));
+	CHECK(ok("struct P p = { 1, .y = 2 };"));                                  // positional then designated
+	CHECK(ok("struct P p = { .x = 1, 2 };"));                                  // and designated then positional: the next field
+	CHECK(ok("struct L l = { .b.y = 3, .a = { 1, 2 }, .tag = 5, .name = { 'h', 'i' }, .f = 1 };"));
+	CHECK(ok("struct L l = { .a.x = 1, .a.y = 2 };"));
+	CHECK(ok("int a[6] = { [4] = 9, 1 };"));
+	CHECK(ok("int a[] = { [5] = 1, 2 };"));
+	CHECK(ok("struct P v[3] = { [2] = { .x = 8 }, [0].y = 4 };"));
+	CHECK(ok("struct P v[3] = { [1] = { 1, 2 }, [1].y = 4 };"));               // a designation merged into an element
+	CHECK(ok("union U u = { .i = 1 };"));
+	CHECK(ok("int m[2][3] = { [1][2] = 5 };"));                                 // a path of two indices
+	CHECK(ok("enum { N = 2 };\nint a[4] = { [N] = 1, [N + 1] = 2 };"));
+	CHECK(ok("int f(void) { int a[4] = { [1] = 2, [3] = 4 }; struct P p = { .y = 1 }; return a[1] + p.y; }"));
+}
+
+TEST(sema, a_designator_has_to_fit_what_it_initializes)
+{
+	const char* declarations =
+		"struct P { int x; int y; };\n"
+		"union U { int i; char c[4]; };\n";
+	auto check = [&](const char* text) { return checkSource(std::string(declarations) + text); };
+
+	CheckOutcome noSuchField = check("struct P p = { .z = 1 };");
+	CHECK(!noSuchField.ok);
+	CHECK(containsMessage(noSuchField, "no member named 'z'"));
+
+	CheckOutcome fieldForArray = check("int a[2] = { .x = 1 };");
+	CHECK(!fieldForArray.ok);
+	CHECK(containsMessage(fieldForArray, "cannot initialize the array"));
+
+	CheckOutcome indexForStruct = check("struct P p = { [0] = 1 };");
+	CHECK(!indexForStruct.ok);
+	CHECK(containsMessage(indexForStruct, "index designator"));
+
+	CheckOutcome scalar = check("int n = { .x = 1 };");
+	CHECK(!scalar.ok);
+	CHECK(containsMessage(scalar, "needs an array, struct or union"));
+
+	CheckOutcome outOfRange = check("int a[3] = { [3] = 1 };");
+	CHECK(!outOfRange.ok);
+	CHECK(containsMessage(outOfRange, "outside"));
+	CHECK(!check("int a[3] = { [-1] = 1 };").ok);
+
+	CheckOutcome notConstant = check("int n = 1;\nint a[3] = { [n] = 1 };");
+	CHECK(!notConstant.ok);
+
+	CheckOutcome secondMember = check("union U u = { .c = { 1 } };");
+	CHECK(!secondMember.ok);
+	CHECK(containsMessage(secondMember, "first member of a union"));
+
+	CHECK(!check("struct P p = { .x = 1, .x.y = 2 };").ok);                    // an int has no member y
+	CHECK(!check("int f(void) { return .x = 1; }").ok);                        // not a list at all: parse error
+}
+
+TEST(sema, an_unnamed_place_is_zero_and_the_positions_after_a_designator_follow_it)
+{
+	// The list means: p.x = 0, p.y = 7 - and the size of an array takes in the designated position
+	CHECK(checkSource("struct P { int x; int y; };\nstruct P p = { .y = 7 };\n_Static_assert(sizeof(p) == 8);").ok);
+	CHECK(checkSource("int a[] = { [5] = 1, 2 };\n_Static_assert(sizeof(a) == 7 * sizeof(int));").ok);
+	CHECK(checkSource("int a[] = { 1, [3] = 2 };\n_Static_assert(sizeof(a) == 4 * sizeof(int));").ok);
+	// Too many positional values after a designator still trip the size check
+	CHECK(!checkSource("int a[3] = { [2] = 1, 2 };").ok);
+	CHECK(!checkSource("struct P { int x; int y; };\nstruct P p = { .y = 1, 2 };").ok);
+}

@@ -334,10 +334,11 @@ namespace ceresc::parser
 		// parse. Returns null on a malformed list, after reporting; the caller is a declarator, which
 		// already knows how to keep going without one.
 		//
-		// No trailing comma: the grammar of §3 is `initializer ("," initializer)*`, and §3 is
-		// explicit that it is the contract "ni más ni menos". `{}` is rejected for the same reason -
-		// the production requires at least one element.
+		// A trailing comma is accepted (`{ 1, 2, }`, and one field to a line is how a long list is written),
+		// and an element of a brace list may name what it is for: `.field = v`, `[index] = v`, `.a[2].b = v`.
+		// `{}` is still rejected - the production requires at least one element.
 		Expr* parseInitializer();
+		Expr* parseDesignatedInit();
 		// The body or the `;` after a declarator that turned out to name a function. The parameter
 		// list has already been read as part of that declarator - it is what made the type a
 		// function type - so this only takes the pieces rather than parsing them again. Does not

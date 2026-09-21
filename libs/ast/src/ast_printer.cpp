@@ -668,6 +668,29 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(DesignatedInitExpr& node)
+	{
+		_output += "(designated";
+		for (const Designator& designator : node.designators())
+		{
+			_output += ' ';
+			if (designator.isField)
+			{
+				_output += '.';
+				_output += designator.field;
+			}
+			else
+			{
+				_output += '[';
+				printChild(designator.index);
+				_output += ']';
+			}
+		}
+		_output += ' ';
+		printChild(node.value());
+		_output += ')';
+	}
+
 	void AstPrinter::visit(StaticAssertDecl& node)
 	{
 		_output += "(static-assert ";
