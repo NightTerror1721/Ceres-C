@@ -202,7 +202,11 @@ namespace ceresc::codegen
 		static std::string fieldTypeName(u32 sizeInBytes, bool isFloat);
 
 		// The `[sp + Frame.slotN]` operand text for a frame field.
-		std::string slotAddress(u32 slotIndex) const;
+		// The operand that names frame slot `slotIndex`. Usually `[sp + Frame.field]`; for a slot past
+		// what a 16-bit displacement reaches it first emits the two instructions that put the slot's
+		// address in `at` (r13, the assembler temporary, which nothing here allocates) and names `[at + 0]`.
+		// So it must be called while building the instruction that uses it, and not twice for one use.
+		std::string slotAddress(u32 slotIndex);
 
 		// ---- operand access, placement-aware ----------------------------------------------------
 		//
@@ -360,6 +364,10 @@ namespace ceresc::codegen
 		// 07-IO-Devices-and-Ports.md), exactly like every hand-written CeresASM program does. What
 		// it returns is the exit status: bits 15:8 of the word it writes there.
 		bool _generatingMain = false;
+		// Where each frame slot sits inside the frame struct, computed the way the assembler lays the
+		// struct out (each field at its own alignment, after the outgoing-argument words). Only
+		// slotAddress() reads it, to notice a slot the displacement cannot reach.
+		std::vector<u32> _slotOffsets;
 		// The unit declares `void exit(int)`, so `main` ends by calling it with its own status.
 		bool _mainCallsExit = false;
 

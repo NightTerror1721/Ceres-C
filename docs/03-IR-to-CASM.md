@@ -204,6 +204,15 @@ A `const` global with an initializer goes to `@rodata`, where the machine itself
 qualifier: a store into it raises `MemoryFault` rather than quietly working. That is also why sema
 refuses to convert a `const int*` to an `int*` — the promise is not a formality.
 
+### Frames of any size
+
+A load or store displacement is a signed 16-bit field, and `enter Frame` takes the frame size as a 16-bit immediate.
+At -O0 every local and temporary has its own slot, so a function with thousands of locals outgrows both. The
+generator knows where each slot sits (it lays the frame struct out the way the assembler does), so a slot beyond
+32 KiB is reached through the assembler temporary - `la at, <offset>` / `add at, at, sp` / `[at + 0]` - and a frame
+beyond 64 KiB starts with a bare `enter` followed by `la at, <size>` / `sub sp, sp, at`. Nothing changes for a
+function that fits; `at` (r13) is never allocated to a value.
+
 ### How `main` ends
 
 `main` has no caller. Instead of `ret`, the generated code writes the shutdown command to the system

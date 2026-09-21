@@ -291,9 +291,18 @@ namespace ceresc::codegen
 		}
 	}
 
-	std::string CodeGen::slotAddress(u32 slotIndex) const
+	std::string CodeGen::slotAddress(u32 slotIndex)
 	{
-		return std::format("[sp + {}.{}]", _frameName, slotFieldName(slotIndex));
+		// A load or store displacement is a signed 16-bit field. A function with thousands of locals
+		// (every -O0 local has its own slot) has slots beyond 32 KiB; those are reached through a
+		// register instead of failing to assemble.
+		constexpr u32 kMaxDisplacement = 32767 - 3;
+		if (slotIndex >= _slotOffsets.size() || _slotOffsets[slotIndex] <= kMaxDisplacement)
+			return std::format("[sp + {}.{}]", _frameName, slotFieldName(slotIndex));
+
+		_emitter.instr(std::format("la at, {}", _slotOffsets[slotIndex]), "far frame slot");
+		_emitter.instr("add at, at, sp", "far frame slot");
+		return "[at + 0]";
 	}
 
 	std::string_view CodeGen::ifMnemonic(IrCmpPredicate predicate, bool isUnsigned)
@@ -1264,10 +1273,13 @@ namespace ceresc::codegen
 		_emitter.blank();
 		_emitter.raw(std::format("// {} - {}", decl.name(), sourceComment(decl.location())));
 
+		_slotOffsets.clear();
+		u32 frameBytes = 0;
 		if (hasFields)
 		{
 			_emitter.raw(std::format("struct {}", _frameName));
 			bool hasWordField = placement.outgoingSlotCount() > 0;
+			u32 offset = placement.outgoingSlotCount() * 4;
 			for (u32 i = 0; i < placement.outgoingSlotCount(); ++i)
 				_emitter.raw(std::format("    outgoing{}: u32", i));
 			for (u32 i = 0; i < placement.slots().size(); ++i)
@@ -1275,13 +1287,24 @@ namespace ceresc::codegen
 				const FrameSlotInfo& slot = placement.slots()[i];
 				hasWordField = hasWordField || slot.sizeInBytes >= 4;
 				_emitter.raw(std::format("    {}: {}", slotFieldName(i), fieldTypeName(slot.sizeInBytes, slot.isFloat)));
+
+				// A field sits at a multiple of its own alignment: a byte anywhere, a halfword on an
+				// even offset, anything wider (words, floats, arrays of words) on a multiple of 4.
+				const u32 alignment = slot.isFloat ? 4 : (slot.sizeInBytes == 1 ? 1 : (slot.sizeInBytes == 2 ? 2 : 4));
+				offset = (offset + alignment - 1) / alignment * alignment;
+				_slotOffsets.push_back(offset);
+				offset += slot.isFloat ? 4 : (slot.sizeInBytes <= 2 ? slot.sizeInBytes : (slot.sizeInBytes + 3) / 4 * 4);
 			}
 			// CASM rounds a struct's size up to its WIDEST field's alignment, and `enter` reserves exactly
 			// that many bytes. A frame of nothing but bytes or halfwords (a lone `char` parameter that spilled)
 			// would be 1 or 2 bytes, leaving sp misaligned for every function it calls - whose first word
 			// store then faults (AlignmentFault). One word field keeps the frame a multiple of 4.
 			if (!hasWordField)
+			{
 				_emitter.raw("    pad: u32");
+				offset = (offset + 3) / 4 * 4 + 4;
+			}
+			frameBytes = (offset + 3) / 4 * 4;
 			_emitter.raw("endstruct");
 		}
 
@@ -1307,7 +1330,22 @@ namespace ceresc::codegen
 		if (!_generatingInterrupt && _calleeSavedFloatMask)
 			_emitter.instr(std::format("fpushm 0x{:04X}", _calleeSavedFloatMask), sourceComment(entryLoc));
 		if (_hasFrame)
-			_emitter.instr(hasFields ? std::format("enter {}", _frameName) : "enter", sourceComment(entryLoc));
+		{
+			// `enter Frame` carries the frame's size as a 16-bit immediate. A frame past that (a function
+			// whose -O0 slots run to tens of thousands) gets a bare `enter`, which sets up fp, and the
+			// space is taken off sp by hand; `leave` puts sp back from fp either way.
+			constexpr u32 kMaxEnterFrame = 0xFFFF;
+			if (hasFields && frameBytes > kMaxEnterFrame)
+			{
+				_emitter.instr("enter", sourceComment(entryLoc));
+				_emitter.instr(std::format("la at, {}", frameBytes), sourceComment(entryLoc));
+				_emitter.instr("sub sp, sp, at", sourceComment(entryLoc));
+			}
+			else
+			{
+				_emitter.instr(hasFields ? std::format("enter {}", _frameName) : "enter", sourceComment(entryLoc));
+			}
+		}
 
 		// Settle every parameter into wherever it lives for the rest of the function: nothing at all
 		// when it already arrived in the register it was assigned, a move when it was assigned a
@@ -1393,6 +1431,7 @@ namespace ceresc::codegen
 		_skipInstr.clear();
 		_suppressedConsts.clear();
 		_frameName.clear();
+		_slotOffsets.clear();
 		_calleeSavedIntMask = 0;
 		_calleeSavedFloatMask = 0;
 		_calleeSavedWords = 0;

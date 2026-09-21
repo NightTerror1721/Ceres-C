@@ -149,6 +149,32 @@ TEST(e2e, null_is_a_valid_function_pointer_to_assign_compare_and_put_in_a_table)
 		"1311");
 }
 
+TEST(e2e, a_function_whose_frame_outgrows_a_16_bit_displacement_still_assembles_and_runs)
+{
+	// At -O0 every local and every temporary has its own slot, so a function with thousands of
+	// locals has a frame of well over 64 KiB: past what a load or store displacement reaches, and
+	// past what `enter Frame` can take as an immediate. The types are mixed on purpose - bytes and
+	// halfwords sit at odd offsets, and the compiler's own idea of where a slot is (used for the far
+	// ones) has to agree with the assembler's (used for the near ones), or two slots would overlap
+	// and the chain below would break.
+	const char* types[] = { "int", "char", "short", "int", "unsigned char" };
+	std::string body = "int main() { char* term = (char*)0xFF000004; int v0 = 1;";
+	int value = 1;
+	int middle = 0;
+	const int count = 7000;
+	for (int i = 1; i <= count; ++i)
+	{
+		body += std::format("{} v{} = (v{} + 1) % 50;\n", types[i % 5], i, i - 1);
+		value = (value + 1) % 50;
+		if (i == count / 2)
+			middle = value;
+	}
+	body += std::format("*term = 48 + v{} / 10; *term = 48 + v{} % 10; *term = 48 + v{} / 10; *term = 48 + v{} % 10; return 0; }}",
+		count / 2, count / 2, count, count);
+	runsTheSameAtEveryLevel("huge_frame", body,
+		std::format("{}{}{}{}", middle / 10, middle % 10, value / 10, value % 10));
+}
+
 TEST(e2e, the_value_main_returns_is_the_exit_status_of_the_run)
 {
 	// Through every optimization level, and past the bits a byte holds: only the low eight survive,
