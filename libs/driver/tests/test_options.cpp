@@ -383,3 +383,45 @@ TEST(options, an_option_that_needs_a_value_at_the_very_end_is_an_error)
 		CHECK(contains(out.str(), flag));
 	}
 }
+
+// ---- built code: objects, archives and their declarations ---------------------------------------
+
+TEST(options, an_object_and_an_archive_are_inputs_kept_in_order)
+{
+	ParseResult result = parse({ "main.c", "lib.car", "extra.cobj", "--run" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->inputPaths.size(), std::size_t(3));
+	CHECK_EQ(result.options->inputPaths[1], std::string("lib.car"));
+	CHECK_EQ(result.options->inputPaths[2], std::string("extra.cobj"));
+}
+
+TEST(options, decls_may_be_given_more_than_once_and_keeps_its_order)
+{
+	ParseResult result = parse({ "main.c", "--decls", "a.decls.casm", "--decls", "b.decls.casm" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->declsFiles.size(), std::size_t(2));
+	CHECK_EQ(result.options->declsFiles[0], std::string("a.decls.casm"));
+	CHECK_EQ(result.options->declsFiles[1], std::string("b.decls.casm"));
+}
+
+TEST(options, emit_decls_names_the_file_to_write)
+{
+	ParseResult result = parse({ "lib.c", "--emit-decls", "lib.decls.casm" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->emitDeclsPath, std::string("lib.decls.casm"));
+}
+
+TEST(options, decls_and_emit_decls_at_the_very_end_are_errors)
+{
+	CHECK(!parse({ "main.c", "--decls" }).options.has_value());
+	CHECK(!parse({ "main.c", "--emit-decls" }).options.has_value());
+}
+
+TEST(options, the_usage_text_mentions_objects_archives_and_declarations)
+{
+	ParseResult result = parse({});
+	CHECK(contains(result.output, "file.cobj"));
+	CHECK(contains(result.output, "file.car"));
+	CHECK(contains(result.output, "--decls"));
+	CHECK(contains(result.output, "--emit-decls"));
+}

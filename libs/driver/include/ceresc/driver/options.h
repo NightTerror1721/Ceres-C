@@ -22,15 +22,26 @@
 //
 // Several inputs are allowed, and they need not all be C: a `.casm` file on the command line is
 // assembled and linked alongside the compiled ones, which is how a routine written in assembly
-// becomes callable from C (docs/07-CASM-Interop.md).
+// becomes callable from C (docs/07-CASM-Interop.md). Code that was built already comes in the same
+// way: a `.cobj` object or a `.car` archive is linked as it is, and `--decls` says what it defines.
 
 namespace ceresc::driver
 {
 	struct Options
 	{
 		// Every input, in command-line order. A `.c` file is compiled; a `.casm` file is passed
-		// straight to the assembler. At least one is required (except for --version/--help).
+		// straight to the assembler; a `.cobj` (an object) and a `.car` (an archive of objects) are
+		// handed to the linker untouched. At least one is required (except for --version/--help).
 		std::vector<std::string> inputPaths;
+
+		// --decls <file.casm>, repeatable: a declarations file every generated unit imports, in addition
+		// to the one ceresc writes for the units it compiles. The assembler picks an opcode from what a
+		// name IS (a function, a variable, its size) before anything has an address, so a unit can only
+		// name what it has seen declared; ceresc knows the names of what it compiles, and knows nothing
+		// of what is inside a `.cobj` or a `.car`. This is how it is told. --emit-decls writes the file
+		// for what THIS build defines, so a library can publish its own.
+		std::vector<std::string> declsFiles;
+		std::string emitDeclsPath;   // --emit-decls <file>
 
 		// -o <path>. With a single C input and no --run, this is the .casm to write. Otherwise it is
 		// the linked program, and each unit's .casm is written next to its own source - one output

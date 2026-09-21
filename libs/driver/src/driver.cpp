@@ -45,11 +45,34 @@ namespace ceresc::driver
 			return severity == support::DiagnosticSeverity::Error ? "error" : "warning";
 		}
 
-		bool isCasmInput(const std::string& path)
+		enum class InputKind { C, Casm, Object, Archive };
+
+		InputKind inputKind(const std::string& path)
 		{
 			std::string extension = fs::path(path).extension().string();
 			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			return extension == ".casm";
+			if (extension == ".casm") return InputKind::Casm;
+			if (extension == ".cobj") return InputKind::Object;
+			if (extension == ".car") return InputKind::Archive;
+			return InputKind::C;
+		}
+
+		// How an import of `target` is written in the file `from`: relative to the importing file's own
+		// directory, so moving the build output somewhere else keeps working; absolute where there is no
+		// relative form (another drive).
+		std::string importSpelling(const fs::path& target, const fs::path& from)
+		{
+			std::error_code error;
+			fs::path relative = fs::relative(target, from, error);
+			if (error || relative.empty())
+				relative = target;
+			return relative.generic_string();
+		}
+
+		bool samePath(const fs::path& a, const fs::path& b)
+		{
+			std::error_code error;
+			return fs::weakly_canonical(a, error) == fs::weakly_canonical(b, error);
 		}
 
 		fs::path withExtension(const fs::path& path, std::string_view extension)
@@ -308,22 +331,51 @@ namespace ceresc::driver
 		diagnostics.setWarningsAsErrors(options.warningsAsErrors);
 		DiagnosticPrinter printer(diagnostics, sourceManager);
 
-		std::vector<std::string> cInputs, casmInputs;
+		std::vector<std::string> cInputs, casmInputs, objectInputs, archiveInputs;
 		for (const std::string& input : options.inputPaths)
-			(isCasmInput(input) ? casmInputs : cInputs).push_back(input);
+		{
+			switch (inputKind(input))
+			{
+				case InputKind::C: cInputs.push_back(input); break;
+				case InputKind::Casm: casmInputs.push_back(input); break;
+				case InputKind::Object: objectInputs.push_back(input); break;
+				case InputKind::Archive: archiveInputs.push_back(input); break;
+			}
+		}
 
-		if (cInputs.empty() && casmInputs.empty())
+		if (cInputs.empty() && casmInputs.empty() && objectInputs.empty() && archiveInputs.empty())
 		{
 			std::cerr << "ceresc: no input files\n";
 			return 1;
 		}
 
-		// A `.casm` on its own is a legitimate thing to ask for - `ceresc runtime.casm --run` just
-		// assembles and runs it - but there is nothing for the compiler to do with it.
+		// What was built before is not read by the compiler, only handed on, so a missing file is reported
+		// here rather than by the linker after the whole compile.
+		for (const std::vector<std::string>* group : std::initializer_list<const std::vector<std::string>*>{ &objectInputs, &archiveInputs, &options.declsFiles })
+		{
+			for (const std::string& path : *group)
+			{
+				if (!fs::exists(path))
+				{
+					std::cerr << "ceresc: cannot open '" << path << "'\n";
+					return 1;
+				}
+			}
+		}
+
+		// A `.casm` (or a `.cobj`, or a `.car`) on its own is a legitimate thing to ask for - `ceresc
+		// runtime.casm --run` just assembles and runs it - but there is nothing for the compiler to do with
+		// it, and without --run nothing is linked either.
 		if (cInputs.empty() && !options.run)
 		{
-			std::cerr << "ceresc: nothing to compile (only .casm inputs were given; add --run to assemble and run them)\n";
+			std::cerr << "ceresc: nothing to compile (only .casm, .cobj and .car inputs were given; add --run to assemble, link and run them)\n";
 			return 1;
+		}
+		if (!options.run)
+		{
+			for (const std::vector<std::string>* group : { &objectInputs, &archiveInputs })
+				for (const std::string& path : *group)
+					std::cerr << "ceresc: warning: '" << path << "' is only used when linking; add --run\n";
 		}
 
 		// Where `ceres` is, found before any work is done: a build that compiles for a minute and then cannot
@@ -461,23 +513,37 @@ namespace ceresc::driver
 				? withExtension(fs::path(options.inputPaths.front()), ".cres")
 				: fs::path(options.outputPath);
 			declarationsPath = withExtension(programPath, ".decls.casm");
+			// The file ceresc writes must not be one the person handed in, or their declarations are gone.
+			for (const std::string& given : options.declsFiles)
+			{
+				if (samePath(given, declarationsPath))
+				{
+					std::cerr << "ceresc: '" << given << "' is the declarations file this build writes for itself; "
+						"name it something else or give this build another -o\n";
+					return 1;
+				}
+			}
 			if (!writeTextFile(declarationsPath, buildDeclarationsFile(units)))
 				return 1;
 		}
 
+		// For a library to hand on: what this build defines, declared. Wanted even when a lone unit needs no
+		// declarations of its own.
+		if (!options.emitDeclsPath.empty() && !writeTextFile(options.emitDeclsPath, buildDeclarationsFile(units)))
+			return 1;
+
 		for (CompiledUnit& unit : units)
 		{
+			// Every declarations file the unit needs, imported first: what the other units of this build
+			// define, then what was built before (--decls).
 			std::string text;
+			const fs::path unitDirectory = unit.casmPath.parent_path();
 			if (needsDeclarations)
-			{
-				// A relative import, resolved against the importing file's own directory, so moving
-				// the build output somewhere else keeps working.
-				fs::path relative = fs::relative(declarationsPath, unit.casmPath.parent_path());
-				if (relative.empty())
-					relative = declarationsPath;
-				std::string spelled = relative.generic_string();
-				text = std::format("import \"{}\"\n\n", spelled);
-			}
+				text += std::format("import \"{}\"\n", importSpelling(declarationsPath, unitDirectory));
+			for (const std::string& declsFile : options.declsFiles)
+				text += std::format("import \"{}\"\n", importSpelling(declsFile, unitDirectory));
+			if (!text.empty())
+				text += "\n";
 			text += unit.casmText;
 			if (!writeTextFile(unit.casmPath, text))
 				return 1;
@@ -495,7 +561,7 @@ namespace ceresc::driver
 			casmFiles.push_back(fs::path(input));
 
 		fs::path programPath = options.outputPath.empty()
-			? withExtension(casmFiles.front(), ".cres")
+			? withExtension(casmFiles.empty() ? fs::path(options.inputPaths.front()) : casmFiles.front(), ".cres")
 			: fs::path(options.outputPath);
 		if (programPath.extension() != ".cres")
 			programPath.replace_extension(".cres");
@@ -508,6 +574,16 @@ namespace ceresc::driver
 		for (const fs::path& casmFile : casmFiles)
 		{
 			fs::path objectPath = withExtension(casmFile, ".cobj");
+			// An object the person named is theirs: assembling a source next to it must not overwrite it.
+			for (const std::string& given : objectInputs)
+			{
+				if (samePath(given, objectPath))
+				{
+					std::cerr << "ceresc: assembling '" << casmFile.string() << "' would overwrite the object '" << given
+						<< "' that was given as an input\n";
+					return 1;
+				}
+			}
 			int result = runSubprocess(ceresBinary, { "asm", "-c", casmFile.string(), "-o", objectPath.string() });
 			if (result != 0)
 			{
@@ -520,8 +596,13 @@ namespace ceresc::driver
 			objectPaths.push_back(objectPath.string());
 		}
 
+		// The objects built here, then the ones that were given, then the archives: an archive's member is
+		// pulled in only when it answers a name nothing before it defines, so it goes after everything that
+		// might already answer it.
 		std::vector<std::string> linkArgs{ "link" };
 		linkArgs.insert(linkArgs.end(), objectPaths.begin(), objectPaths.end());
+		linkArgs.insert(linkArgs.end(), objectInputs.begin(), objectInputs.end());
+		linkArgs.insert(linkArgs.end(), archiveInputs.begin(), archiveInputs.end());
 		linkArgs.push_back("-o");
 		linkArgs.push_back(programPath.string());
 		int linkResult = runSubprocess(ceresBinary, linkArgs);

@@ -58,14 +58,20 @@ namespace ceresc::driver
 	void printUsage(std::ostream& out)
 	{
 		out <<
-			"usage: ceresc <file.c|file.casm>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
+			"usage: ceresc <file.c|file.casm|file.cobj|file.car>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
+			"               [--decls <file.casm>]... [--emit-decls <file.casm>]\n"
 			"               [--ceres-path <dir|file>]\n"
 			"               [-Werror] [-O<level>] [-f<opt>]\n"
 			"       ceresc --version | --help\n"
 			"\n"
 			"  <file.c>            a C subset source file to compile\n"
 			"  <file.casm>         a CeresASM source to assemble and link alongside the C ones\n"
+			"  <file.cobj>         an object built before, linked as it is (with --run)\n"
+			"  <file.car>          an archive of objects built before; a member is linked only if something needs it\n"
+			"  --decls <file>      declarations of what a .cobj or .car defines (from --emit-decls); every generated\n"
+			"                      unit imports it. May be given more than once\n"
+			"  --emit-decls <file> write the declarations of what this build defines, so it can be used with --decls\n"
 			"  -o <output>         the .casm to write (one C input), or the linked program (several)\n"
 			"  -I <dir>            a directory to search for #include <...> and #include \"...\"\n"
 			"  -D <name>[=<val>]   predefine an object-like macro (a bare name means 1)\n"
@@ -169,6 +175,17 @@ namespace ceresc::driver
 				if (!value)
 					return std::nullopt;
 				options.defines.push_back(splitDefine(*value));
+				continue;
+			}
+			if (arg == "--decls" || arg == "--emit-decls")
+			{
+				std::optional<std::string> value = valueFor(arg, arg, i);
+				if (!value)
+					return std::nullopt;
+				if (arg == "--decls")
+					options.declsFiles.push_back(std::move(*value));
+				else
+					options.emitDeclsPath = std::move(*value);
 				continue;
 			}
 			if (arg == "--ceres-path")
