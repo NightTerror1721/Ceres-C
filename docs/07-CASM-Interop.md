@@ -119,9 +119,11 @@ through a pointer to one faults, exactly as the qualifier says it should.
 ## Code that was built before
 
 A hand-written `.casm` names the C side through the declarations file. The other direction — C calling into an
-object or archive built earlier — needs the same kind of file, and `ceresc` can neither compile nor read a
-`.cobj`: `--emit-decls` writes one for the C it compiles, and `--decls` hands it to a later build together with the
-`.cobj` or `.car` itself. See [05-CLI.md](05-CLI.md#linking-code-built-earlier).
+object or archive built earlier, whatever it was written in — needs no file of its own: the C declares what it
+calls with `extern` (a header does that for a routine defined elsewhere), and ceresc writes those declarations
+for the assembler. `--emit-decls` publishes the declarations of the C a library was built from, and `--decls`
+hands such a file to a later build together with the `.cobj` or `.car` itself. See
+[05-CLI.md](05-CLI.md#linking-code-built-earlier).
 
 ## What the build actually does
 

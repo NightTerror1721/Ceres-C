@@ -254,7 +254,38 @@ namespace ceresc::driver
 			return false;
 		}
 
-		std::string buildDeclarationsFile(const std::vector<CompiledUnit>& units)
+		// The names a declarations file declares: every `global NAME:` and `global let NAME: ...`. The assembler
+		// refuses a name that two imported files both declare, once it is used, so the file ceresc writes for
+		// itself leaves out what the ones it was handed already say.
+		std::unordered_set<std::string> declaredNames(const fs::path& file)
+		{
+			std::unordered_set<std::string> names;
+			std::ifstream in(file);
+			std::string line;
+			while (std::getline(in, line))
+			{
+				std::string_view text = line;
+				while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+					text.remove_prefix(1);
+				if (!text.starts_with("global "))
+					continue;
+				text.remove_prefix(7);
+				while (!text.empty() && text.front() == ' ')
+					text.remove_prefix(1);
+				if (text.starts_with("let "))
+					text.remove_prefix(4);
+				while (!text.empty() && text.front() == ' ')
+					text.remove_prefix(1);
+				std::size_t end = 0;
+				while (end < text.size() && (std::isalnum(static_cast<unsigned char>(text[end])) || text[end] == '_'))
+					++end;
+				if (end > 0)
+					names.emplace(text.substr(0, end));
+			}
+			return names;
+		}
+
+		std::string buildDeclarationsFile(const std::vector<CompiledUnit>& units, const std::unordered_set<std::string>& leaveOut = {})
 		{
 			std::vector<codegen::ExternalDeclaration> functions;
 			std::vector<codegen::ExternalDeclaration> variables;
@@ -264,7 +295,9 @@ namespace ceresc::driver
 			{
 				for (const codegen::ExternalDeclaration& declaration : unit.exports)
 				{
-					if (!declaration.isFunction && !declaration.isDefinition && isLinkerSymbol(declaration.name))
+					if (leaveOut.contains(declaration.name))
+							continue;
+						if (!declaration.isFunction && !declaration.isDefinition && isLinkerSymbol(declaration.name))
 						continue;
 
 					// One entry per NAME across the whole program: the same function is normally
@@ -505,7 +538,12 @@ namespace ceresc::driver
 		// Only when there is more than one thing to link: a lone translation unit resolves every name
 		// it uses by itself, and a program that needs no declarations file should not have one sitting
 		// next to it.
-		bool needsDeclarations = (units.size() + casmInputs.size()) > 1;
+		//
+		// Built code changes that: a unit that calls a routine defined in a .cobj, .car or hand-written .casm
+		// declares it with an `extern` of its own (setjmp.h says what setjmp is), and the assembler needs that
+		// declaration too, so the file is written for a lone unit as well, and holds every extern it declares.
+		const bool hasBuiltCode = !objectInputs.empty() || !archiveInputs.empty() || !options.declsFiles.empty();
+		bool needsDeclarations = (units.size() + casmInputs.size()) > 1 || (!units.empty() && hasBuiltCode);
 		fs::path declarationsPath;
 		if (needsDeclarations)
 		{
@@ -523,7 +561,10 @@ namespace ceresc::driver
 					return 1;
 				}
 			}
-			if (!writeTextFile(declarationsPath, buildDeclarationsFile(units)))
+			std::unordered_set<std::string> alreadyDeclared;
+			for (const std::string& given : options.declsFiles)
+				alreadyDeclared.merge(declaredNames(given));
+			if (!writeTextFile(declarationsPath, buildDeclarationsFile(units, alreadyDeclared)))
 				return 1;
 		}
 

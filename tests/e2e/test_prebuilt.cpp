@@ -139,7 +139,7 @@ TEST(prebuilt, an_object_is_linked_as_it_is)
 	CHECK_EQ(runProgram(scratch, *ceresDir, kMain, { lib->object }, { lib->decls }), 10);
 }
 
-TEST(prebuilt, without_the_declarations_the_assembler_cannot_name_what_the_object_defines)
+TEST(prebuilt, an_object_links_without_a_declarations_file_because_the_c_declares_what_it_calls)
 {
 	std::optional<fs::path> ceresDir = findCeresDirectory();
 	if (skipped(ceresDir)) return;
@@ -148,7 +148,8 @@ TEST(prebuilt, without_the_declarations_the_assembler_cannot_name_what_the_objec
 	CHECK(lib.has_value());
 	if (!lib) return;
 
-	CHECK(runProgram(scratch, *ceresDir, kMain, { lib->object }, {}) != 10);   // the unit never saw `twice` declared
+	// main.c says what `twice` and `counter` are with its own externs, and ceresc passes them to the assembler.
+	CHECK_EQ(runProgram(scratch, *ceresDir, kMain, { lib->object }, {}), 10);
 }
 
 TEST(prebuilt, an_archive_member_nothing_asks_for_is_not_linked)
@@ -198,6 +199,24 @@ TEST(prebuilt, clean_removes_what_the_build_made_and_leaves_what_was_given)
 	CHECK(fs::exists(lib->decls));
 	CHECK(!fs::exists(scratch.dir / "main.cobj"));   // made by this build
 	CHECK(!fs::exists(scratch.dir / "main.cres"));
+	CHECK(!fs::exists(scratch.dir / "main.decls.casm"));
+}
+
+TEST(prebuilt, a_routine_the_c_declares_itself_needs_no_entry_in_a_declarations_file)
+{
+	// The C side says what a function is with an `extern`, as setjmp.h does for a hand-written setjmp. That
+	// declaration has to reach the assembler even though the unit is alone and defines nothing it calls.
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("extern");
+	fs::path casm = scratch.write("helper.casm", "@text\nglobal helper:\n    add r0, r0, r0\n    ret\n");
+	const std::string command = std::format("{} asm -c {} -o {}", quote(*ceresDir / kCeresExecutableName), quote(casm), quote(scratch.dir / "helper.cobj"));
+	CHECK_EQ(runSubprocessCapturingStdout(command, scratch.dir / "asm.log"), 0);
+
+	const std::string mainSource =
+		"extern int helper(int x);\n"
+		"int main(void) { return helper(21); }\n";
+	CHECK_EQ(runProgram(scratch, *ceresDir, mainSource, { scratch.dir / "helper.cobj" }, {}), 42);
 }
 
 TEST(prebuilt, an_object_only_program_needs_no_c_at_all)

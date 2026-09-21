@@ -52,18 +52,23 @@ ceresc lib.c --emit-decls lib.decls.casm -o lib.casm     # the code, and what it
 ceres asm -c lib.casm -o lib.cobj                        # an object
 ceres ar lib.car lib.cobj                                # an archive of objects
 
-ceresc main.c lib.car --decls lib.decls.casm --run       # nothing of lib.c is compiled again
+ceresc main.c lib.car --run                              # nothing of lib.c is compiled again
+ceresc main.c lib.car --decls lib.decls.casm --run       # the same, with the library's own declarations
 ```
 
 - **`.cobj`** and **`.car`** are handed to `ceres link` untouched, after the objects this build made, and the
   archives last. An archive's member is linked only when it answers a name nothing before it defines, so a
   program that calls one routine carries one, and a member that would clash with the program's own definition
   stays out. Objects given by name are always linked.
-- **`--decls`** is needed because the assembler chooses an opcode from what a name *is* — a function, a
-  variable, its size — before anything has an address, so a unit can only name what it has seen declared.
-  ceresc knows the names in the C it compiles; of a `.cobj` or `.car` it knows nothing, and the file is how it is
-  told. Without it the assembler stops with "Unresolved symbol". `--emit-decls` produces that file; a
-  hand-written one works too (the format is in [07-CASM-Interop.md](07-CASM-Interop.md)).
+- **`--decls`** adds a declarations file to what every generated unit imports. The assembler chooses an opcode
+  from what a name *is* — a function, a variable, its size — before anything has an address, so a unit can only
+  name what it has seen declared. For the C ceresc compiles that is already taken care of: every `extern` a unit
+  declares (which is all a header does for a function defined elsewhere) is written into the declarations file
+  the build generates, so a C program links against an object or an archive with nothing more than the object
+  and its own `extern`s. `--decls` is for a file of your own on top of that — what a library publishes with
+  `--emit-decls`, or one written by hand (the format is in [07-CASM-Interop.md](07-CASM-Interop.md)) — and it
+  wins: a name it declares is left out of the generated file, because the assembler rejects a name that two
+  imported files both declare, as soon as it is used.
 - Only `--run` links, so without it a given object or archive is not used and ceresc says so.
 - What was given is never removed by `--clean`, and assembling a `.casm` whose object would land on top of a
   given `.cobj` is refused.
