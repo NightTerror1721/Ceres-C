@@ -1582,6 +1582,11 @@ namespace ceresc::sema
 	void Sema::visit(ast::ReturnStmt& node)
 	{
 		const Type* returnType = _currentFunctionReturnType ? _currentFunctionReturnType : &Type::Void;
+		if (_currentFunction && _currentFunction->isNoReturn())
+		{
+			_diagnostics.warning(DiagId::NoReturnFunctionReturns, node.location(),
+				"function '{}' is declared 'noreturn' but contains a 'return'", _currentFunction->name());
+		}
 
 		if (node.value())
 		{
@@ -1971,6 +1976,11 @@ namespace ceresc::sema
 	{
 		checkInterruptHandler(node);
 		checkAsmLabel(node, true);
+
+		// `noreturn` on a prototype holds for the definition that comes after it
+		if (Symbol* declared = _globalScope->lookupInThisScope(node.name());
+			declared && declared->kind == SymbolKind::Function && declared->funcDecl && declared->funcDecl->isNoReturn())
+			node.setNoReturn(true);
 
 		Symbol* existing = _globalScope->lookupInThisScope(node.name());
 		bool kindConflict = existing && existing->kind != SymbolKind::Function;

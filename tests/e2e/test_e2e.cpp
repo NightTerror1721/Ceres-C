@@ -423,6 +423,31 @@ TEST(e2e, compound_literals_work_in_expressions_arguments_loops_and_at_file_scop
 		"", 216);
 }
 
+TEST(e2e, attributes_are_read_wherever_they_stand_and_change_nothing_they_should_not)
+{
+	// r = 3 after the fall through, so 3 * 4 + 1 * 20 + 5 = 37
+	runsTheSameAtEveryLevel("attributes",
+		"extern void bail(int code) __attribute__((noreturn));\n"
+		"static void stop(void) __attribute__((noreturn));\n"
+		"static void stop(void) { for (;;) { } }\n"
+		"static int helper(int __attribute__((unused)) v) { return 1; }\n"
+		"static __attribute__((unused)) int spare = 3;\n"
+		"int value __attribute__((aligned(4))) = 5;\n"
+		"struct __attribute__((unused)) S { int a __attribute__((unused)); int b; } __attribute__((unused));\n"
+		"typedef int myint __attribute__((aligned(4)));\n"
+		"int main(void)\n"
+		"{\n"
+		"    int r = 0;\n"
+		"    switch (r) {\n"
+		"        case 0: r = 1; __attribute__((fallthrough));\n"
+		"        case 1: r += 2; break;\n"
+		"    }\n"
+		"    myint m = value;\n"
+		"    return r * 4 + helper(0) * 20 + m;\n"
+		"}\n",
+		"", 37);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

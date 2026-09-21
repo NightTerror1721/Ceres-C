@@ -630,6 +630,11 @@ namespace ceresc::parser
 
 		for (;;)
 		{
+			if (isAttributeStart())
+			{
+				parseAttributes(&specifiers.attributes);
+				continue;
+			}
 			SourceLocation here = _current.location();
 			ast::StorageClass storageClass = ast::StorageClass::None;
 			switch (_current.kind())
@@ -897,6 +902,7 @@ namespace ceresc::parser
 	{
 		SourceLocation location = _current.location();
 		advance(); // 'struct' or 'union'
+		parseAttributes(nullptr);   // `struct __attribute__((...)) S`
 
 		std::string_view tagName;
 		if (check(TokenKind::Identifier))
@@ -945,6 +951,7 @@ namespace ceresc::parser
 						synchronizeStatement();
 					continue;
 				}
+				parseAttributes(nullptr);
 				SourceLocation fieldLoc = _current.location();
 				bool fieldLeadingRestrict = false;
 				SourceLocation fieldSpecifierLocation{};
@@ -987,6 +994,7 @@ namespace ceresc::parser
 						else
 							fieldType = Type::withRestrict(_arena, fieldType);
 					}
+					parseAttributes(nullptr);   // `int x __attribute__((aligned(4)));`
 					fields.push_back(FieldDecl{ fieldType, fieldDeclarator.name, fieldLoc });
 					if (!match(TokenKind::Comma))
 						break;
@@ -995,6 +1003,7 @@ namespace ceresc::parser
 					synchronizeStatement();
 			}
 			expect(TokenKind::RBrace, "'}'");
+			parseAttributes(nullptr);   // `struct S { ... } __attribute__((...))`
 			decl->setFields(copyFieldsToArena(fields));
 			_definedTags.push_back(decl);
 			for (Decl* assertion : assertions)
@@ -1130,6 +1139,16 @@ namespace ceresc::parser
 			default:
 				if (check(TokenKind::Identifier) && _next.is(TokenKind::Colon))
 					return parseLabeledStatement();
+				if (isAttributeStart())
+				{
+					// `__attribute__((fallthrough));` is a statement of its own; in front of anything else the
+					// attributes are read and dropped, since none of them has an effect on a local
+					SourceLocation attributeLocation = _current.location();
+					parseAttributes(nullptr);
+					if (match(TokenKind::Semicolon))
+						return _arena.create<ast::EmptyStmt>(attributeLocation);
+					return parseStatement();
+				}
 				if (isStaticAssertStart())
 				{
 					SourceLocation location = _current.location();
@@ -1574,6 +1593,8 @@ namespace ceresc::parser
 	Decl* Parser::finishDeclarator(SourceLocation location, const Type* base, const DeclSpecifiers& specifiers,
 		bool leadingRestrict, SourceLocation specifierLocation, bool* outIsFunctionDefinition)
 	{
+		AttributeList attributes = specifiers.attributes;
+		parseAttributes(&attributes);   // `static int __attribute__((unused)) x;`
 		Declarator declarator = parseDeclarator(/*allowAbstract=*/false);
 		if (!declarator.ok)
 			return nullptr;
@@ -1598,8 +1619,18 @@ namespace ceresc::parser
 		}
 
 		support::PooledString asmLabel;
-		if (isAsmLabelStart() && !parseAsmLabel(asmLabel))
-			return nullptr;
+		for (;;)   // `__asm__("x")` and `__attribute__((...))` after a declarator, in either order and any number
+		{
+			if (isAsmLabelStart())
+			{
+				if (!parseAsmLabel(asmLabel))
+					return nullptr;
+			}
+			else if (isAttributeStart())
+				parseAttributes(&attributes);
+			else
+				break;
+		}
 
 		Decl* decl = nullptr;
 		if (type->isFunction() && signature)
@@ -1617,6 +1648,8 @@ namespace ceresc::parser
 		}
 		if (decl && asmLabel)
 			decl->setAsmLabel(asmLabel);
+		if (decl && attributes.noReturn)
+			decl->setNoReturn(true);
 		return decl;
 	}
 
@@ -1743,6 +1776,7 @@ namespace ceresc::parser
 				underlyingType = Type::withRestrict(_arena, underlyingType);
 		}
 		std::string_view name = declarator.name;
+		parseAttributes(nullptr);
 
 		if (!expect(TokenKind::Semicolon, "';'"))
 			return {};
@@ -1793,6 +1827,121 @@ namespace ceresc::parser
 	namespace
 	{
 		bool foldArraySizeExpr(const Expr* expr, i64& out);   // defined below, with the array declarators
+	}
+
+	bool Parser::isAttributeStart() const noexcept
+	{
+		return _current.kind() == TokenKind::Identifier && (_current.lexeme() == "__attribute__" || _current.lexeme() == "__attribute") &&
+			_next.is(TokenKind::LParen);
+	}
+
+	namespace
+	{
+		// Attributes that only tell a compiler how to check or optimize, and that this one has no use for: accepted
+		// without a word, since headers written for GCC are full of them.
+		bool isHarmlessAttribute(std::string_view name)
+		{
+			static constexpr std::string_view kKnown[] = {
+				"unused", "used", "fallthrough", "deprecated", "noinline", "always_inline", "cold", "hot", "pure", "const",
+				"nonnull", "warn_unused_result", "format", "malloc", "visibility", "returns_nonnull", "nothrow", "leaf",
+				"artificial", "gnu_inline", "may_alias", "flatten", "optimize", "no_instrument_function",
+			};
+			for (std::string_view known : kKnown)
+				if (name == known)
+					return true;
+			return false;
+		}
+	}
+
+	void Parser::parseAttributes(AttributeList* sink)
+	{
+		while (isAttributeStart())
+		{
+			advance(); // '__attribute__'
+			if (!expect(TokenKind::LParen, "'(' after '__attribute__'") || !expect(TokenKind::LParen, "'((' after '__attribute__'"))
+				return;
+
+			while (!check(TokenKind::RParen) && !isAtEnd())
+			{
+				SourceLocation where = _current.location();
+				std::string_view name = _current.lexeme();
+				const bool looksLikeName = !name.empty() && (std::isalpha(static_cast<unsigned char>(name.front())) || name.front() == '_');
+				if (!looksLikeName)
+				{
+					_diagnostics.error(DiagId::ExpectedAttributeName, where, "expected an attribute name");
+					return;
+				}
+				advance();
+				// `__noreturn__` and `noreturn` are the same attribute
+				if (name.size() > 4 && name.starts_with("__") && name.ends_with("__"))
+					name = name.substr(2, name.size() - 4);
+
+				i64 argument = 0;
+				bool hasArgument = false;
+				bool argumentOk = false;
+				if (match(TokenKind::LParen))
+				{
+					hasArgument = true;
+					if (name == "aligned")
+					{
+						Expr* expression = parseTernary();
+						argumentOk = expression && foldArraySizeExpr(expression, argument);
+					}
+					else
+					{
+						// Arguments this compiler has no use for: read past them, brackets balanced
+						int depth = 1;
+						while (!isAtEnd() && depth > 0)
+						{
+							if (check(TokenKind::LParen))
+								++depth;
+							else if (check(TokenKind::RParen) && --depth == 0)
+								break;
+							advance();
+						}
+					}
+					if (!expect(TokenKind::RParen, "')'"))
+						return;
+				}
+
+				if (name == "noreturn")
+				{
+					if (sink)
+						sink->noReturn = true;
+					else
+						_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute 'noreturn' ignored: it applies to a function");
+				}
+				else if (name == "aligned")
+				{
+					if (hasArgument && (!argumentOk || argument < 1 || argument > 65536 || (argument & (argument - 1)) != 0))
+					{
+						_diagnostics.error(DiagId::InvalidAttributeArgument, where, "the alignment of an 'aligned' attribute must be a power of two, from 1 to 65536");
+					}
+					else if (!hasArgument || argument > 4)
+					{
+						// A section starts on a 4-byte boundary wherever the linker puts it, so a larger alignment could only be
+						// kept relative to the section's own start - not an address anyone can rely on. Said, not pretended.
+						_diagnostics.warning(DiagId::AttributeIgnored, where,
+							"attribute 'aligned' ignored above 4 bytes: the linker places every section on a 4-byte boundary, so a larger alignment cannot be kept");
+					}
+					// up to 4 is what every scalar already has
+				}
+				else if (name == "packed")
+				{
+					_diagnostics.error(DiagId::PackedNotSupported, where,
+						"attribute 'packed' is not supported: the machine faults on a 16- or 32-bit access that is not aligned, so a member cannot sit off its natural boundary");
+				}
+				else if (!isHarmlessAttribute(name))
+				{
+					_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute '{}' ignored", name);
+				}
+
+				if (!match(TokenKind::Comma))
+					break;
+			}
+			if (!expect(TokenKind::RParen, "')'") || !expect(TokenKind::RParen, "'))'"))
+				return;
+		}
 	}
 
 	// `.name` and `[index]` in any run, then `=`, then the value: `.pos.x = 1`, `[2] = 5`, `[1].name = "a"`.
@@ -2027,6 +2176,7 @@ namespace ceresc::parser
 				return true;
 			}
 
+			parseAttributes(nullptr);
 			SourceLocation location = _current.location();
 			bool leadingRestrict = false;
 			bool isRegister = false;
@@ -2043,6 +2193,7 @@ namespace ceresc::parser
 			// Abstract is allowed here because a prototype may leave a parameter unnamed, and a
 			// type-name must: the `(int)` in `int (*)(int)` has nowhere to put a name. sema is what
 			// requires one in a DEFINITION, where the body would have no way to refer to it.
+			parseAttributes(nullptr);   // `int __attribute__((unused)) x`
 			Declarator declarator = parseDeclarator(/*allowAbstract=*/true);
 			if (!declarator.ok)
 				return false;
@@ -2057,6 +2208,7 @@ namespace ceresc::parser
 					type = Type::withRestrict(_arena, type);
 			}
 
+			parseAttributes(nullptr);   // `int x __attribute__((unused))`
 			outParams.push_back(Param{ type, declarator.name, location, isRegister });
 		} while (match(TokenKind::Comma));
 

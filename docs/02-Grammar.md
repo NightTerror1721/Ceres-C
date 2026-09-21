@@ -93,6 +93,26 @@ that does not exist is E3046, a designator that does not fit what it initializes
 constant E3089 or outside the array E3090. Only the first member of a `union` can be designated (E3091), as it
 is the only one a union initializer reaches at all.
 
+### `__attribute__`
+
+`__attribute__((name, name(args)))` is read wherever GCC allows one: among the declaration specifiers, between the
+type and the declarator, after a declarator (in any order with `__asm__("label")`), on parameters, fields and
+typedefs, after `struct`/`union` and after the closing brace, and as the statement `__attribute__((fallthrough));`.
+`__name__` is the same as `name`.
+
+What is done with them:
+
+| Attribute | Effect |
+| --- | --- |
+| `noreturn` | Recorded on the function (a prototype's holds for its definition). A `return` inside such a function is warned about (W3002). No code is different: nothing here optimizes on it yet. |
+| `aligned(N)` | `N` must be a power of two from 1 to 65536 (E2042). Up to 4 is what every scalar already has. Above 4 it is **ignored with a warning**: the linker puts every section on a 4-byte boundary, so a larger alignment could not be kept. |
+| `packed` | **An error** (E2043): the machine faults on a 16- or 32-bit access that is not aligned, so a member cannot sit off its natural boundary. |
+| `unused`, `used`, `fallthrough`, `deprecated`, `noinline`, `always_inline`, `cold`, `hot`, `pure`, `const`, `nonnull`, `warn_unused_result`, `format`, `malloc`, `visibility`... | Accepted and dropped, silently: they tell a compiler how to check or optimize, and headers written for GCC are full of them. |
+| any other | Accepted, and a warning says it is ignored (W2002), so a foreign header compiles. |
+
+An attribute that would have an effect where none can (`noreturn` on a field or a parameter) is reported as ignored
+rather than lost. A damaged one (`__attribute__(x)`, an unclosed list, a name that is not a name) is E2041.
+
 ### Compound literals
 
 `(T){ ... }` is an unnamed object of type `T` set up from a brace list: `(struct P){ 1, 2 }`, `(struct P){ .y = 2 }`,

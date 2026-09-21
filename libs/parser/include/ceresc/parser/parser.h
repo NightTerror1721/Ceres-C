@@ -215,8 +215,15 @@ namespace ceresc::parser
 		// `sawAny` rather than comparing against a default: `auto` is the default at block scope, so
 		// "was `auto` written" and "is this automatic" are different questions, and only the first
 		// one can be an error at file scope.
+		// What `__attribute__((...))` says that this compiler does something with.
+		struct AttributeList
+		{
+			bool noReturn = false;
+		};
+
 		struct DeclSpecifiers
 		{
+			AttributeList attributes;
 			ast::StorageClass storageClass = ast::StorageClass::None;
 			bool isInline = false;
 			bool isConst = false;
@@ -388,6 +395,11 @@ namespace ceresc::parser
 		bool isAsmLabelStart() const noexcept;
 		bool parseAsmLabel(support::PooledString& out);
 
+		// `__attribute__((name, name(args)))`, any number of them in a row, wherever GCC lets one stand. `sink` is
+		// where a declaration's attributes go; null where none can have an effect (a field, a parameter, a
+		// type), and there the ones that would have one are reported as ignored.
+		bool isAttributeStart() const noexcept;
+		void parseAttributes(AttributeList* sink);
 		// The function whose body is being parsed, for `__func__`; empty outside one.
 		std::string_view _currentFunctionName;
 

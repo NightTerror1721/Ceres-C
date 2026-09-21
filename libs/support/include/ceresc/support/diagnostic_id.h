@@ -130,8 +130,12 @@ namespace ceresc::support
 		ExpectedStaticAssertMessage    = 2038,
 		ExpectedAsmLabel               = 2039,
 		ExpectedDesignator             = 2040,
+		ExpectedAttributeName          = 2041,
+		InvalidAttributeArgument       = 2042,
+		PackedNotSupported             = 2043,
 
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
+		AttributeIgnored = kDiagnosticWarningBit | 2002,
 
 		// ---- 3xxx  sema -----------------------------------------------------------------------
 		Redefinition                     = 3001,
@@ -228,6 +232,7 @@ namespace ceresc::support
 		InvalidCompoundLiteralType       = 3092,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
+		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,
 
 		// ---- 4xxx  codegen --------------------------------------------------------------------
 		RegisterAddressEscaped         = 4001,

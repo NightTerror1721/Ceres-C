@@ -1930,3 +1930,19 @@ TEST(sema, a_compound_literal_at_file_scope_is_a_static_variable_so_its_values_m
 	CHECK(!notConstant.ok);
 	CHECK(containsMessage(notConstant, "compile-time constant"));
 }
+
+// ---- __attribute__((noreturn)) -----------------------------------------------------------------------------------
+
+TEST(sema, a_noreturn_function_that_contains_a_return_is_warned_about)
+{
+	CheckOutcome returns = checkSource("void stop(void) __attribute__((noreturn));\nvoid stop(void) { return; }");
+	CHECK(returns.ok);     // a warning, not an error
+	CHECK(containsMessage(returns, "declared 'noreturn'"));
+
+	CheckOutcome loops = checkSource("void stop(void) __attribute__((noreturn));\nvoid stop(void) { for (;;) { } }");
+	CHECK(loops.ok);
+	CHECK(!containsMessage(loops, "declared 'noreturn'"));
+
+	CHECK(checkSource("void bail(int code) __attribute__((noreturn));\nint main() { bail(1); return 0; }").ok);
+	CHECK(!containsMessage(checkSource("void f(void) { return; }"), "declared 'noreturn'"));
+}

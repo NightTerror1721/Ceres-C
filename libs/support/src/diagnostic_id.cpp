@@ -28,6 +28,8 @@ namespace ceresc::support
 			case DiagnosticId::InvalidWarningPragma:
 			case DiagnosticId::UncontrollableDiagnostic:
 			case DiagnosticId::CappedTypeWidth:
+			case DiagnosticId::AttributeIgnored:
+			case DiagnosticId::NoReturnFunctionReturns:
 			case DiagnosticId::ConstWithoutInitializer:
 				return static_cast<DiagnosticId>(number | kDiagnosticWarningBit);
 			default:

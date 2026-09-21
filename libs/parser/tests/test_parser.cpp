@@ -1469,3 +1469,129 @@ TEST(parser, a_compound_literal_outside_a_function_becomes_a_static_variable_bef
 	CHECK_EQ(printUnit("struct P { int x; int y; };\nstruct P* p = &(struct P){ 3, 4 };"),
 		"(unit (struct P (fields (int x) (int y))) (var __complit0 struct P (init-list 3 4)) (var p struct P* (& __complit0)))");
 }
+
+// ---- __attribute__ -----------------------------------------------------------------------------------------------
+
+namespace
+{
+	struct AttributeOutcome
+	{
+		usize errors = 0;
+		usize warnings = 0;
+		std::vector<std::string> messages;
+		bool noReturnFunction = false;   // the first function of the unit was marked noreturn
+	};
+
+	AttributeOutcome parseAttributes(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		Parser parser(lexer, arena, diagnostics);
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+
+		AttributeOutcome outcome;
+		for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+		{
+			if (diagnostic.severity == support::DiagnosticSeverity::Error)
+				++outcome.errors;
+			else if (diagnostic.severity == support::DiagnosticSeverity::Warning)
+				++outcome.warnings;
+			outcome.messages.push_back(diagnostic.message);
+		}
+		if (unit)
+			for (ast::Decl* decl : unit->decls())
+				if (auto* function = dynamic_cast<ast::FunctionDecl*>(decl))
+				{
+					outcome.noReturnFunction = function->isNoReturn();
+					break;
+				}
+		return outcome;
+	}
+}
+
+TEST(parser, an_attribute_is_accepted_wherever_gcc_puts_one)
+{
+	const char* accepted[] = {
+		"void f(void) __attribute__((noreturn));",
+		"__attribute__((noreturn)) void f(void);",
+		"static __attribute__((unused)) int x;",
+		"static int __attribute__((unused)) x;",
+		"int x __attribute__((unused)) = 1;",
+		"int f(void) __attribute__((noinline)) { return 1; }",
+		"int f(int x __attribute__((unused))) { return 1; }",
+		"int f(int __attribute__((unused)) x) { return 1; }",
+		"int f(__attribute__((unused)) int x) { return 1; }",
+		"struct __attribute__((unused)) S { int a; };",
+		"struct S { int a __attribute__((unused)); int b; } __attribute__((unused));",
+		"struct S { __attribute__((unused)) int a; };",
+		"typedef int myint __attribute__((unused));",
+		"int f(void) __attribute__((noreturn, cold, format(printf, 1, 2)));",
+		"int f(void) __attribute__((noreturn)) __attribute__((cold));",
+		"void f(void) __attribute__((__noreturn__));",
+		"int x __attribute__((unused)) __asm__(\"y\");",
+		"int x __asm__(\"y\") __attribute__((unused));",
+		"int f(int n) { switch (n) { case 0: n = 1; __attribute__((fallthrough)); case 1: return n; } return 0; }",
+		"int __attribute__((unused)) a, __attribute__((unused)) b;",
+	};
+	for (const char* source : accepted)
+	{
+		AttributeOutcome outcome = parseAttributes(source);
+		CHECK_EQ(outcome.errors, usize{ 0 });
+	}
+}
+
+TEST(parser, noreturn_marks_the_function_and_the_others_are_read_and_dropped)
+{
+	CHECK(parseAttributes("void f(void) __attribute__((noreturn));").noReturnFunction);
+	CHECK(parseAttributes("__attribute__((noreturn)) void f(void);").noReturnFunction);
+	CHECK(parseAttributes("void f(void) __attribute__((__noreturn__));").noReturnFunction);
+	CHECK(!parseAttributes("void f(void) __attribute__((cold));").noReturnFunction);
+	CHECK(!parseAttributes("void f(void);").noReturnFunction);
+}
+
+TEST(parser, an_attribute_this_compiler_does_nothing_with_is_said_to_be_ignored_unless_it_is_a_common_harmless_one)
+{
+	AttributeOutcome unknown = parseAttributes("int f(void) __attribute__((made_up));");
+	CHECK_EQ(unknown.errors, usize{ 0 });
+	CHECK_EQ(unknown.warnings, usize{ 1 });
+	CHECK(!unknown.messages.empty() && unknown.messages[0].find("'made_up' ignored") != std::string::npos);
+
+	CHECK_EQ(parseAttributes("int f(void) __attribute__((unused, used, deprecated, noinline, format(printf, 1, 2), nonnull(1)));").warnings, usize{ 0 });
+	CHECK_EQ(parseAttributes("int f(void) __attribute__((one, two));").warnings, usize{ 2 });
+	CHECK_EQ(parseAttributes("int f(void) __attribute__((weird(1, (2), 3)));").warnings, usize{ 1 });   // arguments read past, brackets balanced
+}
+
+TEST(parser, packed_is_an_error_because_the_machine_faults_on_unaligned_access)
+{
+	AttributeOutcome packed = parseAttributes("struct S { char c; int i; } __attribute__((packed));");
+	CHECK_EQ(packed.errors, usize{ 1 });
+	CHECK(!packed.messages.empty() && packed.messages[0].find("'packed' is not supported") != std::string::npos);
+	CHECK_EQ(parseAttributes("struct __attribute__((__packed__)) S { int i; };").errors, usize{ 1 });
+}
+
+TEST(parser, aligned_takes_a_power_of_two_and_only_up_to_the_machines_own_alignment_is_kept)
+{
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned(4)));").warnings, usize{ 0 });
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned(2)));").warnings, usize{ 0 });
+	AttributeOutcome large = parseAttributes("int x __attribute__((aligned(16)));");
+	CHECK_EQ(large.errors, usize{ 0 });
+	CHECK_EQ(large.warnings, usize{ 1 });
+	CHECK(!large.messages.empty() && large.messages[0].find("above 4 bytes") != std::string::npos);
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned));").warnings, usize{ 1 });
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned(3)));").errors, usize{ 1 });
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned(0)));").errors, usize{ 1 });
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned(n)));").errors, usize{ 1 });
+	CHECK_EQ(parseAttributes("int x __attribute__((aligned(2 + 2)));").warnings, usize{ 0 });   // a constant expression
+}
+
+TEST(parser, a_damaged_attribute_is_an_error)
+{
+	CHECK_EQ(parseAttributes("int f(void) __attribute__(noreturn);").errors > 0, true);
+	CHECK_EQ(parseAttributes("int f(void) __attribute__((noreturn);").errors > 0, true);
+	CHECK_EQ(parseAttributes("int f(void) __attribute__((1));").errors > 0, true);
+	// Where an attribute cannot have an effect, one that would is reported rather than lost
+	CHECK_EQ(parseAttributes("int f(int x __attribute__((noreturn)));").warnings, usize{ 1 });
+	CHECK_EQ(parseAttributes("struct S { int a __attribute__((noreturn)); };").warnings, usize{ 1 });
+}

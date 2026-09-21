@@ -101,7 +101,9 @@ These are the codes a `#pragma warning(...)` can name.
 | `W1005` | A `#pragma warning(...)` this compiler could not read, ignored. |
 | `W1006` | A number in a `#pragma warning(...)` that does not name a warning. |
 | `W2001` | `long long`/`double`/`long double` capped to 32 bits — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `W2002` | An `__attribute__` that is ignored: one this compiler does nothing with, or `aligned` above 4 — see [02-Grammar.md](02-Grammar.md). |
 | `W3001` | A `const` variable with no initializer, which can therefore only ever be zero. |
+| `W3002` | A function declared `noreturn` that contains a `return`. |
 
 ## The errors
 
@@ -192,6 +194,9 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2038` | `_Static_assert(cond, x)` where `x` is not a string literal. |
 | `E2039` | `__asm__(x)` after a declarator where `x` is not a string literal. |
 | `E2040` | A designator that is not `.name` or `[index]`, or a `.` with no member name after it. |
+| `E2041` | An `__attribute__` that is not well formed: missing parentheses, or no attribute name. |
+| `E2042` | The argument of `aligned` is not a power of two from 1 to 65536 (or not a constant). |
+| `E2043` | `__attribute__((packed))`: not supported, the machine faults on unaligned accesses. |
 
 ### `3xxx` — sema
 
