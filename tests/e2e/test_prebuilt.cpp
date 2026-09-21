@@ -327,3 +327,48 @@ TEST(prebuilt, an_extern_array_without_a_size_links_against_an_archive)
 	CHECK_EQ(runProgram(scratch, *ceresDir, "extern int table[];\nint main(void) { return table[0] + table[1] + table[2]; }\n",
 		{ *archive }, { lib->decls }), 7);
 }
+
+TEST(prebuilt, a_library_may_define_and_export_names_the_assembler_reserves)
+{
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("reserved_names");
+	std::optional<Built> lib = buildObject(scratch, *ceresDir, "lib",
+		"int at(int x) { return x + 1; }\n"
+		"int half = 40;\n"
+		"int word(int a, int b) { return a * b; }\n");
+	CHECK(lib.has_value());
+	if (!lib) return;
+
+	// The program names them as C does; the object and the declarations say __c_at, __c_half and __c_word
+	const char* program =
+		"extern int at(int x);\n"
+		"extern int half;\n"
+		"extern int word(int a, int b);\n"
+		"int main(void) { return at(1) + half + word(2, 3); }\n";   // 2 + 40 + 6
+	CHECK_EQ(runProgram(scratch, *ceresDir, program, { lib->object }, { lib->decls }), 48);
+}
+
+TEST(prebuilt, hand_written_assembly_meets_c_through_a_prefixed_name_or_an_asm_label)
+{
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("asm_labels");
+	fs::path hand = scratch.write("hand.casm",
+		"@text\n"
+		"\n"
+		"global hand_made:\n"
+		"    add r0, r0, r0\n"
+		"    ret\n"
+		"\n"
+		"global __c_half:\n"
+		"    add r0, r0, r0\n"
+		"    add r0, r0, r0\n"
+		"    ret\n");
+	const char* program =
+		"extern int mine(int n) __asm__(\"hand_made\");\n"
+		"extern int half(int n);\n"
+		"int counter __asm__(\"the_counter\") = 5;\n"
+		"int main(void) { return mine(3) + half(2) + counter; }\n";   // 6 + 8 + 5
+	CHECK_EQ(runProgram(scratch, *ceresDir, program, { hand }, {}), 19);
+}

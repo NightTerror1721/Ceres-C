@@ -63,6 +63,7 @@ namespace ceresc::ast
 	protected:
 		support::SourceLocation _location;
 		std::string_view _name; // a raw view into the source buffer, same as NameExpr::_name in expr.h
+		support::PooledString _asmLabel; // `int f(int) __asm__("label")`: the name the assembler sees, or none
 
 	public:
 		Decl(support::SourceLocation location, std::string_view name) noexcept : _location(location), _name(name) {}
@@ -70,6 +71,8 @@ namespace ceresc::ast
 	public:
 		support::SourceLocation location() const noexcept { return _location; }
 		std::string_view name() const noexcept { return _name; }
+		support::PooledString asmLabel() const noexcept { return _asmLabel; }
+		void setAsmLabel(support::PooledString label) noexcept { _asmLabel = label; }
 
 		virtual void accept(AstVisitor& visitor) = 0;
 	};

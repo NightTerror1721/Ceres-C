@@ -1768,3 +1768,38 @@ TEST(sema, func_names_the_function_it_is_used_in)
 	CHECK(!outside.ok);
 	CHECK(containsMessage(outside, "undeclared identifier '__func__'"));
 }
+
+// ---- __asm__("label") --------------------------------------------------------------------------------------------
+
+TEST(sema, an_asm_label_may_follow_a_declarator_at_file_scope)
+{
+	CHECK(checkSource("int f(int) __asm__(\"g\");\nint main() { return f(1); }").ok);
+	CHECK(checkSource("extern int v __asm__(\"the_v\");\nint main() { return v; }").ok);
+	CHECK(checkSource("int v __asm__(\"the_v\") = 3;").ok);
+	CHECK(checkSource("static int s __asm__(\"the_s\");").ok);
+	CHECK(checkSource("int f(void) __asm__(\"g\") { return 1; }").ok);
+	CHECK(checkSource("int f(int) __asm(\"g\");").ok);                  // the two older spellings
+}
+
+TEST(sema, every_declaration_of_a_name_must_give_it_the_same_label)
+{
+	CHECK(checkSource("int f(int) __asm__(\"g\");\nint f(int) __asm__(\"g\");\nint f(int x) { return x; }").ok);
+	CheckOutcome different = checkSource("int f(int) __asm__(\"g\");\nint f(int) __asm__(\"h\");");
+	CHECK(!different.ok);
+	CHECK(containsMessage(different, "asm label"));
+	CHECK(!checkSource("int v __asm__(\"a\");\nextern int v __asm__(\"b\");").ok);
+}
+
+TEST(sema, an_asm_label_is_a_plain_identifier_at_file_scope)
+{
+	CheckOutcome dash = checkSource("int f(void) __asm__(\"a-b\");");
+	CHECK(!dash.ok);
+	CHECK(containsMessage(dash, "plain identifier"));
+	CHECK(!checkSource("int f(void) __asm__(\"\");").ok);
+	CHECK(!checkSource("int f(void) __asm__(\"1abc\");").ok);
+	CHECK(!checkSource("int f(void) __asm__(\"a b\");").ok);
+	CheckOutcome local = checkSource("int main() { extern int v __asm__(\"the_v\"); return v; }");
+	CHECK(!local.ok);
+	CHECK(containsMessage(local, "file scope"));
+	CHECK(!checkSource("int main() { static int n __asm__(\"the_n\"); return n; }").ok);
+}

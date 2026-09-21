@@ -190,6 +190,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2036` | An array of `void`, or of functions. |
 | `E2037` | An array with no size where nothing can give it one: no initializer (and not an `extern` declaration), a scalar or flat list for an array of arrays, a struct member, a cast. Only a variable's initializer infers the outermost size, and `extern int t[];` may leave it unknown. |
 | `E2038` | `_Static_assert(cond, x)` where `x` is not a string literal. |
+| `E2039` | `__asm__(x)` after a declarator where `x` is not a string literal. |
 
 ### `3xxx` — sema
 
@@ -279,6 +280,9 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3082` | `sizeof` of an array whose size is not known in this unit (`extern int t[];`). |
 | `E3083` | The condition of a `_Static_assert` is not a constant expression. |
 | `E3084` | A `_Static_assert` whose condition is 0; the message, when there is one, is in the error. |
+| `E3085` | An `__asm__("label")` on a declaration that is not at file scope. |
+| `E3086` | An asm label that is not a plain identifier (letters, digits, `_`; not starting with a digit). |
+| `E3087` | Two declarations of one name that give it different asm labels. |
 
 ### `4xxx` — codegen
 
@@ -287,9 +291,10 @@ These are the codes a `#pragma warning(...)` can name.
 | `E4001` | Internal: a register-resident local's address reached code generation. |
 | `E4002` | Internal: a call's arguments are not the `Param`s before it. |
 | `E4003` | A global's initializer that is not a compile-time constant. |
-| `E4004` | A C name that is a reserved word in CeresASM — see [07-CASM-Interop.md](07-CASM-Interop.md). |
+| `E4004` | An `__asm__("label")` whose label is a reserved word in CeresASM (a C name that is one is no longer an error: it is written `__c_` and the name) — see [07-CASM-Interop.md](07-CASM-Interop.md). |
 | `E4005` | Internal: a generated function with no declaration behind it. |
 | `E4006` | A static initializer that is an address constant **with an offset** (like `&a[i]`) — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `E4007` | A C symbol named `__c_` and a reserved word of CeresASM: that is what the reserved word itself is written as — see [07-CASM-Interop.md](07-CASM-Interop.md). |
 
 ### `5xxx` — ir
 

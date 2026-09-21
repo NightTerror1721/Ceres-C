@@ -376,6 +376,11 @@ namespace ceresc::parser
 		bool isStaticAssertStart() const noexcept;
 		Decl* parseStaticAssert();
 
+		// `__asm__("label")` after a declarator: the name the assembler is to use for the symbol. Recognized
+		// (`__asm__` or `__asm`, followed by a '(') the way _Static_assert is, without a token kind of its own.
+		bool isAsmLabelStart() const noexcept;
+		bool parseAsmLabel(support::PooledString& out);
+
 		// The function whose body is being parsed, for `__func__`; empty outside one.
 		std::string_view _currentFunctionName;
 

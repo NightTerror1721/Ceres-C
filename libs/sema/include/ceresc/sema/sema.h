@@ -217,6 +217,10 @@ namespace ceresc::sema
 		// allowed to appear, and what it demands of an initializer. `static` is the interesting one -
 		// its initializer becomes bytes in the loaded image, so it has to be computable now.
 		void checkStorageClass(ast::VarDecl& node);
+		// An `__asm__("label")` on a declaration: where it may stand, what it may say, and that every
+		// declaration of one name agrees.
+		void checkAsmLabel(ast::Decl& node, bool atFileScope);
+		std::unordered_map<std::string_view, std::string_view> _asmLabels;
 		// Everything `__interrupt` promises about a function's contract with the world - see the
 		// definition. A no-op for every ordinary function.
 		void checkInterruptHandler(ast::FunctionDecl& node);

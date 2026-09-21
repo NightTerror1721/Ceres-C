@@ -128,6 +128,7 @@ namespace ceresc::support
 		InvalidArrayElementType        = 2036,
 		ArraySizeRequired              = 2037,
 		ExpectedStaticAssertMessage    = 2038,
+		ExpectedAsmLabel               = 2039,
 
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
 
@@ -216,6 +217,9 @@ namespace ceresc::support
 		SizeofIncompleteArray            = 3082,
 		StaticAssertNotConstant          = 3083,
 		StaticAssertFailed               = 3084,
+		AsmLabelNotAtFileScope           = 3085,
+		InvalidAsmLabel                  = 3086,
+		ConflictingAsmLabel              = 3087,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 
@@ -226,6 +230,7 @@ namespace ceresc::support
 		ReservedCasmWord               = 4004,
 		MissingDeclarationForFunction  = 4005,
 		AddressConstantInStaticInitializer = 4006,
+		ReservedNamePrefix             = 4007,
 
 		// ---- 5xxx  ir -------------------------------------------------------------------------
 		CompoundAssignToStruct = 5001

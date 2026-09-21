@@ -11,6 +11,7 @@
 
 #include "framework.h"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -1498,4 +1499,137 @@ TEST(codegen, a_static_function_whose_address_is_taken_survives_unused_function_
 		"static int hidden(int x) { return x + 1; }"
 		"int (*get(void))(int) { return hidden; }");
 	CHECK(contains(casm, "hidden:"));
+}
+
+// ---- words CeresASM reserves, and `__asm__("label")` -----------------------------------------------------------
+
+TEST(codegen, a_c_name_that_is_a_reserved_word_of_the_assembler_is_written_with_a_prefix)
+{
+	std::string text = atO0(
+		"int at(int x) { return x + 1; }\n"
+		"int half = 20;\n"
+		"static int word = 3;\n"
+		"int r5(void) { return 2; }\n"
+		"int main(void) { static int global = 4; return at(1) + half + word + r5() + global; }");
+	CHECK(contains(text, "global __c_at:"));
+	CHECK(contains(text, "call __c_at"));
+	CHECK(contains(text, "global let __c_half: u32 = 20"));
+	CHECK(contains(text, "la r"));                       // the references use the same name
+	CHECK(contains(text, "__c_half"));
+	CHECK(contains(text, "let __c_word: u32 = 3"));      // a static too
+	CHECK(!contains(text, "global let __c_word"));
+	CHECK(contains(text, "global __c_r5:"));
+	CHECK(contains(text, "call __c_r5"));
+	CHECK(!contains(text, "global at:"));
+	CHECK(!contains(text, "global let half"));
+}
+
+TEST(codegen, names_that_only_look_like_reserved_words_are_left_alone)
+{
+	std::string text = atO0(
+		"int add(int a) { return a; }\n"
+		"int r16(void) { return 1; }\n"
+		"int r(void) { return 2; }\n"
+		"int f1x(void) { return 3; }\n"
+		"int words = 4;\n"
+		"int main(void) { return add(1) + r16() + r() + f1x() + words; }");
+	CHECK(contains(text, "global add:"));
+	CHECK(contains(text, "global r16:"));
+	CHECK(contains(text, "global r:"));
+	CHECK(contains(text, "global f1x:"));
+	CHECK(contains(text, "global let words: u32 = 4"));
+	CHECK(!contains(text, "__c_"));
+}
+
+TEST(codegen, a_reserved_name_is_written_the_same_wherever_it_is_used)
+{
+	// As the target of a call through a pointer built at load time, and as an interrupt handler
+	std::string text = atO0(
+		"int half(int x) { return x; }\n"
+		"int (*table[1])(int) = { half };\n"
+		"__interrupt void at(void) { }\n"
+		"__interrupt_vector(20, at);\n"
+		"int main(void) { return table[0](1); }");
+	CHECK(contains(text, "global let table: u32[1] = __c_half") || contains(text, "__c_half"));
+	CHECK(contains(text, "interrupt 20: __c_at"));
+	CHECK(contains(text, "global __c_at:"));
+}
+
+TEST(codegen, an_asm_label_is_the_name_the_assembler_sees)
+{
+	std::string text = atO0(
+		"extern int mine(int n) __asm__(\"hand_made\");\n"
+		"int counter __asm__(\"the_counter\") = 5;\n"
+		"int shown(int x) __asm__(\"shown_label\") { return x; }\n"
+		"int main(void) { return mine(counter) + shown(1); }");
+	CHECK(contains(text, "call hand_made"));
+	CHECK(contains(text, "global let the_counter: u32 = 5"));
+	CHECK(contains(text, "la r"));
+	CHECK(contains(text, "the_counter"));
+	CHECK(contains(text, "global shown_label:"));
+	CHECK(contains(text, "call shown_label"));
+	CHECK(!contains(text, "call mine"));
+	CHECK(!contains(text, "global counter"));
+}
+
+TEST(codegen, an_asm_label_wins_over_the_prefix_and_reaches_every_declaration)
+{
+	std::string text = atO0(
+		"int at(int) __asm__(\"plain_at\");\n"
+		"int main(void) { return at(1); }\n"
+		"int at(int x) { return x; }");
+	CHECK(contains(text, "call plain_at"));
+	CHECK(contains(text, "global plain_at:"));     // the definition carries it although only the first declaration wrote it
+	CHECK(!contains(text, "__c_at"));
+}
+
+TEST(codegen, the_declarations_file_uses_the_names_the_assembler_sees)
+{
+	support::SourceManager sourceManager;
+	const std::string source =
+		"int at(int x) { return x; }\n"
+		"extern int counter __asm__(\"the_counter\");\n"
+		"int half = 1;\n"
+		"int f(void) __asm__(\"f_label\");\n";
+	support::SourceId sourceId = sourceManager.registerBuffer("test.c", std::string(source));
+	support::Arena arena;
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	lexer::Lexer lexer(source, sourceId, diagnostics, pool);
+	parser::Parser parser(lexer, arena, diagnostics);
+	ast::TranslationUnit* unit = parser.parseTranslationUnit();
+	CHECK(unit != nullptr);
+	if (!unit) return;
+	sema::Sema sema(arena, diagnostics);
+	CHECK(sema.check(*unit));
+
+	codegen::CodeGen codeGen(sourceManager, diagnostics, support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
+	std::vector<std::string> names;
+	for (const codegen::ExternalDeclaration& declaration : codeGen.collectExternalDeclarations(*unit))
+		names.push_back(declaration.name);
+	auto has = [&](const char* name) { return std::find(names.begin(), names.end(), name) != names.end(); };
+	CHECK(has("__c_at"));
+	CHECK(has("the_counter"));
+	CHECK(has("__c_half"));
+	CHECK(has("f_label"));
+	CHECK(!has("at"));
+	CHECK(!has("half"));
+}
+
+TEST(codegen, an_asm_label_that_is_itself_reserved_is_refused)
+{
+	BackEndOutcome outcome = generateExpectingDiagnostics("int f(void) __asm__(\"half\");\nint main(void) { return f(); }");
+	CHECK_EQ(outcome.errors.size(), usize{ 1 });
+	CHECK(contains(outcome.errors[0], "E4004"));
+	CHECK(contains(outcome.errors[0], "asm label"));
+}
+
+TEST(codegen, a_name_that_would_meet_the_prefix_is_refused)
+{
+	// `at` is written __c_at, so a symbol the program calls __c_at would be the same one
+	BackEndOutcome outcome = generateExpectingDiagnostics("int __c_at(void) { return 1; }\nint main(void) { return __c_at(); }");
+	CHECK_EQ(outcome.errors.size(), usize{ 1 });
+	CHECK(contains(outcome.errors[0], "E4007"));
+	// A name that only starts like the prefix is fine
+	CHECK(generateExpectingDiagnostics("int __c_mine(void) { return 1; }\nint main(void) { return __c_mine(); }").errors.empty());
 }

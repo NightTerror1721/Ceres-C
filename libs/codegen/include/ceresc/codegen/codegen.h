@@ -173,6 +173,9 @@ namespace ceresc::codegen
 		// The CASM symbol a C name means in a static initializer: the function-qualified symbol for a
 		// `static` local, or the mangled name otherwise.
 		std::string symbolForName(std::string_view name) const;
+		// The name the assembler sees for a C symbol: its `__asm__("label")` when it has one, `__c_` and the name
+		// when the name is a word CeresASM reserves, and the name itself otherwise.
+		std::string casmName(std::string_view name) const;
 		// Emits the .rodata `let` for every string literal that appeared only in a static
 		// initializer, in first-sight order. The IR's own string literals are emitted separately.
 		void emitInitializerStringLiterals();
@@ -324,6 +327,9 @@ namespace ceresc::codegen
 		// "main.count"). Populated in generate(), read by addressConstantSymbol() so that
 		// `static int* p = &x;` names the real symbol rather than the bare C name.
 		std::unordered_map<std::string_view, std::string> _staticLocalSymbols;
+
+		// C name -> the label an `__asm__("...")` gave it. Populated in generate(), read by casmName().
+		std::unordered_map<std::string_view, std::string> _asmLabels;
 
 		// Per-function state, valid only while generateFunction() is on the stack.
 		const ir::IrFunction* _function = nullptr;

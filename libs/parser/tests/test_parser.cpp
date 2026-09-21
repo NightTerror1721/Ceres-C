@@ -1394,3 +1394,13 @@ TEST(parser, func_is_the_name_of_the_function_being_parsed)
 	// Outside a function it is an ordinary name, and sema will not find it
 	CHECK_EQ(printUnit("int x = __func__;"), "(unit (var x int __func__))");
 }
+
+TEST(parser, an_asm_label_needs_a_string_in_parentheses)
+{
+	CHECK(!parseFails("int f(int) __asm__(\"g\");"));
+	CHECK(parseFails("int f(int) __asm__(g);"));
+	CHECK(parseFails("int f(int) __asm__(\"g\";"));
+	CHECK(parseFails("int f(int) __asm__ \"g\";"));
+	// An identifier called __asm__ that is not followed by '(' is just an identifier
+	CHECK(!parseFails("int __asm__ = 1;"));
+}

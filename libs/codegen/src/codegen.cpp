@@ -166,6 +166,30 @@ namespace ceresc::codegen
 			return false;
 		}
 
+		// The labels the unit's declarations were given with `__asm__("...")`, by C name. Any one declaration of a name
+		// is enough: sema has already checked that they agree.
+		using AsmLabelMap = std::unordered_map<std::string_view, std::string>;
+
+		AsmLabelMap asmLabelsOf(const TranslationUnit& unit)
+		{
+			AsmLabelMap labels;
+			for (Decl* decl : unit.decls())
+				if (decl && decl->asmLabel())
+					labels.emplace(decl->name(), std::string(decl->asmLabel().view()));
+			return labels;
+		}
+
+		// What a C symbol is called in the CASM: its explicit label, else a `__c_` prefix when the name is a word
+		// CeresASM reserves (`at`, `half`, `global`, `r5`...), else the name as it is.
+		std::string casmSymbolName(const AsmLabelMap& labels, std::string_view name)
+		{
+			if (const auto it = labels.find(name); it != labels.end())
+				return it->second;
+			if (isReservedCasmWord(name))
+				return std::format("__c_{}", name);
+			return mangledName(name);
+		}
+
 		// Finds the FunctionDecl matching `name` among `unit`'s top-level declarations - IrModule
 		// only carries a function's lowered body (ir_function.h), never the original AST node, so
 		// CodeGen needs this to recover parameter count/types for the frame/prologue.
@@ -860,7 +884,7 @@ namespace ceresc::codegen
 			{
 				const auto& p = instr.as<IrGlobalAddrPayload>();
 				std::string dest = defineInto(p.result, kScratchA, false);
-				_emitter.instr(std::format("la {}, {}", dest, mangledName(p.name)), comment); // pseudo form: la rd, symbol
+				_emitter.instr(std::format("la {}, {}", dest, casmName(p.name)), comment); // pseudo form: la rd, symbol
 				storeResult(p.result, dest, loc);
 				break;
 			}
@@ -1021,7 +1045,7 @@ namespace ceresc::codegen
 				}
 				else
 				{
-					_emitter.instr(std::format("call {}", mangledName(p.callee)), comment);
+					_emitter.instr(std::format("call {}", casmName(p.callee)), comment);
 				}
 				if (p.hasResult)
 				{
@@ -1320,7 +1344,7 @@ namespace ceresc::codegen
 		// exactly C's external linkage: everything except a `static` function. `main` gets it
 		// regardless - the linker looks that name up to find the entry point.
 		bool exported = isEntryPoint || decl.hasExternalLinkage();
-		_emitter.label(exported ? std::format("global {}", mangledName(decl.name())) : mangledName(decl.name()));
+		_emitter.label(exported ? std::format("global {}", casmName(decl.name())) : casmName(decl.name()));
 
 		SourceLocation entryLoc = decl.location();
 		// Before `enter`, so `leave` puts sp back exactly where the restore expects to find it.
@@ -1546,7 +1570,12 @@ namespace ceresc::codegen
 	{
 		if (const auto it = _staticLocalSymbols.find(name); it != _staticLocalSymbols.end())
 			return it->second;
-		return mangledName(name);
+		return casmName(name);
+	}
+
+	std::string CodeGen::casmName(std::string_view name) const
+	{
+		return casmSymbolName(_asmLabels, name);
 	}
 
 	std::optional<std::string> CodeGen::scalarArrayInitText(const Type* type, const Expr* init, const Expr*& outOffender) const
@@ -1885,26 +1914,35 @@ namespace ceresc::codegen
 
 	void CodeGen::checkSymbolNames(const TranslationUnit& unit, const IrModule& module)
 	{
+		// A C name that is a word CeresASM reserves is not an error any more: the symbol is written `__c_` and the
+		// name (see casmSymbolName). What can still clash is the prefix itself - a symbol the program calls
+		// `__c_at` while another is called `at` would be the same one in the assembly - and an explicit label
+		// that is itself a reserved word, which nothing renames.
 		auto check = [&](std::string_view name, support::SourceLocation location, std::string_view what)
 		{
-			if (!isReservedCasmWord(name))
-				return;
-			_diagnostics.error(DiagId::ReservedCasmWord, location,
-				"'{}' cannot be used as the name of a {}: it is a reserved word in CeresASM, and a C symbol "
-				"keeps its own name in the generated assembly (see docs/07-CASM-Interop.md). Rename it.",
-				name, what);
+			if (name.starts_with("__c_") && isReservedCasmWord(name.substr(4)))
+			{
+				_diagnostics.error(DiagId::ReservedNamePrefix, location,
+					"'{}' cannot be used as the name of a {}: '__c_' followed by a reserved word of CeresASM is what '{}' is written as "
+					"in the generated assembly (see docs/07-CASM-Interop.md)", name, what, name.substr(4));
+			}
 		};
 
 		for (Decl* decl : unit.decls())
 		{
-			if (auto* function = dynamic_cast<FunctionDecl*>(decl))
-				check(function->name(), function->location(), "function");
-			else if (auto* variable = dynamic_cast<VarDecl*>(decl))
-				check(variable->name(), variable->location(), "global variable");
+			if (!decl || decl->name().empty())
+				continue;
+			const bool isFunction = dynamic_cast<FunctionDecl*>(decl) != nullptr;
+			if (isFunction || dynamic_cast<VarDecl*>(decl))
+				check(decl->name(), decl->location(), isFunction ? "function" : "global variable");
+			if (decl->asmLabel() && isReservedCasmWord(decl->asmLabel().view()))
+			{
+				_diagnostics.error(DiagId::ReservedCasmWord, decl->location(),
+					"'{}' cannot be the asm label of '{}': it is a reserved word in CeresASM", decl->asmLabel().view(), decl->name());
+			}
 		}
 		// A `static` local becomes a file-scope CASM symbol too, under a name that already carries
-		// its function's - so it cannot collide by accident, only by the user's own choice of the
-		// part that comes from C.
+		// its function's, so it cannot meet a reserved word or the prefix by accident.
 		for (const IrStaticLocal& local : module.staticLocals())
 			check(local.name, local.decl->location(), "static local variable");
 	}
@@ -1912,6 +1950,7 @@ namespace ceresc::codegen
 	std::vector<ExternalDeclaration> CodeGen::collectExternalDeclarations(const TranslationUnit& unit) const
 	{
 		std::vector<ExternalDeclaration> declarations;
+		const AsmLabelMap labels = asmLabelsOf(unit);
 		for (Decl* decl : unit.decls())
 		{
 			if (auto* function = dynamic_cast<FunctionDecl*>(decl))
@@ -1921,7 +1960,7 @@ namespace ceresc::codegen
 				// will contribute the same entry. The driver keeps one copy.
 				if (!function->hasExternalLinkage())
 					continue;
-				declarations.push_back(ExternalDeclaration{ std::string(function->name()), true, function->isDefinition(), false, "@text", {} });
+				declarations.push_back(ExternalDeclaration{ casmSymbolName(labels, function->name()), true, function->isDefinition(), false, "@text", {} });
 				continue;
 			}
 
@@ -1955,7 +1994,7 @@ namespace ceresc::codegen
 			// entry when the driver merges the units, so any non-empty placeholder will do.
 			if (typeText.find("[0]") != std::string::npos)
 				typeText = "u8[1]";
-			declarations.push_back(ExternalDeclaration{ std::string(variable->name()), false, !variable->isExternDeclaration(),
+			declarations.push_back(ExternalDeclaration{ casmSymbolName(labels, variable->name()), false, !variable->isExternDeclaration(),
 				variable->initializer() != nullptr, std::move(section), std::move(typeText) });
 		}
 		return declarations;
@@ -1963,6 +2002,7 @@ namespace ceresc::codegen
 
 	std::string CodeGen::generate(const TranslationUnit& unit, const IrModule& module)
 	{
+		_asmLabels = asmLabelsOf(unit);
 		checkSymbolNames(unit, module);
 
 		// Does this unit see a `void exit(int)`? Then `main` can hand its status to it (see the Return
@@ -1999,7 +2039,7 @@ namespace ceresc::codegen
 				continue;
 			// The number is written out rather than passed through as the C source spelled it: an enum
 			// constant or a macro means nothing to the assembler, and sema has already folded it.
-			_emitter.raw(std::format("interrupt {}: {}", vector->resolvedNumber(), mangledName(vector->name())));
+			_emitter.raw(std::format("interrupt {}: {}", vector->resolvedNumber(), casmName(vector->name())));
 			wroteAnyVector = true;
 		}
 		if (wroteAnyVector)
@@ -2069,7 +2109,7 @@ namespace ceresc::codegen
 			{
 				auto it = staticLocalNames.find(g);
 				bool isStaticLocal = it != staticLocalNames.end();
-				std::string_view symbolName = isStaticLocal ? it->second : g->name();
+				std::string symbolName = isStaticLocal ? std::string(it->second) : casmName(g->name());
 				// A `static` of either kind has internal linkage and is not published.
 				bool exported = !isStaticLocal && g->storageClass() != ast::StorageClass::Static;
 				generateGlobal(*g, symbolName, exported);
@@ -2086,7 +2126,7 @@ namespace ceresc::codegen
 			{
 				auto it = staticLocalNames.find(g);
 				bool isStaticLocal = it != staticLocalNames.end();
-				generateGlobal(*g, isStaticLocal ? it->second : g->name(),
+				generateGlobal(*g, isStaticLocal ? std::string(it->second) : casmName(g->name()),
 					!isStaticLocal && g->storageClass() != ast::StorageClass::Static);
 			}
 			generateStringLiterals(module);

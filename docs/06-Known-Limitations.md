@@ -48,13 +48,14 @@ can go.
 are not. `#pragma once` is what makes headers usable without them. See
 [08-Preprocessor.md](08-Preprocessor.md).
 
-### A C symbol cannot be named after a CeresASM reserved word
+### A CeresASM reserved word is written with a prefix in the assembly
 
-A C symbol keeps its own name in the generated assembly, which is what makes interoperability work
-in both directions (see [07-CASM-Interop.md](07-CASM-Interop.md)). The price is that a function,
-global or static local named `let`, `global`, `word`, `u32`, `align`, `assert`, `true`, `sp`, `r3`
-or any of the other reserved words is a Ceres-C error asking you to rename it. Most of that list is
-a C keyword anyway.
+A C symbol keeps its own name in the generated assembly, except when that name is one CeresASM
+reserves (`let`, `global`, `word`, `u32`, `align`, `assert`, `true`, `sp`, `r3`, `at`...): it is then
+written `__c_` and the name (`at` is `__c_at`), and `__asm__("label")` picks any other name. Hand-written
+assembly and the debugger see the prefixed name; C sees its own. See
+[07-CASM-Interop.md](07-CASM-Interop.md). CeresASM itself still cannot define a routine under such a name
+without the prefix.
 
 ### No standard library
 

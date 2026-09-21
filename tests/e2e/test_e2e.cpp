@@ -330,6 +330,28 @@ TEST(e2e, static_assertions_and_func_compile_away_and_name_the_function)
 		"", 82);
 }
 
+TEST(e2e, names_that_are_reserved_words_of_the_assembler_work_at_every_level)
+{
+	// at(1) + half + word + interrupt(2, 3) + r5() + global + s.at + s.half + assert(1)
+	//   = 2 + 20 + 3 + 6 + 2 + 4 + 1 + 2 + 1
+	runsTheSameAtEveryLevel("reserved_names",
+		"int at(int x) { return x + 1; }\n"
+		"int half = 20;\n"
+		"static int word = 3;\n"
+		"int interrupt(int a, int b) { return a * b; }\n"
+		"int r5(void) { return 2; }\n"
+		"struct S { int at; int half; };\n"
+		"int assert(int c) { return c; }\n"
+		"int main(void)\n"
+		"{\n"
+		"    static int global = 4;\n"
+		"    struct S s;\n"
+		"    s.at = 1; s.half = 2;\n"
+		"    return at(1) + half + word + interrupt(2, 3) + r5() + global + s.at + s.half + assert(1);\n"
+		"}\n",
+		"", 41);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

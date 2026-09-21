@@ -1544,16 +1544,48 @@ namespace ceresc::parser
 				type = Type::withRestrict(_arena, type);
 		}
 
+		support::PooledString asmLabel;
+		if (isAsmLabelStart() && !parseAsmLabel(asmLabel))
+			return nullptr;
+
+		Decl* decl = nullptr;
 		if (type->isFunction() && signature)
 		{
 			// The parameter NAMES the declaration keeps come from the suffix that made it a function -
 			// the type itself holds only their types (type.h).
-			return finishFunctionDecl(location, declarator.name, type, signature->params, signature->isVariadic,
+			decl = finishFunctionDecl(location, declarator.name, type, signature->params, signature->isVariadic,
 				specifiers, outIsFunctionDefinition);
 		}
-		if (outIsFunctionDefinition)
-			*outIsFunctionDefinition = false;
-		return finishVarDecl(location, declarator.name, type, specifiers, unsizedArray);
+		else
+		{
+			if (outIsFunctionDefinition)
+				*outIsFunctionDefinition = false;
+			decl = finishVarDecl(location, declarator.name, type, specifiers, unsizedArray);
+		}
+		if (decl && asmLabel)
+			decl->setAsmLabel(asmLabel);
+		return decl;
+	}
+
+	bool Parser::isAsmLabelStart() const noexcept
+	{
+		return _current.kind() == TokenKind::Identifier && (_current.lexeme() == "__asm__" || _current.lexeme() == "__asm") &&
+			_next.is(TokenKind::LParen);
+	}
+
+	bool Parser::parseAsmLabel(support::PooledString& out)
+	{
+		advance(); // '__asm__'
+		if (!expect(TokenKind::LParen, "'(' after '__asm__'"))
+			return false;
+		if (!check(TokenKind::LiteralString))
+		{
+			_diagnostics.error(DiagId::ExpectedAsmLabel, _current.location(), "expected a string literal: the name the assembler is to use");
+			return false;
+		}
+		out = _current.stringValue();
+		advance();
+		return expect(TokenKind::RParen, "')'");
 	}
 
 	bool Parser::isStaticAssertStart() const noexcept

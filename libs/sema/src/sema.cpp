@@ -1623,12 +1623,45 @@ namespace ceresc::sema
 		return false;
 	}
 
+	void Sema::checkAsmLabel(ast::Decl& node, bool atFileScope)
+	{
+		const std::string_view label = node.asmLabel().view();
+		if (!node.asmLabel())
+			return;
+
+		if (!atFileScope)
+		{
+			_diagnostics.error(DiagId::AsmLabelNotAtFileScope, node.location(),
+				"an asm label is only allowed on a declaration at file scope, not on '{}' here", node.name());
+			return;
+		}
+
+		// What CeresASM reads as a plain symbol: letters, digits and underscores, not starting with a digit.
+		bool valid = !label.empty() && !(label.front() >= '0' && label.front() <= '9');
+		for (char c : label)
+			valid = valid && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+		if (!valid)
+		{
+			_diagnostics.error(DiagId::InvalidAsmLabel, node.location(),
+				"'{}' cannot be the asm label of '{}': it has to be a plain identifier (letters, digits and '_')", label, node.name());
+			return;
+		}
+
+		auto [it, inserted] = _asmLabels.emplace(node.name(), label);
+		if (!inserted && it->second != label)
+		{
+			_diagnostics.error(DiagId::ConflictingAsmLabel, node.location(),
+				"'{}' is declared with the asm label '{}' here and '{}' before", node.name(), label, it->second);
+		}
+	}
+
 	void Sema::visit(ast::VarDecl& node)
 	{
 		if (node.type() && node.type()->isVoid())
 			_diagnostics.error(DiagId::VoidVariable, node.location(), "variable '{}' declared with type 'void'", node.name());
 
 		checkStorageClass(node);
+		checkAsmLabel(node, &currentScope() == _globalScope);
 
 		// Declared before its initializer is checked: in C, a declarator's own scope begins right
 		// after the declarator, before the initializer - so `int x = x;` refers to the new
@@ -1718,6 +1751,7 @@ namespace ceresc::sema
 	void Sema::visit(ast::FunctionDecl& node)
 	{
 		checkInterruptHandler(node);
+		checkAsmLabel(node, true);
 
 		Symbol* existing = _globalScope->lookupInThisScope(node.name());
 		bool kindConflict = existing && existing->kind != SymbolKind::Function;

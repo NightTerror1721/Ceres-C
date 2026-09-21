@@ -16,7 +16,8 @@ see the whole arrangement working.
 ## The rule that makes it work: names are names
 
 **A C symbol keeps its own name in the generated assembly.** `int triple(int)` is `triple`. No
-prefix, no decoration, nothing to look up.
+prefix, no decoration, nothing to look up - with one exception, below, for the few names the assembler
+reserves.
 
 So the two sides meet in the middle. Assembly publishes a symbol with `global`:
 
@@ -41,7 +42,7 @@ which Ceres-C follows rather than inventing one. Up to four integer arguments tr
 (floats in `f0`–`f3`, counted separately), the rest on the stack, and the result comes back in `r0`
 or `f0`.
 
-### The one thing you cannot name
+### Names the assembler reserves
 
 A handful of words are reserved by the assembler's own lexer and cannot be read as an identifier:
 `let`, `const`, `global`, `import`, `macro`, `endmacro`, `alias`, `struct`, `endstruct`, `align`,
@@ -49,12 +50,31 @@ A handful of words are reserved by the assembler's own lexer and cannot be read 
 `port`, `irq`, `byte`, `half`, `word`), `true`, `false`, and the register names (`r0`–`r15`,
 `f0`–`f15`, `sp`, `fp`, `at`, `lr`).
 
-A C function or global named one of them is a Ceres-C error, with a message saying so. It is a
-narrow price for names that mean the same thing on both sides — and most of that list is already a C
-keyword anyway.
+A C function or global with one of those names is fine in C, and **its symbol is written `__c_` and the name**:
+`int at(int)` is `__c_at`, `int half` is `__c_half`. Only those words are renamed; every other symbol keeps
+its own name. Assembly written by hand calls it by that name (`call __c_at`), and a routine written in assembly
+that C is to call as `half` is published as `global __c_half:`. The generated declarations file says
+`__c_half` too, so a program built against a prebuilt object or archive needs nothing more.
+
+The prefix is reserved, then: a C symbol named `__c_at` would meet the renamed `at`, and is an error
+(E4007). `__c_mine` is fine - only `__c_` followed by a reserved word clashes.
 
 Instruction mnemonics are **not** reserved: a function called `add` or `print` is fine, because a
 mnemonic is only a mnemonic in instruction position.
+
+The debugger shows the assembler's name, so it lists `__c_at` where the C source says `at`.
+
+### Choosing the name yourself: `__asm__("label")`
+
+```c
+extern int mine(int n) __asm__("hand_made");     /* C calls it mine; the assembler knows hand_made */
+int counter __asm__("the_counter") = 5;
+```
+
+An asm label after a declarator says what the symbol is called in the assembly, as in GCC. It wins over the
+automatic rename, and it applies to every declaration of the name in the file (they must agree: E3087). It goes
+on a declaration at file scope (E3085 anywhere else), and has to be a plain identifier (E3086) that is not itself
+one of the reserved words (E4004). `__asm` is accepted as another spelling.
 
 ## Calling C from assembly
 
