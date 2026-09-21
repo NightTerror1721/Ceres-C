@@ -225,6 +225,7 @@ namespace ceresc::support
 		DesignatorIndexNotConstant       = 3089,
 		DesignatorIndexOutOfRange        = 3090,
 		UnionMemberDesignator            = 3091,
+		InvalidCompoundLiteralType       = 3092,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 

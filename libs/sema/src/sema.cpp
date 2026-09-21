@@ -147,6 +147,8 @@ namespace ceresc::sema
 			return unary->op() == UnaryOp::Deref;
 		if (dynamic_cast<const ast::IndexExpr*>(expr))
 			return true;
+		if (dynamic_cast<const ast::CompoundLiteralExpr*>(expr))
+			return true;      // an unnamed object, with an address of its own
 		if (const auto* member = dynamic_cast<const ast::MemberExpr*>(expr))
 			// `E1->E2` is `(*E1).E2` - dereferencing any pointer value yields an lvalue regardless
 			// of whether E1 itself was one. `E1.E2` has no such dereference, so it's only an
@@ -487,6 +489,22 @@ namespace ceresc::sema
 			}
 		}
 		list.setElements(makeInitList(list.location(), slots)->elements());
+	}
+
+	void Sema::visit(ast::CompoundLiteralExpr& node)
+	{
+		const Type* type = node.literalType();
+		if (!type || type->isVoid() || type->isFunction())
+		{
+			_diagnostics.error(DiagId::InvalidCompoundLiteralType, node.location(), "a compound literal cannot have the type '{}'", typeName(type));
+			node.setType(errorRecoveryType());
+			_lastExprType = errorRecoveryType();
+			return;
+		}
+		normalizeInitList(type, *node.list());
+		checkInitList(type, *node.list());
+		node.setType(type);
+		_lastExprType = type;
 	}
 
 	void Sema::visit(ast::DesignatedInitExpr& node)

@@ -288,6 +288,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3089` | An array designator whose index is not an integer constant expression. |
 | `E3090` | An array designator whose index is outside the array. |
 | `E3091` | A designator for a member of a `union` other than the first. |
+| `E3092` | A compound literal of type `void` or of a function type. |
 
 ### `4xxx` — codegen
 

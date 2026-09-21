@@ -390,6 +390,39 @@ TEST(e2e, everything_a_designator_did_not_name_is_zero_even_over_old_stack_conte
 		"", 12);
 }
 
+TEST(e2e, compound_literals_work_in_expressions_arguments_loops_and_at_file_scope)
+{
+	// 7 + 10 + 9 + 13 + 2 + 15 + 140 + 8 + 12 = 216
+	runsTheSameAtEveryLevel("compound_literals",
+		"struct P { int x; int y; };\n"
+		"struct P *gp = &(struct P){ 3, 4 };\n"
+		"int *ga = (int[]){ 10, 20, 30 };\n"
+		"const char **names = (const char*[]){ \"ab\", \"cd\" };\n"
+		"static int sum(const int* v, int n) { int s = 0; for (int i = 0; i < n; i++) s += v[i]; return s; }\n"
+		"static struct P bump(struct P p) { p.x += 1; return p; }\n"
+		"int main(void)\n"
+		"{\n"
+		"    int total = 0;\n"
+		"    struct P p = (struct P){ .y = 5, .x = 2 };\n"
+		"    total += p.x + p.y;\n"
+		"    total += sum((int[]){ 1, 2, 3, 4 }, 4);\n"
+		"    total += (struct P){ 8, 9 }.y;\n"
+		"    struct P *q = &(struct P){ 6, 7 };\n"
+		"    total += q->x + q->y;\n"
+		"    total += bump((struct P){ 1, 1 }).x;\n"
+		"    for (int i = 0; i < 3; i++) {\n"
+		"        int *w = (int[]){ 0, 0, 0 };\n"
+		"        w[i] = 5;\n"
+		"        total += w[0] + w[1] + w[2];\n"
+		"    }\n"
+		"    total += (int){ 4 } + gp->x + gp->y + ga[2] + names[1][0];\n"
+		"    total += (int[]){ 7, 8, 9 }[1];\n"
+		"    total += sizeof((int[]){ 1, 2, 3 });\n"
+		"    return total;\n"
+		"}\n",
+		"", 216);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

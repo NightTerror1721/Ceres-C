@@ -89,6 +89,7 @@ namespace ceresc::ast
 		void visit(TypedefDecl& node) override;
 		void visit(InterruptVectorDecl& node) override;
 		void visit(DesignatedInitExpr& node) override;
+		void visit(CompoundLiteralExpr& node) override;
 		void visit(StaticAssertDecl& node) override;
 		void visit(TranslationUnit& node) override;
 

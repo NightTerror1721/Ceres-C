@@ -668,6 +668,15 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(CompoundLiteralExpr& node)
+	{
+		_output += "(compound-literal ";
+		appendTypeName(node.literalType());
+		_output += ' ';
+		printChild(node.list());
+		_output += ')';
+	}
+
 	void AstPrinter::visit(DesignatedInitExpr& node)
 	{
 		_output += "(designated";

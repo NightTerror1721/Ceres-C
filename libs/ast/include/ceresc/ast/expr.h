@@ -569,4 +569,26 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<DesignatedInitExpr>, "DesignatedInitExpr must be trivially destructible (Arena-allocated)");
+
+	// `(struct P){ 1, 2 }`, `(int[]){ 1, 2, 3 }`: an unnamed object of `literalType`, initialized from a brace list, that
+	// is an lvalue (its address can be taken). Inside a function it lives in the frame and is set up again each time
+	// the expression is evaluated; at file scope the parser makes it a static variable of a generated name instead,
+	// so this node only ever appears in function bodies.
+	class CompoundLiteralExpr final : public Expr
+	{
+	private:
+		const Type* _literalType;
+		InitListExpr* _list;
+
+	public:
+		CompoundLiteralExpr(support::SourceLocation location, const Type* literalType, InitListExpr* list) noexcept :
+			Expr(location), _literalType(literalType), _list(list)
+		{}
+
+	public:
+		const Type* literalType() const noexcept { return _literalType; }
+		InitListExpr* list() const noexcept { return _list; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<CompoundLiteralExpr>, "CompoundLiteralExpr must be trivially destructible (Arena-allocated)");
 }

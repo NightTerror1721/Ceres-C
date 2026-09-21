@@ -93,6 +93,19 @@ that does not exist is E3046, a designator that does not fit what it initializes
 constant E3089 or outside the array E3090. Only the first member of a `union` can be designated (E3091), as it
 is the only one a union initializer reaches at all.
 
+### Compound literals
+
+`(T){ ... }` is an unnamed object of type `T` set up from a brace list: `(struct P){ 1, 2 }`, `(struct P){ .y = 2 }`,
+`(int[]){ 1, 2, 3 }` (whose size the list gives), `(int){ 4 }`. It is an lvalue, so `&(struct P){ 1, 2 }` and
+`(struct P){ 1, 2 }.x = 5` work, and what follows it (`.m`, `[i]`, a call) applies to it. `(T)` followed by a
+brace is a literal; followed by anything else it is a cast, as before.
+
+Inside a function the object lives in the frame and is set up again each time the expression is evaluated, so a
+literal in a loop starts from its list on every turn; its storage lasts as long as the function's frame, not just its
+block. Outside a function it is a static variable (of a generated name, `__complitN`), so its values must be
+constants and its address is one too: `int* a = (int[]){ 1, 2, 3 };` works. Sema checks the list exactly as it
+checks the initializer of a variable of that type, designators included.
+
 ### `_Static_assert` and `__func__`
 
 `_Static_assert(condition, "message");` is checked while compiling and produces no code. The condition is an

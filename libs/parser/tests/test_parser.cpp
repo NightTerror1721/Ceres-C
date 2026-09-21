@@ -1431,3 +1431,41 @@ TEST(parser, the_length_of_an_array_with_designators_is_the_highest_position_rea
 	CHECK(parseFails("int a[] = { [n] = 1 };"));          // not a constant the parser can fold: no size to take
 	CHECK(parseFails("struct P p[] = { .x = 1 };"));       // a member designator does not count elements
 }
+
+// ---- compound literals -------------------------------------------------------------------------------------------
+
+TEST(parser, a_type_in_parentheses_followed_by_a_brace_is_a_compound_literal_not_a_cast)
+{
+	CHECK_EQ(printUnit("struct P { int x; int y; };\nint f(void) { struct P p = (struct P){ 1, 2 }; return 0; }"),
+		"(unit (struct P (fields (int x) (int y))) (func f int (params) (block (decl-stmt (var p struct P (compound-literal struct P (init-list 1 2)))) (return 0))))");
+	CHECK_EQ(printUnit("int f(void) { (int){ 5 }; }"), "(unit (func f int (params) (block (expr-stmt (compound-literal int (init-list 5))))))");
+	// The casts it must not be mistaken for
+	CHECK_EQ(printExpr("(int)x"), "(cast int x)");
+	CHECK_EQ(printExpr("(int)(x)"), "(cast int x)");
+	CHECK_EQ(printExpr("(int*)p"), "(cast int* p)");
+}
+
+TEST(parser, what_follows_a_compound_literal_applies_to_it)
+{
+	CHECK_EQ(printUnit("int f(void) { (struct P){ 1, 2 }.y; }"), "(unit (func f int (params) (block (expr-stmt (. (compound-literal struct P (init-list 1 2)) y)))))");
+	CHECK_EQ(printUnit("int f(void) { (int[]){ 7, 8 }[1]; }"), "(unit (func f int (params) (block (expr-stmt (index (compound-literal int[2] (init-list 7 8)) 1)))))");
+	CHECK_EQ(printUnit("int f(void) { &(struct P){ 1, 2 }; }"), "(unit (func f int (params) (block (expr-stmt (& (compound-literal struct P (init-list 1 2)))))))");
+	CHECK_EQ(printUnit("int f(void) { f((int[]){ 1, 2 }, 2); }"), "(unit (func f int (params) (block (expr-stmt (call f (compound-literal int[2] (init-list 1 2)) 2)))))");
+}
+
+TEST(parser, an_array_literal_without_a_size_takes_it_from_its_list)
+{
+	CHECK_EQ(printUnit("int f(void) { (int[]){ 1, 2, 3 }; }"), "(unit (func f int (params) (block (expr-stmt (compound-literal int[3] (init-list 1 2 3))))))");
+	CHECK_EQ(printUnit("int f(void) { (int[]){ [4] = 1 }; }"), "(unit (func f int (params) (block (expr-stmt (compound-literal int[5] (init-list (designated [4] 1)))))))");
+	CHECK(parseFails("int f(void) { (int[])x; }"));               // a cast cannot leave the size out
+	CHECK(parseFails("int f(void) { (int[]){ }; }"));             // and a list still needs an element
+}
+
+TEST(parser, a_compound_literal_outside_a_function_becomes_a_static_variable_before_its_declaration)
+{
+	CHECK_EQ(printUnit("int* a = (int[]){ 1, 2 };"), "(unit (var __complit0 int[2] (init-list 1 2)) (var a int* __complit0))");
+	CHECK_EQ(printUnit("int* a = (int[]){ 1 };\nint* b = (int[]){ 2 };"),
+		"(unit (var __complit0 int[1] (init-list 1)) (var a int* __complit0) (var __complit1 int[1] (init-list 2)) (var b int* __complit1))");
+	CHECK_EQ(printUnit("struct P { int x; int y; };\nstruct P* p = &(struct P){ 3, 4 };"),
+		"(unit (struct P (fields (int x) (int y))) (var __complit0 struct P (init-list 3 4)) (var p struct P* (& __complit0)))");
+}

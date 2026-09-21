@@ -54,6 +54,7 @@ namespace ceresc::ast
 		virtual void visit(TernaryExpr& node) = 0;
 		virtual void visit(InitListExpr& node) = 0;
 		virtual void visit(DesignatedInitExpr& node) = 0;
+		virtual void visit(CompoundLiteralExpr& node) = 0;
 
 		virtual void visit(EmptyStmt& node) = 0;
 		virtual void visit(ExprStmt& node) = 0;
@@ -119,6 +120,7 @@ namespace ceresc::ast
 	inline void GotoStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void LabelStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void DesignatedInitExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
+	inline void CompoundLiteralExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 
 	inline void VarDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void FunctionDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }

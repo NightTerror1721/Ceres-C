@@ -1878,3 +1878,55 @@ TEST(sema, an_unnamed_place_is_zero_and_the_positions_after_a_designator_follow_
 	CHECK(!checkSource("int a[3] = { [2] = 1, 2 };").ok);
 	CHECK(!checkSource("struct P { int x; int y; };\nstruct P p = { .y = 1, 2 };").ok);
 }
+
+// ---- compound literals -------------------------------------------------------------------------------------------
+
+TEST(sema, a_compound_literal_is_an_unnamed_object_that_can_go_wherever_an_object_can)
+{
+	const char* declarations =
+		"struct P { int x; int y; };\n"
+		"int sum(const int* v, int n);\n"
+		"struct P twice(struct P p);\n";
+	auto ok = [&](const char* body) { return checkSource(std::string(declarations) + "int f(void) { " + body + " }").ok; };
+	CHECK(ok("struct P p = (struct P){ 1, 2 }; return p.x;"));
+	CHECK(ok("return (struct P){ 1, 2 }.y;"));
+	CHECK(ok("struct P* q = &(struct P){ 1, 2 }; return q->x;"));
+	CHECK(ok("return sum((int[]){ 1, 2, 3 }, 3);"));
+	CHECK(ok("return twice((struct P){ 1, 2 }).x;"));
+	CHECK(ok("int* a = (int[]){ 1, 2, 3 }; return a[1];"));
+	CHECK(ok("return (int[]){ 1, 2, 3 }[2];"));
+	CHECK(ok("return (int){ 4 };"));
+	CHECK(ok("return (struct P){ .y = 2 }.y;"));                         // designators inside a literal
+	CHECK(ok("return (struct P[]){ { 1, 2 }, { 3, 4 } }[1].y;"));         // nested lists
+	CHECK(ok("(struct P){ 1, 2 }.x = 5; return 0;"));                     // an lvalue: it can be assigned to
+	CHECK(ok("return sizeof((int[]){ 1, 2, 3 });"));
+	CHECK(ok("const int* a = (const int[]){ 1, 2 }; return a[0];"));
+}
+
+TEST(sema, a_compound_literal_is_checked_like_the_initializer_it_is)
+{
+	const char* declarations = "struct P { int x; int y; };\n";
+	auto check = [&](const char* body) { return checkSource(std::string(declarations) + "int f(void) { " + body + " }"); };
+
+	CheckOutcome tooMany = check("return (struct P){ 1, 2, 3 }.x;");
+	CHECK(!tooMany.ok);
+	CHECK(containsMessage(tooMany, "3 value(s)"));
+	CHECK(!check("return (int[2]){ 1, 2, 3 }[0];").ok);
+	CHECK(!check("return (struct P){ 1, 2 }.z;").ok);                     // no such member
+	CHECK(!check("(const struct P){ 1, 2 }.x = 5; return 0;").ok);        // a const object
+	CHECK(!check("return (struct P){ .z = 1 }.x;").ok);
+	CHECK(!check("return (struct Q){ 1 }.x;").ok);                        // an incomplete type
+	CheckOutcome voidType = check("(void){ 0 }; return 0;");
+	CHECK(!voidType.ok);
+	CHECK(!check("return (int){ 1, 2 };").ok);                            // a scalar takes one value
+}
+
+TEST(sema, a_compound_literal_at_file_scope_is_a_static_variable_so_its_values_must_be_constants)
+{
+	CHECK(checkSource("struct P { int x; int y; };\nstruct P* p = &(struct P){ 3, 4 };\nint* a = (int[]){ 1, 2, 3 };").ok);
+	CHECK(checkSource("const char** names = (const char*[]){ \"ab\", \"cd\" };").ok);
+	CHECK(checkSource("enum { N = 4 };\nint* a = (int[]){ N, N * 2 };").ok);
+	CheckOutcome notConstant = checkSource("int n = 3;\nint* a = (int[]){ n };");
+	CHECK(!notConstant.ok);
+	CHECK(containsMessage(notConstant, "compile-time constant"));
+}

@@ -175,6 +175,12 @@ namespace ceresc::parser
 		Expr* parseSizeof(support::SourceLocation location);
 		Expr* parseAlignof(support::SourceLocation location);
 		Expr* parsePostfix();
+		// The postfix operators (`[i]`, `(args)`, `.m`, `->m`, `++`, `--`) applied to an expression that is already
+		// parsed: what follows a compound literal is the same as what follows a primary.
+		Expr* parsePostfixTail(Expr* expr);
+		// `(T){ ... }` - the caller has read `(T)` and the current token is the '{'. `unsized` says the type was an
+		// array written without a size, which the list then gives.
+		Expr* parseCompoundLiteral(support::SourceLocation location, const Type* type, bool unsized);
 		Expr* parsePrimary();
 
 		const Type* parseTypeSpec();
@@ -415,6 +421,11 @@ namespace ceresc::parser
 		// takes these and emits them ahead of itself, because that is what makes sema declare the
 		// enumerators and check the layout. A bare `enum E { ... };` already emits its own tag.
 		std::vector<Decl*> _definedTags;
+
+		// Compound literals written outside any function become static variables of generated names; they wait here
+		// until the declaration they appear in is finished, and go into the unit just before it.
+		std::vector<Decl*> _hoistedDecls;
+		u32 _hoistedCount = 0;
 		std::vector<Decl*> takeDefinedTags();
 
 		// `int a[] = { 1, 2, 3 };` and `char s[] = "hi";` - an array whose outermost size is left out and

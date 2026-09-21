@@ -798,6 +798,14 @@ namespace ceresc::ir
 			return emitBinOp(loc, IrBinOp::Add, objectAddr, offsetValue, true);
 		}
 
+		if (auto* literal = dynamic_cast<ast::CompoundLiteralExpr*>(expr))
+		{
+			const Type* type = literal->literalType();
+			IrValue addr = emitFrameAddr(loc, newStructTempSlot(type->sizeInBytes()));
+			lowerInitializerInto(loc, addr, 0, type, literal->list());
+			return addr;
+		}
+
 		// Every other Expr kind reaching here is not one of this subset's lvalue forms (see
 		// sema::Sema::isLValue(), sema.cpp) - but unlike isLValue(), sema's own visit(MemberExpr&)
 		// only requires a `.` base to have struct *type*, not to actually be an lvalue (sema.cpp),
@@ -2034,6 +2042,14 @@ namespace ceresc::ir
 	{
 		// Nothing to lower: it emits no code and no data, only a binding the linker resolves.
 		// Codegen writes it straight from the AST, the same way it writes a global's `let`.
+	}
+
+	void IrBuilder::visit(ast::CompoundLiteralExpr& node)
+	{
+		// An object of its own in the frame, set up from the list every time this is evaluated (so a literal in a
+		// loop starts from its list again, in the same slot). Its value is what the object is: an address for an
+		// array or a struct, the loaded value for a scalar - the same split lowerRValue makes for any lvalue.
+		_lastValue = lowerRValue(&node);
 	}
 
 	void IrBuilder::visit(ast::DesignatedInitExpr&)

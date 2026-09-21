@@ -357,8 +357,20 @@ namespace ceresc::parser
 		if (check(TokenKind::LParen) && (isDeclSpecifierStart(_next.kind()) || isTypeSpecStart(_next)))
 		{
 			advance(); // '('
+			// `(int[]){ 1, 2 }` is the one place a type name may leave an array's size out: the list gives it.
+			_allowUnsizedArray = true;
+			_unsizedArrayPending = false;
 			const Type* targetType = parseTypeName();
+			_allowUnsizedArray = false;
+			const bool unsized = _unsizedArrayPending;
+			_unsizedArrayPending = false;
 			expect(TokenKind::RParen, "')'");
+
+			// `(T)` and then a brace: not a cast of a block but a compound literal.
+			if (targetType && check(TokenKind::LBrace))
+				return parseCompoundLiteral(location, targetType, unsized);
+			if (unsized)
+				_diagnostics.error(DiagId::ArraySizeRequired, location, "array size is required here (a cast cannot leave it out)");
 
 			Expr* operand = parseCast(); // right-recursive: (int)(float)x is a chain of casts
 			if (!operand)
@@ -418,12 +430,50 @@ namespace ceresc::parser
 		return argumentType ? _arena.create<ast::AlignofExpr>(location, argumentType) : nullptr;
 	}
 
-	Expr* Parser::parsePostfix()
+	Expr* Parser::parseCompoundLiteral(SourceLocation location, const Type* type, bool unsized)
 	{
-		Expr* expr = parsePrimary();
-		if (!expr)
+		Expr* parsed = parseInitializer(); // the current token is '{', so this is a brace list
+		auto* list = dynamic_cast<ast::InitListExpr*>(parsed);
+		if (!list)
 			return nullptr;
 
+		if (unsized && type->isArray())
+		{
+			i64 length = inferArrayLength(type->arrayElementType(), list);
+			if (length <= 0)
+			{
+				_diagnostics.error(DiagId::ArraySizeRequired, location, "cannot infer the size of this array from its initializer: give it a size");
+				return nullptr;
+			}
+			type = Type::makeArray(_arena, type->arrayElementType(), static_cast<u32>(length), type->isConst(), type->isVolatile());
+		}
+
+		if (_currentFunctionName.empty())
+		{
+			// Outside a function there is no frame to hold it, and C gives such a literal static storage anyway: a
+			// variable of a generated name, put in the unit before the declaration that uses it, and the
+			// expression is that variable.
+			std::string text = std::format("__complit{}", _hoistedCount++);
+			char* memory = static_cast<char*>(_arena.allocate(text.size() + 1, 1));
+			std::memcpy(memory, text.c_str(), text.size() + 1);
+			std::string_view name(memory, text.size());
+			_hoistedDecls.push_back(_arena.create<ast::VarDecl>(location, name, type, list, ast::StorageClass::Static));
+			return parsePostfixTail(_arena.create<ast::NameExpr>(location, name));
+		}
+
+		return parsePostfixTail(_arena.create<ast::CompoundLiteralExpr>(location, type, list));
+	}
+
+	Expr* Parser::parsePostfix()
+	{
+		Expr* primary = parsePrimary();
+		if (!primary)
+			return nullptr;
+		return parsePostfixTail(primary);
+	}
+
+	Expr* Parser::parsePostfixTail(Expr* expr)
+	{
 		for (;;)
 		{
 			SourceLocation location = _current.location();
@@ -1424,6 +1474,9 @@ namespace ceresc::parser
 		while (!isAtEnd())
 		{
 			std::vector<Decl*> parsed = parseExternalDecl();
+			// The static variables that compound literals in this declaration stand for come first
+			decls.insert(decls.end(), _hoistedDecls.begin(), _hoistedDecls.end());
+			_hoistedDecls.clear();
 			if (parsed.empty())
 			{
 				synchronizeDeclaration();
