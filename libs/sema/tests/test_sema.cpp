@@ -714,6 +714,23 @@ TEST(sema, a_function_pointer_only_converts_to_one_of_the_same_signature)
 	CHECK(checkSource("int main() { int (*p)(int) = 0; return 0; }").ok);
 }
 
+TEST(sema, a_null_pointer_constant_converts_to_a_function_pointer_too)
+{
+	// NULL is ((void*)0): a void*, which the types alone would refuse for a function pointer.
+	CHECK(checkSource("int main() { void (*h)(int) = ((void*)0); return 0; }").ok);
+	CHECK(checkSource("void (*g)(int); int main() { g = (void*)0; return 0; }").ok);
+	CHECK(checkSource("void f(void (*cb)(int)); int main() { f((void*)0); return 0; }").ok);
+	CHECK(checkSource("typedef void (*Handler)(int); Handler get(void) { return (void*)0; } int main() { return 0; }").ok);
+	CHECK(checkSource("static void (*table[2])(int) = { 0, ((void*)0) }; int main() { return 0; }").ok);
+	CHECK(checkSource("void a(int); int main(int c) { void (*h)(int) = c ? a : (void*)0; return 0; }").ok);
+	CHECK(checkSource("void a(int); int main(int c) { void (*h)(int) = c ? (void*)0 : a; return 0; }").ok);
+
+	// Only the constant: a void* variable, or a non-zero address, still does not become a function.
+	CHECK(!checkSource("int main() { void* p = 0; void (*h)(int) = p; return 0; }").ok);
+	CHECK(!checkSource("int main() { void (*h)(int) = (void*)1; return 0; }").ok);
+	CHECK(!checkSource("int main() { int* p = 0; void (*h)(int) = (int*)0; return 0; }").ok);
+}
+
 TEST(sema, a_call_through_a_pointer_is_checked_against_the_signature_it_carries)
 {
 	CHECK(checkSource("int main() { int (*p)(int) = 0; return p(1); }").ok);

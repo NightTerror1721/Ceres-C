@@ -110,6 +110,11 @@ parameter does not, so `static int* p = &local;` is still refused (`E3017`).
 A cast leaves a constant a constant: `(void*)0` - which is what `NULL` expands to, so `{ "a", NULL, "c" }`
 is a valid table - and `(char*)table` or `(float)3`.
 
+A **null pointer constant** - `0`, or `(void*)0` / `NULL` - converts to any pointer type, function pointers
+included: `handler = NULL;`, `static void (*table[2])(void) = { f, NULL };` and `c ? handler : NULL` all work. A
+`void*` that is not that constant, or an address other than zero, still does not become a function pointer,
+since calling through a mismatched signature puts the wrong arguments in the wrong registers.
+
 What is still refused is an address **with an offset**: `&a[i]` is an address constant in C, but it is
 the address of `a` plus a displacement, and there is no way to spell that displacement into the
 initializer. Write the base pointer and add the offset at run time instead:

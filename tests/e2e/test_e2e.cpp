@@ -121,6 +121,34 @@ TEST(e2e, return_constant_assembles_and_runs_without_faulting)
 	runsTheSameAtEveryLevel("return_constant", "int main() { return 42; }", "", 42);
 }
 
+TEST(e2e, null_is_a_valid_function_pointer_to_assign_compare_and_put_in_a_table)
+{
+	runsTheSameAtEveryLevel("null_function_pointer",
+		"static int hits;"
+		"static void bump(void) { hits = hits + 1; }"
+		"static void (*table[3])(void) = { bump, ((void*)0), bump };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    void (*h)(void) = ((void*)0);"
+		"    int first = h == 0;"
+		"    h = bump;"
+		"    h();"
+		"    int i;"
+		"    for (i = 0; i < 3; i++) {"
+		"        void (*f)(void) = table[i];"
+		"        if (f != 0) f();"
+		"    }"
+		"    *term = 48 + first;"
+		"    *term = 48 + hits;"
+		"    h = i ? h : ((void*)0);"
+		"    *term = 48 + (h == bump);"
+		"    h = 0 ? h : ((void*)0);"
+		"    *term = 48 + (h == 0);"
+		"    return 0;"
+		"}",
+		"1311");
+}
+
 TEST(e2e, the_value_main_returns_is_the_exit_status_of_the_run)
 {
 	// Through every optimization level, and past the bits a byte holds: only the low eight survive,

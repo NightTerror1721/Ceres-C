@@ -156,6 +156,30 @@ namespace ceresc::sema
 		return false;
 	}
 
+	namespace
+	{
+		// C's null pointer constant: the literal 0, or 0 cast to `void*` (NULL is `((void*)0)`).
+		bool isNullPointerConstant(const Expr* expr)
+		{
+			if (const auto* literal = dynamic_cast<const ast::IntLiteralExpr*>(expr))
+				return literal->value() == 0;
+			if (const auto* cast = dynamic_cast<const ast::CastExpr*>(expr))
+			{
+				const Type* to = cast->targetType();
+				const Type* pointee = to && to->isPointer() ? to->arrayElementType() : nullptr;
+				return pointee && pointee->isVoid() && isNullPointerConstant(cast->operand());
+			}
+			return false;
+		}
+	}
+
+	bool Sema::isAssignable(const Type* target, const Type* source, const Expr* sourceExpr) noexcept
+	{
+		if (target && target->isPointer() && isNullPointerConstant(sourceExpr))
+			return true;
+		return isAssignable(target, source);
+	}
+
 	bool Sema::isAssignable(const Type* target, const Type* source) noexcept
 	{
 		if (!target || !source)
@@ -256,7 +280,7 @@ namespace ceresc::sema
 			return;
 		}
 
-		if (!isAssignable(type, initType))
+		if (!isAssignable(type, initType, init))
 		{
 			_diagnostics.error(DiagId::IncompatibleInitializer, init->location(), "initializing '{}' with an expression of incompatible type '{}'",
 				typeName(type), typeName(initType));
@@ -697,7 +721,7 @@ namespace ceresc::sema
 		for (usize i = 0; i < checkCount; ++i)
 		{
 			const Type* argType = decayArray(checkExpr(args[i]));
-			if (!isAssignable(params[i].type, argType))
+			if (!isAssignable(params[i].type, argType, args[i]))
 			{
 				_diagnostics.error(DiagId::IncompatibleArgument, args[i]->location(), "passing '{}' to parameter of incompatible type '{}'",
 					typeName(argType), typeName(params[i].type));
@@ -980,7 +1004,7 @@ namespace ceresc::sema
 			_diagnostics.error(DiagId::AssignToConst, node.location(), "cannot assign to '{}': it is const", typeName(targetType));
 		else if (targetType && targetType->isAggregate() && node.op() != ast::AssignOp::Assign)
 			_diagnostics.error(DiagId::CompoundAssignToStructType, node.location(), "compound assignment is not valid for struct type '{}'", typeName(targetType));
-		else if (!isAssignable(targetType, valueType))
+		else if (!isAssignable(targetType, valueType, node.value()))
 			_diagnostics.error(DiagId::IncompatibleAssignment, node.location(), "assigning to '{}' from incompatible type '{}'", typeName(targetType), typeName(valueType));
 
 		const Type* resultType = targetType ? targetType : errorRecoveryType();
@@ -1184,16 +1208,6 @@ namespace ceresc::sema
 		_lastExprType = resultType;
 	}
 
-	namespace
-	{
-		// The literal 0: the only integer a ternary may pair with a pointer (C's null pointer constant).
-		bool isNullPointerConstant(const Expr* expr)
-		{
-			const auto* literal = dynamic_cast<const ast::IntLiteralExpr*>(expr);
-			return literal && literal->value() == 0;
-		}
-	}
-
 	void Sema::visit(ast::TernaryExpr& node)
 	{
 		const Type* condType = decayArray(checkExpr(node.cond()));
@@ -1208,6 +1222,10 @@ namespace ceresc::sema
 			resultType = thenType;
 		else if (isArithmeticType(thenType) && isArithmeticType(elseType))
 			resultType = commonArithmeticType(thenType, elseType);
+		else if (thenType && elseType && thenType->isPointer() && elseType->isPointer() && isNullPointerConstant(node.elseExpr()))
+			resultType = thenType; // `c ? handler : NULL`: a null pointer takes the type of the other arm
+		else if (thenType && elseType && thenType->isPointer() && elseType->isPointer() && isNullPointerConstant(node.thenExpr()))
+			resultType = elseType;
 		else if (thenType && elseType && thenType->isPointer() && elseType->isPointer() &&
 			(isAssignable(thenType, elseType) || isAssignable(elseType, thenType)))
 		{
@@ -1324,7 +1342,7 @@ namespace ceresc::sema
 			const Type* valueType = decayArray(checkExpr(node.value()));
 			if (returnType->isVoid())
 				_diagnostics.error(DiagId::ReturnValueFromVoid, node.location(), "void function should not return a value");
-			else if (!isAssignable(returnType, valueType))
+			else if (!isAssignable(returnType, valueType, node.value()))
 				_diagnostics.error(DiagId::IncompatibleReturnType, node.location(), "returning '{}' from a function with incompatible result type '{}'", typeName(valueType), typeName(returnType));
 		}
 		else if (!returnType->isVoid())

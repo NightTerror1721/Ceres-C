@@ -239,6 +239,10 @@ namespace ceresc::sema
 		// scope - see sema.cpp.
 		bool isLValue(const ast::Expr* expr);
 		static bool isAssignable(const ast::Type* target, const ast::Type* source) noexcept;
+		// The same for a value that is an expression, which can be more than its type says: a null
+		// pointer constant (0, or 0 cast to `void*`, which is what NULL expands to) converts to any
+		// pointer - function pointers included, which `void*` alone does not.
+		static bool isAssignable(const ast::Type* target, const ast::Type* source, const ast::Expr* sourceExpr) noexcept;
 		// Array-to-pointer decay (real C's rule, see §8/§14 of the architecture plan): wherever an
 		// array's VALUE is used - a function argument, an initializer, the right side of an
 		// assignment, an operand of pointer arithmetic, a return value - it is really the address of
