@@ -1946,3 +1946,10 @@ TEST(sema, a_noreturn_function_that_contains_a_return_is_warned_about)
 	CHECK(checkSource("void bail(int code) __attribute__((noreturn));\nint main() { bail(1); return 0; }").ok);
 	CHECK(!containsMessage(checkSource("void f(void) { return; }"), "declared 'noreturn'"));
 }
+
+TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
+{
+	CHECK(checkSource("int f(void) { __asm__(\"nop\"); return 1; }").ok);
+	CHECK(checkSource("void f(int n) { while (n) { __asm__ volatile (\"nop\"); n--; } }").ok);
+	CHECK(checkSource("void f(int n) { if (n) __asm__(\"nop\"); else __asm__(\"nop\"); }").ok);
+}

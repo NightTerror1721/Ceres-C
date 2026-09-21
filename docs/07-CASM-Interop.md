@@ -120,6 +120,34 @@ An `import` in a unit being assembled on its own contributes **no bytes** — on
 That is why importing declarations of symbols the same unit defines is not a redefinition, and why
 the declarations file is never itself assembled into an object.
 
+## Assembly inside a C function
+
+```c
+void enable_and_wait(void)
+{
+    __asm__("sti\n\thalt");
+}
+```
+
+`__asm__("text");` (also `__asm__ volatile (...)`, `__volatile__`, `__asm`) is a statement that puts the text into the
+generated function as it is, one line at a time: a line ending in `:` is a label and stands at the left margin, anything
+else is an instruction, and blanks at either end do not matter. Literals written next to each other are one text. Use
+`\n` between lines and a `\t` in front of an instruction if the generated file is to read well.
+
+To the code generator it is **a call**. Everything it does for a call it does here: a value that lives in a register a
+call destroys (`r0`–`r7`, `r12`, `f0`–`f7`, `at`, the flags) is kept somewhere the text cannot reach it - in a register a
+call preserves, or in the frame - and nothing is assumed about memory across it. The other side of the same rule is
+yours: the registers a call preserves (`r8` and up, `sp`, `fp`) have to be as they were when the text ends, and so has the
+stack. A function that contains one is never expanded into its callers, so a label in its text is defined once.
+
+Labels that begin with a dot are local to the function, as everywhere in CASM, so two `__asm__` statements in one
+function must not repeat one. The text is not looked at by the compiler: a mistake in it is the assembler's error, in the
+generated `.casm`.
+
+Not supported: operands and clobber lists (`__asm__("..." : "=r"(x) : "r"(y))`), which would need the compiler to give
+the text registers of its choosing (E2044), and `__asm__` outside a function (E2045). `__asm__("label")` after a
+declaration is another thing - [above](#choosing-the-name-yourself-__asm__label).
+
 ## Sharing variables
 
 An `extern` declaration in C and a `global let` in assembly are the same statement about the same

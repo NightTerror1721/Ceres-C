@@ -1595,3 +1595,29 @@ TEST(parser, a_damaged_attribute_is_an_error)
 	CHECK_EQ(parseAttributes("int f(int x __attribute__((noreturn)));").warnings, usize{ 1 });
 	CHECK_EQ(parseAttributes("struct S { int a __attribute__((noreturn)); };").warnings, usize{ 1 });
 }
+
+// ---- __asm__ as a statement --------------------------------------------------------------------------------------
+
+TEST(parser, an_asm_statement_holds_the_text_and_may_say_volatile)
+{
+	CHECK_EQ(printUnit("int f(void) { __asm__(\"nop\"); return 0; }"), "(unit (func f int (params) (block (asm \"nop\") (return 0))))");
+	CHECK_EQ(printUnit("int f(void) { __asm__ volatile (\"nop\"); }"), "(unit (func f int (params) (block (asm volatile \"nop\"))))");
+	CHECK_EQ(printUnit("int f(void) { __asm__ __volatile__ (\"nop\"); }"), "(unit (func f int (params) (block (asm volatile \"nop\"))))");
+	CHECK_EQ(printUnit("int f(void) { __asm(\"nop\"); }"), "(unit (func f int (params) (block (asm \"nop\"))))");
+	// The escapes are read: the text is what the assembler will see
+	CHECK_EQ(printUnit("int f(void) { __asm__(\"sti\\n\\thalt\"); }"), "(unit (func f int (params) (block (asm \"sti\\n\\thalt\"))))");
+	// Adjacent literals are one text
+	CHECK_EQ(printUnit("int f(void) { __asm__(\"sti\\n\" \"halt\"); }"), "(unit (func f int (params) (block (asm \"sti\\nhalt\"))))");
+}
+
+TEST(parser, an_asm_statement_needs_a_string_and_takes_no_operands)
+{
+	CHECK(parseFails("int f(void) { __asm__(); }"));
+	CHECK(parseFails("int f(void) { __asm__(nop); }"));
+	CHECK(parseFails("int f(void) { __asm__(\"nop\") }"));
+	CHECK(parseFails("int f(void) { __asm__(\"nop\" : : ); }"));                  // operands and clobbers: not supported
+	CHECK(parseFails("int f(int x) { __asm__(\"nop\" : \"=r\"(x)); }"));
+	CHECK(parseFails("__asm__(\"nop\");"));                                       // outside a function
+	CHECK(!parseFails("int f(void) { __asm__(\"nop\"); }"));
+	CHECK(!parseFails("int __asm__ = 1;"));                                        // still a name where it is not a statement
+}

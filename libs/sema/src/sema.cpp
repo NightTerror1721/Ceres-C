@@ -491,6 +491,11 @@ namespace ceresc::sema
 		list.setElements(makeInitList(list.location(), slots)->elements());
 	}
 
+	void Sema::visit(ast::AsmStmt&)
+	{
+		// The text is the assembler's to judge; nothing here can say more about it than that it is a string.
+	}
+
 	void Sema::visit(ast::CompoundLiteralExpr& node)
 	{
 		const Type* type = node.literalType();

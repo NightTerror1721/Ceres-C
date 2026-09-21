@@ -977,6 +977,29 @@ namespace ceresc::codegen
 			case IrOpcode::Call:
 			{
 				const auto& p = instr.as<IrCallPayload>();
+				if (!p.inlineAsm.empty())
+				{
+					// The author's own text, a line at a time: a line ending in ':' is a label and stands at the left
+					// margin, anything else is an instruction. Leading and trailing blanks do not matter.
+					std::string_view text = p.inlineAsm;
+					while (!text.empty())
+					{
+						const usize end = text.find('\n');
+						std::string_view line = text.substr(0, end);
+						text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+						while (!line.empty() && (line.front() == ' ' || line.front() == '\t' || line.front() == '\r'))
+							line.remove_prefix(1);
+						while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r'))
+							line.remove_suffix(1);
+						if (line.empty())
+							continue;
+						if (line.back() == ':')
+							_emitter.raw(line);
+						else
+							_emitter.instr(line, comment);
+					}
+					break;
+				}
 				if (p.argCount > index)
 				{
 					_diagnostics.error(DiagId::MalformedIrCall, loc, "malformed IR: call has more arguments than preceding parameter instructions");

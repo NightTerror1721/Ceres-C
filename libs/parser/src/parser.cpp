@@ -1139,6 +1139,8 @@ namespace ceresc::parser
 			default:
 				if (check(TokenKind::Identifier) && _next.is(TokenKind::Colon))
 					return parseLabeledStatement();
+				if (isAsmStatementStart())
+					return parseAsmStatement();
 				if (isAttributeStart())
 				{
 					// `__attribute__((fallthrough));` is a statement of its own; in front of anything else the
@@ -1525,6 +1527,12 @@ namespace ceresc::parser
 			return decl ? std::vector<Decl*>{ decl } : std::vector<Decl*>{};
 		}
 
+		if (isAsmStatementStart())
+		{
+			_diagnostics.error(DiagId::AsmOutsideFunction, _current.location(), "'__asm__' text has to be inside a function: it is a statement");
+			return {};
+		}
+
 		// Storage classes and `const` come first and belong to the DECLARATION, so they are read
 		// here rather than inside parseTypeName() - which would have no one to hand a storage class
 		// to, and rejects one for that reason. The `const` half is put back on the type afterwards.
@@ -1827,6 +1835,51 @@ namespace ceresc::parser
 	namespace
 	{
 		bool foldArraySizeExpr(const Expr* expr, i64& out);   // defined below, with the array declarators
+	}
+
+	bool Parser::isAsmStatementStart() const noexcept
+	{
+		if (_current.kind() != TokenKind::Identifier || (_current.lexeme() != "__asm__" && _current.lexeme() != "__asm"))
+			return false;
+		return _next.is(TokenKind::LParen) || _next.is(TokenKind::KwVolatile) ||
+			(_next.is(TokenKind::Identifier) && _next.lexeme() == "__volatile__");
+	}
+
+	Stmt* Parser::parseAsmStatement()
+	{
+		SourceLocation location = _current.location();
+		advance(); // '__asm__'
+		bool isVolatile = false;
+		if (check(TokenKind::KwVolatile) || (check(TokenKind::Identifier) && _current.lexeme() == "__volatile__"))
+		{
+			isVolatile = true;
+			advance();
+		}
+		if (!expect(TokenKind::LParen, "'(' after '__asm__'"))
+			return nullptr;
+		if (!check(TokenKind::LiteralString))
+		{
+			_diagnostics.error(DiagId::ExpectedAsmLabel, _current.location(), "expected a string literal: the assembly text");
+			return nullptr;
+		}
+		// Adjacent literals are one text - `"sti\n\t" "halt"` - so a long block can be written a line to a line
+		std::string text(_current.stringValue().view());
+		advance();
+		while (check(TokenKind::LiteralString))
+		{
+			text += _current.stringValue().view();
+			advance();
+		}
+		if (check(TokenKind::Colon))
+		{
+			_diagnostics.error(DiagId::ExtendedAsmNotSupported, _current.location(),
+				"'__asm__' with operands or clobbers is not supported: write the whole text of the instructions, and keep registers the "
+				"caller expects (r8 upwards, sp, fp) as they were");
+			return nullptr;
+		}
+		if (!expect(TokenKind::RParen, "')'") || !expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+		return _arena.create<ast::AsmStmt>(location, _lexer.stringPool().intern(text), isVolatile);
 	}
 
 	bool Parser::isAttributeStart() const noexcept

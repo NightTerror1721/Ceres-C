@@ -80,6 +80,27 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<ExprStmt>, "ExprStmt must be trivially destructible (Arena-allocated)");
 
+	// `__asm__("sti\n\thalt");` - text for the assembler, put into the function as it is. To the code generator it is a call:
+	// values a call would clobber are kept out of the registers it may change, and nothing is assumed about memory
+	// across it. `volatile` is accepted and changes nothing, because nothing here moves or drops an asm statement.
+	class AsmStmt final : public Stmt
+	{
+	private:
+		support::PooledString _text;
+		bool _isVolatile;
+
+	public:
+		AsmStmt(support::SourceLocation location, support::PooledString text, bool isVolatile) noexcept :
+			Stmt(location), _text(text), _isVolatile(isVolatile)
+		{}
+
+	public:
+		support::PooledString text() const noexcept { return _text; }
+		bool isVolatile() const noexcept { return _isVolatile; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<AsmStmt>, "AsmStmt must be trivially destructible (Arena-allocated)");
+
 	class DeclStmt final : public Stmt
 	{
 	private:

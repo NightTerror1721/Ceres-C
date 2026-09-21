@@ -1633,3 +1633,32 @@ TEST(codegen, a_name_that_would_meet_the_prefix_is_refused)
 	// A name that only starts like the prefix is fine
 	CHECK(generateExpectingDiagnostics("int __c_mine(void) { return 1; }\nint main(void) { return __c_mine(); }").errors.empty());
 }
+
+// ---- __asm__ ------------------------------------------------------------------------------------------------------
+
+TEST(codegen, inline_assembly_goes_into_the_function_as_written_a_line_at_a_time)
+{
+	std::string text = atO2(
+		"void f(void)\n"
+		"{\n"
+		"    __asm__(\"li r0, 7\\n\\t  la r12, 0xFF000004  \\n.again:\\n\\tstrb [r12 + 0], r0\\n\\n  jnz .again\");\n"
+		"}\n");
+	CHECK(contains(text, "    li r0, 7"));                 // an instruction is indented and trimmed
+	CHECK(contains(text, "    la r12, 0xFF000004"));
+	CHECK(contains(text, "\n.again:\n"));                  // a label stands at the left margin
+	CHECK(contains(text, "    strb [r12 + 0], r0"));
+	CHECK(contains(text, "    jnz .again"));
+	CHECK(!contains(text, "call"));                        // nothing is called: the text is the asm's own
+}
+
+TEST(codegen, a_function_with_inline_assembly_is_never_spliced_into_its_callers)
+{
+	// Small enough to be inlined if it were only what it looks like; its label would be defined twice if it were
+	std::string text = atO2(
+		"static int one(void) { __asm__(\".spot:\\n\\tnop\"); return 1; }\n"
+		"int main(void) { return one() + one(); }\n");
+	CHECK(contains(text, "call one"));
+	size_t first = text.find(".spot:");
+	CHECK(first != std::string::npos);
+	CHECK(text.find(".spot:", first + 1) == std::string::npos);   // written once, in the function itself
+}

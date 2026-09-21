@@ -113,6 +113,12 @@ What is done with them:
 An attribute that would have an effect where none can (`noreturn` on a field or a parameter) is reported as ignored
 rather than lost. A damaged one (`__attribute__(x)`, an unclosed list, a name that is not a name) is E2041.
 
+### Inline assembly
+
+`__asm__("text");` and `__asm__ volatile ("text");` are statements: the text goes into the function as written and is
+treated as a call for register allocation - see [07-CASM-Interop.md](07-CASM-Interop.md#assembly-inside-a-c-function).
+No operands or clobbers (E2044), and not outside a function (E2045).
+
 ### Compound literals
 
 `(T){ ... }` is an unnamed object of type `T` set up from a brace list: `(struct P){ 1, 2 }`, `(struct P){ .y = 2 }`,

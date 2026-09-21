@@ -133,6 +133,8 @@ namespace ceresc::support
 		ExpectedAttributeName          = 2041,
 		InvalidAttributeArgument       = 2042,
 		PackedNotSupported             = 2043,
+		ExtendedAsmNotSupported        = 2044,
+		AsmOutsideFunction             = 2045,
 
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
 		AttributeIgnored = kDiagnosticWarningBit | 2002,

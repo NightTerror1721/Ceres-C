@@ -57,6 +57,7 @@ namespace ceresc::ast
 		virtual void visit(CompoundLiteralExpr& node) = 0;
 
 		virtual void visit(EmptyStmt& node) = 0;
+		virtual void visit(AsmStmt& node) = 0;
 		virtual void visit(ExprStmt& node) = 0;
 		virtual void visit(DeclStmt& node) = 0;
 		virtual void visit(CompoundStmt& node) = 0;
@@ -119,6 +120,7 @@ namespace ceresc::ast
 	inline void DefaultStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void GotoStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void LabelStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
+	inline void AsmStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void DesignatedInitExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void CompoundLiteralExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 

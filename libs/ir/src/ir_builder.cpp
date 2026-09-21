@@ -2044,6 +2044,14 @@ namespace ceresc::ir
 		// Codegen writes it straight from the AST, the same way it writes a global's `let`.
 	}
 
+	void IrBuilder::visit(ast::AsmStmt& node)
+	{
+		IrCallPayload payload;
+		payload.callee = "<asm>";
+		payload.inlineAsm = node.text().view();
+		emitVoid(node.location(), payload);
+	}
+
 	void IrBuilder::visit(ast::CompoundLiteralExpr& node)
 	{
 		// An object of its own in the frame, set up from the list every time this is evaluated (so a literal in a

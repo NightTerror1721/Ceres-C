@@ -246,6 +246,10 @@ namespace ceresc::ir
 		std::string_view callee;
 		IrValue calleeValue;
 		u32 argCount = 0; // number of Params queued since the previous Call - see §9
+		// Inline assembly is a Call that has no callee: the text goes into the function as it is, and everything that
+		// treats a Call as clobbering the caller-saved registers and reaching memory treats it the same way. `callee`
+		// is "<asm>" then, a name no function has, so nothing looks it up or inlines it.
+		std::string_view inlineAsm;
 
 		bool isIndirect() const noexcept { return callee.empty(); }
 	};

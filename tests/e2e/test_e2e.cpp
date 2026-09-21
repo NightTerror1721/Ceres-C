@@ -448,6 +448,39 @@ TEST(e2e, attributes_are_read_wherever_they_stand_and_change_nothing_they_should
 		"", 37);
 }
 
+TEST(e2e, inline_assembly_writes_to_a_device_and_runs_its_own_loop_with_local_labels)
+{
+	runsTheSameAtEveryLevel("inline_asm_device",
+		"static void xs(void)\n"
+		"{\n"
+		"    __asm__(\"li r1, 3\\n\\tla r12, 0xFF000004\\n\\tli r0, 120\\n.again:\\n\\tstrb [r12 + 0], r0\\n\\tsub r1, r1, 1\\n\\tcmp r1, 0\\n\\tjnz .again\");\n"
+		"}\n"
+		"int main(void)\n"
+		"{\n"
+		"    xs();\n"
+		"    __asm__ volatile (\"la r12, 0xFF000004\\n\\tli r0, 65\\n\\tstrb [r12 + 0], r0\");\n"
+		"    xs();\n"
+		"    return 0;\n"
+		"}\n",
+		"xxxAxxx");
+}
+
+TEST(e2e, a_value_in_a_register_survives_an_inline_assembly_that_destroys_every_caller_saved_register)
+{
+	// a + b + c = 6 + 7 + 15
+	runsTheSameAtEveryLevel("inline_asm_clobbers",
+		"static int f(int n)\n"
+		"{\n"
+		"    int a = n + 1;\n"
+		"    int b = n + 2;\n"
+		"    int c = n * 3;\n"
+		"    __asm__(\"li r0, 0\\n\\tli r1, 0\\n\\tli r2, 0\\n\\tli r3, 0\\n\\tli r4, 0\\n\\tli r5, 0\\n\\tli r6, 0\\n\\tli r7, 0\\n\\tli r12, 0\");\n"
+		"    return a + b + c;\n"
+		"}\n"
+		"int main(void) { return f(5); }\n",
+		"", 28);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

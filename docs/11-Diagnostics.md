@@ -197,6 +197,8 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2041` | An `__attribute__` that is not well formed: missing parentheses, or no attribute name. |
 | `E2042` | The argument of `aligned` is not a power of two from 1 to 65536 (or not a constant). |
 | `E2043` | `__attribute__((packed))`: not supported, the machine faults on unaligned accesses. |
+| `E2044` | `__asm__` with operands or clobbers (a `:` after the text). |
+| `E2045` | `__asm__` text outside a function. |
 
 ### `3xxx` — sema
 

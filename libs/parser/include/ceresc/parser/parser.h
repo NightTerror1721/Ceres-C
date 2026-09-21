@@ -400,6 +400,11 @@ namespace ceresc::parser
 		// type), and there the ones that would have one are reported as ignored.
 		bool isAttributeStart() const noexcept;
 		void parseAttributes(AttributeList* sink);
+
+		// `__asm__("text");` and `__asm__ volatile ("text");` as a statement. Recognized by the name followed by '(' or
+		// by `volatile` - at a statement's start a name followed by '(' would otherwise be a call.
+		bool isAsmStatementStart() const noexcept;
+		Stmt* parseAsmStatement();
 		// The function whose body is being parsed, for `__func__`; empty outside one.
 		std::string_view _currentFunctionName;
 

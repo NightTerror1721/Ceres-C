@@ -106,6 +106,7 @@ namespace ceresc::sema
 		void visit(ast::TypedefDecl& node) override;
 		void visit(ast::InterruptVectorDecl& node) override;
 		void visit(ast::DesignatedInitExpr& node) override;
+		void visit(ast::AsmStmt& node) override;
 		void visit(ast::CompoundLiteralExpr& node) override;
 		void visit(ast::StaticAssertDecl& node) override;
 		void visit(ast::TranslationUnit& node) override;

@@ -668,6 +668,21 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(AsmStmt& node)
+	{
+		_output += node.isVolatile() ? "(asm volatile \"" : "(asm \"";
+		for (char c : node.text().view())
+		{
+			if (c == '\n')
+				_output += "\\n";
+			else if (c == '\t')
+				_output += "\\t";
+			else
+				_output += c;
+		}
+		_output += "\")";
+	}
+
 	void AstPrinter::visit(CompoundLiteralExpr& node)
 	{
 		_output += "(compound-literal ";
