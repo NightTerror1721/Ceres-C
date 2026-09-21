@@ -65,7 +65,7 @@ namespace ceresc::driver
 			std::error_code error;
 			fs::path relative = fs::relative(target, from, error);
 			if (error || relative.empty())
-				relative = target;
+				relative = fs::absolute(target); // another drive: a name relative to the current directory would mean something else from here
 			return relative.generic_string();
 		}
 
