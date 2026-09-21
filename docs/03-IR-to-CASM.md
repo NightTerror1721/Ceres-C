@@ -207,17 +207,26 @@ refuses to convert a `const int*` to an `int*` — the promise is not a formalit
 ### How `main` ends
 
 `main` has no caller. Instead of `ret`, the generated code writes the shutdown command to the system
-control device and halts:
+control device and halts. A word write carries the exit status in bits 15:8, so `return n;` is:
 
 ```casm
 la   r4, 0xFFFF0000
-li   r5, 1
-strb [r4 + 0], r5
+shl  r5, r0, 8         // the status, above the command
+or   r5, r5, 1         // 1 = shut down
+str  [r4 + 0], r5
 halt
 ```
 
-`ceres run` exits 0 on a clean halt and 1 on a fault, never with a value the program chose, so
-`main`'s return value goes into `ret0` only so it stays inspectable under `ceres debug`.
+`ceres run` exits with that status (its low eight bits) and with 1 on a fault. A `return;` with no value
+keeps the older byte write (`li r5, 1` / `strb`), which is status 0.
+
+A unit that declares `void exit(int)` ends `main` differently: it calls it, so falling off `main` is
+`exit(main())` and the C library's `atexit` handlers and stream flushing run:
+
+```casm
+call exit              // r0 holds the status (or `li r0, 0` for a `void main`)
+halt
+```
 
 ## Every line cites its source
 

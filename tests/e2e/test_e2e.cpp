@@ -18,13 +18,11 @@
 // spawn one, and it does exactly this same thing for `ceresc --run`), and check the ACTUAL
 // computed value, not just a successful exit.
 //
-// `ceres run`'s own process exit code is always 0 on a clean halt and 1 on a VM fault - never a
-// program-chosen value (verified against CeresASM's Ceres/libs/driver/src/machine_runner.cpp:
-// there is no register-to-exit-code channel at all). So every fixture here pokes CeresASM's
-// TerminalDevice MMIO register directly (a raw pointer cast + dereferenced store - this project
-// has no printf yet) and this suite reads the resulting byte back from `ceres run`'s own captured
-// stdout - the same mechanism codegen.h's own header comment describes `main` needing to halt
-// through instead of an ordinary `ret`.
+// `ceres run` exits with the status `main` returned (the system control device carries it, see
+// CeresASM's 07-IO-Devices-and-Ports.md), and with 1 on a VM fault. Most fixtures here return 0 and
+// poke CeresASM's TerminalDevice MMIO register directly (a raw pointer cast + dereferenced store -
+// this project has no printf yet), and this suite reads the resulting byte back from `ceres run`'s
+// own captured stdout. A fixture that returns something else says so through `expectedStatus`.
 //
 // EVERY program below runs at -O0, -O1 AND -O2, and all three must print the same thing. That is
 // the real test of the optimizations: a golden test proves the output changed, this proves it still
@@ -50,7 +48,7 @@ namespace
 	// returning what `ceres run` printed to stdout - or kNoCeres if this environment has no sibling
 	// CeresASM checkout to run against (see findCeresDirectory()'s own note).
 	std::string compileAssembleAndRun(std::string_view name, std::string_view source,
-		ceresc::support::OptimizationLevel level)
+		ceresc::support::OptimizationLevel level, int expectedStatus = 0)
 	{
 		std::optional<fs::path> ceresDir = findCeresDirectory();
 		if (!ceresDir)
@@ -90,18 +88,19 @@ namespace
 
 		std::string runCommand = std::format("{} run {}", quote(ceresBinary), quote(cresPath));
 		int runResult = runSubprocessCapturingStdout(runCommand, outputPath);
-		CHECK_EQ(runResult, 0);
+		CHECK_EQ(runResult, expectedStatus);
 		return readFile(outputPath);
 	}
 
 	// Runs one program at all three optimization levels and checks each printed `expected`. It prints
 	// a skip note when there is no `ceres` to run against.
-	void runsTheSameAtEveryLevel(std::string_view name, std::string_view source, std::string_view expected)
+	void runsTheSameAtEveryLevel(std::string_view name, std::string_view source, std::string_view expected,
+		int expectedStatus = 0)
 	{
 		using ceresc::support::OptimizationLevel;
 		for (OptimizationLevel level : { OptimizationLevel::O0, OptimizationLevel::O1, OptimizationLevel::O2 })
 		{
-			std::string output = compileAssembleAndRun(name, source, level);
+			std::string output = compileAssembleAndRun(name, source, level, expectedStatus);
 			if (output == kNoCeres)
 			{
 				std::printf("  (skipped: no sibling CeresASM checkout found - set CERESC_CERES_PATH)\n");
@@ -117,9 +116,49 @@ namespace
 TEST(e2e, return_constant_assembles_and_runs_without_faulting)
 {
 	// The very first program to go through the whole pipeline for real (§13's Fase 6 milestone) -
-	// no printable result to check (see the header comment on why `main`'s return value has no
-	// exit-code channel), just that it assembles and the VM halts cleanly instead of faulting.
-	runsTheSameAtEveryLevel("return_constant", "int main() { return 42; }", "");
+	// nothing printed, just that it assembles and the VM halts cleanly instead of faulting. `main`'s
+	// return value is the process's exit status, so 42 is what `ceres run` exits with.
+	runsTheSameAtEveryLevel("return_constant", "int main() { return 42; }", "", 42);
+}
+
+TEST(e2e, the_value_main_returns_is_the_exit_status_of_the_run)
+{
+	// Through every optimization level, and past the bits a byte holds: only the low eight survive,
+	// as with a POSIX exit status. Falling off the end of `main` or returning nothing is status 0.
+	runsTheSameAtEveryLevel("status_seven", "int main() { return 7; }", "", 7);
+	runsTheSameAtEveryLevel("status_from_a_call",
+		"static int compute(int a, int b) { return a * b + 1; }"
+		"int main() { return compute(6, 8); }", "", 49);
+	runsTheSameAtEveryLevel("status_masked", "int main() { return 0x1FF; }", "", 255);
+	runsTheSameAtEveryLevel("status_zero_falling_off", "int main() { }", "", 0);
+	runsTheSameAtEveryLevel("status_void_main", "void main() { }", "", 0);
+}
+
+TEST(e2e, main_hands_its_status_to_exit_when_the_unit_declares_it)
+{
+	// A unit that declares `void exit(int)` is a hosted one: returning from `main` is `exit(main())`.
+	// Here `exit` is a stand-in that prints a byte and shuts the machine down with the status it
+	// was given, so both the call and the status it carries are checked.
+	runsTheSameAtEveryLevel("main_calls_exit",
+		"void exit(int status);"
+		"void exit(int status) {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + status;"
+		"    unsigned int* control = (unsigned int*)0xFFFF0000;"
+		"    *control = (status << 8) | 1;"
+		"}"
+		"int main() { return 5; }",
+		"5", 5);
+	runsTheSameAtEveryLevel("main_calls_exit_with_zero_when_it_returns_nothing",
+		"void exit(int status);"
+		"void exit(int status) {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + status;"
+		"    unsigned int* control = (unsigned int*)0xFFFF0000;"
+		"    *control = (status << 8) | 1;"
+		"}"
+		"void main() { }",
+		"0", 0);
 }
 
 TEST(e2e, function_call_and_arithmetic_produce_the_right_value)

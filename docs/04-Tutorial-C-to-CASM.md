@@ -247,10 +247,10 @@ ceresc examples/15_suma_array.c --run
 ```
 
 The architecture plan's original version of this program ended with `return suma_array(datos, 4);`
-and said the process would exit with code 100. That did not survive contact with the real VM:
-`ceres run` exits 0 on a clean halt and 1 on a fault, and there is no channel from a register to an
-exit code at all. So the example prints the total instead — which is the only way any program here
-reports anything, and the reason every file under `examples/` starts by defining its own `put`.
+and said the process would exit with code 100. That is true now — `ceres run` exits with the status
+`main` returns — but it was not when the example was written, when the VM had no channel from a
+register to an exit code. So the example prints the total instead, which is also the only way to report
+anything larger than a byte, and the reason every file under `examples/` starts by defining its own `put`.
 
 ## Where to look next
 

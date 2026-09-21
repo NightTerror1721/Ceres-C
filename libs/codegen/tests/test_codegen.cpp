@@ -211,8 +211,9 @@ TEST(codegen, returning_a_constant_at_O0)
 		"    mov r0, r4            // test.c:1\n"
 		"    leave                 // test.c:1\n"
 		"    la r4, 0xFFFF0000     // test.c:1\n"
-		"    li r5, 1              // test.c:1\n"
-		"    strb [r4 + 0], r5     // test.c:1\n"
+		"    shl r5, r0, 8         // test.c:1\n"
+		"    or r5, r5, 1          // test.c:1\n"
+		"    str [r4 + 0], r5      // test.c:1\n"
 		"    halt                  // test.c:1\n");
 }
 
@@ -228,8 +229,9 @@ TEST(codegen, returning_a_constant_at_O2)
 		"    li r3, 42             // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
 		"    la r4, 0xFFFF0000     // test.c:1\n"
-		"    li r5, 1              // test.c:1\n"
-		"    strb [r4 + 0], r5     // test.c:1\n"
+		"    shl r5, r0, 8         // test.c:1\n"
+		"    or r5, r5, 1          // test.c:1\n"
+		"    str [r4 + 0], r5      // test.c:1\n"
 		"    halt                  // test.c:1\n");
 }
 
@@ -613,8 +615,9 @@ TEST(codegen, constant_folding_collapses_a_whole_expression_at_O2)
 		"    li r3, 14             // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
 		"    la r4, 0xFFFF0000     // test.c:1\n"
-		"    li r5, 1              // test.c:1\n"
-		"    strb [r4 + 0], r5     // test.c:1\n"
+		"    shl r5, r0, 8         // test.c:1\n"
+		"    or r5, r5, 1          // test.c:1\n"
+		"    str [r4 + 0], r5      // test.c:1\n"
 		"    halt                  // test.c:1\n");
 }
 
@@ -633,8 +636,9 @@ TEST(codegen, inlining_a_small_function_at_O2)
 		"    li r3, 7              // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
 		"    la r4, 0xFFFF0000     // test.c:1\n"
-		"    li r5, 1              // test.c:1\n"
-		"    strb [r4 + 0], r5     // test.c:1\n"
+		"    shl r5, r0, 8         // test.c:1\n"
+		"    or r5, r5, 1          // test.c:1\n"
+		"    str [r4 + 0], r5      // test.c:1\n"
 		"    halt                  // test.c:1\n");
 }
 

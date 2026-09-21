@@ -219,12 +219,16 @@ The VM sets its Trap flag and leaves the destination register untouched, and not
 automatically. Ceres-C inherits the behaviour rather than hiding it behind an implicit check before
 every division. A `--check-div-by-zero` that emitted one is a plausible future option.
 
-### `main`'s return value is not an exit code
+### `main`'s return value is the exit status
 
-`ceres run` exits 0 on a clean halt and 1 on a fault, never with a value the program chose — there is
-no channel from a register to a process exit code. `main` halts the machine through the system
-control device, and its return value goes into `ret0` only so it stays inspectable under
-`ceres debug`. Anything a program wants to report, it prints.
+`ceres run` exits with what `main` returned (its low eight bits, as with a POSIX status) and with 1 on a
+fault. Falling off the end of `main`, or a `void main`, is status 0. This needs a CeresASM that has the
+status byte in the system control device's command word; an older VM reads only the low byte of that
+word, so the program still stops cleanly and the status is simply 0.
+
+A unit that declares `void exit(int)` (any that includes a C library's `<stdlib.h>` or `<stdio.h>`)
+ends `main` by calling it: `return n;` is `exit(n)`, so the handlers registered with `atexit` run and
+open files are flushed. A unit that does not declare it writes the status to the control device itself.
 
 ### Recursion depth is not checked
 

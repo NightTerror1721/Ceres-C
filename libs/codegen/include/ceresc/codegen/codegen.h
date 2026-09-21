@@ -357,8 +357,11 @@ namespace ceresc::codegen
 		// its address at load time, 09-CRES-Binary-Format.md/12-Labels-and-Symbols.md), so there is
 		// no return address on the stack for an ordinary `leave`/`ret` epilogue to find - `main`
 		// must stop the machine itself instead (SystemControlDevice + `halt`,
-		// 07-IO-Devices-and-Ports.md), exactly like every hand-written CeresASM program does.
+		// 07-IO-Devices-and-Ports.md), exactly like every hand-written CeresASM program does. What
+		// it returns is the exit status: bits 15:8 of the word it writes there.
 		bool _generatingMain = false;
+		// The unit declares `void exit(int)`, so `main` ends by calling it with its own status.
+		bool _mainCallsExit = false;
 
 		// True while generating an `__interrupt` handler. Two things change, and both follow from the
 		// same fact: a handler is not called, it preempts. It ends in `iret`, which pops the flags and

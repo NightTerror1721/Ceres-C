@@ -1093,17 +1093,41 @@ namespace ceresc::codegen
 				if (_generatingMain)
 				{
 					// `main` never returns to a caller - see the header comment on _generatingMain.
-					// The return value (if any) is still moved into r0/f0 above so it stays
-					// inspectable (e.g. under `ceres debug`) even though nothing outside the VM
-					// reads it: `ceres run`'s own process exit code is always 0 on a clean halt,
-					// never a program-chosen value (verified against Ceres/libs/driver/src/
-					// machine_runner.cpp - there is no register-to-exit-code channel at all).
+					// The return value (if any) is in r0 by now, and it is the program's exit status.
 					if (_hasFrame)
 						_emitter.instr("leave", comment);
-					_emitter.instr(std::format("la {}, 0xFFFF0000", intReg(kScratchA)), comment); // SystemControlDevice, 07-IO-Devices-and-Ports.md
-					_emitter.instr(std::format("li {}, 1", intReg(kScratchB)), comment);
-					_emitter.instr(std::format("strb [{} + 0], {}", intReg(kScratchA), intReg(kScratchB)), comment);
-					_emitter.instr("halt", comment);
+
+					if (_mainCallsExit)
+					{
+						// A unit that declares `void exit(int)` is one that links a C library, and
+						// falling off `main` is `exit(main())`: the handlers registered with atexit run,
+						// the open files are flushed. `exit` does not return, but the halt keeps the
+						// machine from running on into whatever follows if a replacement one does.
+						if (!p.hasValue)
+							_emitter.instr("li r0, 0", comment);
+						_emitter.instr(std::format("call {}", mangledName("exit")), comment);
+						_emitter.instr("halt", comment);
+					}
+					else
+					{
+						// No library to hand the status to, so main stops the machine itself: a word
+						// write to the system control device carries the status in bits 15:8
+						// (07-IO-Devices-and-Ports.md). A `return;` with no value is status 0, which is
+						// what a plain byte write has always meant.
+						_emitter.instr(std::format("la {}, 0xFFFF0000", intReg(kScratchA)), comment);
+						if (p.hasValue)
+						{
+							_emitter.instr(std::format("shl {}, r0, 8", intReg(kScratchB)), comment);
+							_emitter.instr(std::format("or {}, {}, 1", intReg(kScratchB), intReg(kScratchB)), comment);
+							_emitter.instr(std::format("str [{} + 0], {}", intReg(kScratchA), intReg(kScratchB)), comment);
+						}
+						else
+						{
+							_emitter.instr(std::format("li {}, 1", intReg(kScratchB)), comment);
+							_emitter.instr(std::format("strb [{} + 0], {}", intReg(kScratchA), intReg(kScratchB)), comment);
+						}
+						_emitter.instr("halt", comment);
+					}
 				}
 				else
 				{
@@ -1896,6 +1920,21 @@ namespace ceresc::codegen
 	std::string CodeGen::generate(const TranslationUnit& unit, const IrModule& module)
 	{
 		checkSymbolNames(unit, module);
+
+		// Does this unit see a `void exit(int)`? Then `main` can hand its status to it (see the Return
+		// case of generateInstr). Looked for by shape, not just by name: a program's own `exit`
+		// with another meaning must not be called with whatever main happened to return.
+		_mainCallsExit = false;
+		for (Decl* decl : unit.decls())
+		{
+			auto* function = dynamic_cast<FunctionDecl*>(decl);
+			if (function && function->name() == "exit" && function->hasExternalLinkage() &&
+				function->params().size() == 1 && function->returnType() && function->returnType()->isVoid())
+			{
+				_mainCallsExit = true;
+				break;
+			}
+		}
 
 		// String literals that appear only in static initializers get their .rodata labels minted
 		// while the globals are emitted below; start each compilation from an empty table.
