@@ -511,6 +511,14 @@ namespace ceresc::parser
 				// stands for an instruction rather than for a function.
 				if (std::optional<ast::MachineOp> machineOp = machineBuiltinFor(name); machineOp && _next.is(TokenKind::LParen))
 					return parseMachineBuiltin(location, *machineOp);
+				// `__func__` is the name of the function being parsed, as a string: the same thing a
+				// literal spelled out by hand would be, made here because only the parser knows the name.
+				if (!_currentFunctionName.empty() && (name == "__func__" || name == "__FUNCTION__"))
+				{
+					support::PooledString text = _lexer.stringPool().intern(_currentFunctionName);
+					advance();
+					return _arena.create<ast::StringLiteralExpr>(location, text);
+				}
 				advance();
 				return _arena.create<ast::NameExpr>(location, name);
 			}
@@ -876,8 +884,17 @@ namespace ceresc::parser
 				_diagnostics.error(DiagId::RedefinitionOfTag, location, "redefinition of '{} {}'", isUnion ? "union" : "struct", tagName);
 
 			std::vector<FieldDecl> fields;
+			std::vector<Decl*> assertions; // `_Static_assert` inside the body: checked once the struct is complete
 			while (!check(TokenKind::RBrace) && !isAtEnd())
 			{
+				if (isStaticAssertStart())
+				{
+					if (Decl* assertion = parseStaticAssert())
+						assertions.push_back(assertion);
+					else
+						synchronizeStatement();
+					continue;
+				}
 				SourceLocation fieldLoc = _current.location();
 				bool fieldLeadingRestrict = false;
 				SourceLocation fieldSpecifierLocation{};
@@ -930,6 +947,8 @@ namespace ceresc::parser
 			expect(TokenKind::RBrace, "'}'");
 			decl->setFields(copyFieldsToArena(fields));
 			_definedTags.push_back(decl);
+			for (Decl* assertion : assertions)
+				_definedTags.push_back(assertion);
 		}
 
 		return isUnion ? Type::makeUnion(_arena, decl) : Type::makeStruct(_arena, decl);
@@ -1061,6 +1080,15 @@ namespace ceresc::parser
 			default:
 				if (check(TokenKind::Identifier) && _next.is(TokenKind::Colon))
 					return parseLabeledStatement();
+				if (isStaticAssertStart())
+				{
+					SourceLocation location = _current.location();
+					Decl* decl = parseStaticAssert();
+					if (!decl)
+						return nullptr;
+					Decl* decls[1] = { decl };
+					return _arena.create<ast::DeclStmt>(location, copyDeclsToArena(std::vector<Decl*>(decls, decls + 1)));
+				}
 				// A declaration may begin with its storage class instead of its type - `static int n;`
 				// is a declaration just as much as `int n;` is, and reaching parseExprStatement() with
 				// `static` in hand is what used to produce "expected expression but found 'static'".
@@ -1419,6 +1447,12 @@ namespace ceresc::parser
 			return decl ? std::vector<Decl*>{ decl } : std::vector<Decl*>{};
 		}
 
+		if (isStaticAssertStart())
+		{
+			Decl* decl = parseStaticAssert();
+			return decl ? std::vector<Decl*>{ decl } : std::vector<Decl*>{};
+		}
+
 		// Storage classes and `const` come first and belong to the DECLARATION, so they are read
 		// here rather than inside parseTypeName() - which would have no one to hand a storage class
 		// to, and rejects one for that reason. The `const` half is put back on the type afterwards.
@@ -1520,6 +1554,44 @@ namespace ceresc::parser
 		if (outIsFunctionDefinition)
 			*outIsFunctionDefinition = false;
 		return finishVarDecl(location, declarator.name, type, specifiers, unsizedArray);
+	}
+
+	bool Parser::isStaticAssertStart() const noexcept
+	{
+		return _current.kind() == TokenKind::Identifier && _current.lexeme() == "_Static_assert" && _next.is(TokenKind::LParen);
+	}
+
+	Decl* Parser::parseStaticAssert()
+	{
+		SourceLocation location = _current.location();
+		advance(); // '_Static_assert'
+		if (!expect(TokenKind::LParen, "'(' after '_Static_assert'"))
+			return nullptr;
+
+		Expr* condition = parseTernary();
+		if (!condition)
+			return nullptr;
+
+		support::PooledString message;
+		bool hasMessage = false;
+		if (match(TokenKind::Comma))
+		{
+			if (!check(TokenKind::LiteralString))
+			{
+				_diagnostics.error(DiagId::ExpectedStaticAssertMessage, _current.location(), "expected a string literal as the message of the static assertion");
+				return nullptr;
+			}
+			message = _current.stringValue();
+			hasMessage = true;
+			advance();
+		}
+
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		if (!expect(TokenKind::Semicolon, "';'"))
+			return nullptr;
+
+		return _arena.create<ast::StaticAssertDecl>(location, condition, message, hasMessage);
 	}
 
 	Decl* Parser::parseInterruptVectorDecl()
@@ -1726,7 +1798,9 @@ namespace ceresc::parser
 		CompoundStmt* body = nullptr;
 		if (check(TokenKind::LBrace))
 		{
+			_currentFunctionName = name;
 			Stmt* bodyStmt = parseCompoundStatement();
+			_currentFunctionName = {};
 			if (!bodyStmt)
 				return nullptr;
 			body = static_cast<CompoundStmt*>(bodyStmt); // parseCompoundStatement() only ever returns a CompoundStmt* (or nullptr)

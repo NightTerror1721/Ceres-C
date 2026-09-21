@@ -1865,6 +1865,27 @@ namespace ceresc::sema
 		// The parser already fully resolved the underlying type (decl.h) - nothing left to check.
 	}
 
+	void Sema::visit(ast::StaticAssertDecl& node)
+	{
+		// The condition is an integer constant expression, folded with the same machinery that gives a
+		// static initializer its value: enumerators, sizeof of any complete type, arithmetic, comparisons.
+		checkExpr(node.condition());
+		std::optional<i64> value = evalConstantExpr(node.condition());
+		if (!value)
+		{
+			_diagnostics.error(DiagId::StaticAssertNotConstant, node.condition()->location(),
+				"the condition of a static assertion must be a constant expression");
+			return;
+		}
+		if (*value != 0)
+			return;
+
+		if (node.hasMessage())
+			_diagnostics.error(DiagId::StaticAssertFailed, node.location(), "static assertion failed: {}", node.message().view());
+		else
+			_diagnostics.error(DiagId::StaticAssertFailed, node.location(), "static assertion failed");
+	}
+
 	void Sema::visit(ast::InterruptVectorDecl& node)
 	{
 		// Four rules, all of them the linker's own (CeresASM 26-Interrupt-Vector-Binding.md) - caught

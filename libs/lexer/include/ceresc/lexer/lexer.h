@@ -368,6 +368,10 @@ namespace ceresc::lexer
 		Lexer& operator=(Lexer&&) = delete;
 
 	public:
+		// The pool the string literals are interned in, for a consumer that makes a string of its own (the parser's
+		// `__func__`) and needs it to live as long as the ones the source wrote.
+		support::StringPool& stringPool() noexcept { return _stringPool; }
+
 		explicit Lexer(std::string_view source, support::SourceId sourceId, support::DiagnosticEngine& diagnostics, support::StringPool& stringPool) noexcept :
 			_cursor(source),
 			_sourceId(sourceId),

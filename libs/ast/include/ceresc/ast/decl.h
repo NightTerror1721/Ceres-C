@@ -258,6 +258,30 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<InterruptVectorDecl>, "InterruptVectorDecl must be trivially destructible (Arena-allocated)");
 
+	// `_Static_assert(condition, "message");` - checked by sema, and nothing else ever sees it: it emits no code and
+	// no data. It is a declaration so that it can stand wherever one can: at file scope, in a block, and (moved to
+	// just after the struct that holds it) in a struct body. The message is optional, as in C23.
+	class StaticAssertDecl final : public Decl
+	{
+	private:
+		Expr* _condition;
+		support::PooledString _message;
+		bool _hasMessage;
+
+	public:
+		StaticAssertDecl(support::SourceLocation location, Expr* condition, support::PooledString message, bool hasMessage) noexcept :
+			Decl(location, {}), _condition(condition), _message(message), _hasMessage(hasMessage)
+		{}
+
+	public:
+		Expr* condition() const noexcept { return _condition; }
+		bool hasMessage() const noexcept { return _hasMessage; }
+		support::PooledString message() const noexcept { return _message; }
+
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<StaticAssertDecl>, "StaticAssertDecl must be trivially destructible (Arena-allocated)");
+
 	// A function parameter's {type, name} pair - see the header comment above for why this is a
 	// plain record, not a Decl.
 	struct Param

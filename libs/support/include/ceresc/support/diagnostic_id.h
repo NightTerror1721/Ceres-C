@@ -127,6 +127,7 @@ namespace ceresc::support
 		FunctionReturnsArray           = 2035,
 		InvalidArrayElementType        = 2036,
 		ArraySizeRequired              = 2037,
+		ExpectedStaticAssertMessage    = 2038,
 
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
 
@@ -213,6 +214,8 @@ namespace ceresc::support
 		FieldIncompleteStruct            = 3080,
 		FieldByValueCycle                = 3081,
 		SizeofIncompleteArray            = 3082,
+		StaticAssertNotConstant          = 3083,
+		StaticAssertFailed               = 3084,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 

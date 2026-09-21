@@ -1365,3 +1365,32 @@ TEST(parser, a_struct_field_may_be_a_function_pointer_but_not_a_function)
 		"(struct Ops (fields (int (*)(int) run)))");
 	CHECK(parseFails("struct Ops { int run(int x); };"));
 }
+
+// ---- _Static_assert and __func__ ---------------------------------------------------------------------------------
+
+TEST(parser, a_static_assertion_stands_wherever_a_declaration_can)
+{
+	CHECK_EQ(printDecl("_Static_assert(sizeof(int) == 4, \"a word\");"), "(static-assert (== (sizeof int) 4) \"a word\")");
+	CHECK_EQ(printDecl("_Static_assert(1);"), "(static-assert 1)");   // the message is optional, as in C23
+	CHECK_EQ(printStmt("_Static_assert(2 > 1, \"m\");"), "(decl-stmt (static-assert (> 2 1) \"m\"))");
+	// In a struct body it is checked once the struct is complete, so it comes out just after it
+	CHECK_EQ(printUnit("struct S { int a; _Static_assert(1, \"x\"); int b; };"),
+		"(unit (struct S (fields (int a) (int b))) (static-assert 1 \"x\"))");
+}
+
+TEST(parser, a_static_assertion_needs_its_punctuation_and_a_string_for_a_message)
+{
+	CHECK(parseFails("_Static_assert(1, 2);"));
+	CHECK(parseFails("_Static_assert(1, \"m\")"));
+	CHECK(parseFails("_Static_assert 1;"));
+	CHECK(parseFails("_Static_assert(, \"m\");"));
+	CHECK(!parseFails("_Static_assert(1, \"m\");"));
+}
+
+TEST(parser, func_is_the_name_of_the_function_being_parsed)
+{
+	CHECK_EQ(printUnit("int f(void) { return __func__[0]; }"), "(unit (func f int (params) (block (return (index \"f\" 0)))))");
+	CHECK_EQ(printUnit("int g(void) { return __FUNCTION__[1]; }"), "(unit (func g int (params) (block (return (index \"g\" 1)))))");
+	// Outside a function it is an ordinary name, and sema will not find it
+	CHECK_EQ(printUnit("int x = __func__;"), "(unit (var x int __func__))");
+}

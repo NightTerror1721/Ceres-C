@@ -371,6 +371,14 @@ namespace ceresc::parser
 		// InterruptVectorDecl and docs/10-Interrupts.md.
 		Decl* parseInterruptVectorDecl();
 
+		// `_Static_assert(condition[, "message"]);` - an identifier in the language's reserved namespace rather
+		// than a keyword token, so the lexer needs no new kind for it. Recognized only when a '(' follows.
+		bool isStaticAssertStart() const noexcept;
+		Decl* parseStaticAssert();
+
+		// The function whose body is being parsed, for `__func__`; empty outside one.
+		std::string_view _currentFunctionName;
+
 		static std::optional<ast::MachineOp> machineBuiltinFor(std::string_view name) noexcept;
 		Expr* parseMachineBuiltin(support::SourceLocation location, ast::MachineOp op);
 

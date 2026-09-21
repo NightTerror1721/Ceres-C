@@ -1724,3 +1724,47 @@ TEST(sema, an_interrupt_vector_binding_enforces_the_linkers_own_four_rules)
 	CHECK(!twice.ok);
 	CHECK(containsMessage(twice, "already bound to 'h'"));
 }
+
+// ---- _Static_assert and __func__ ---------------------------------------------------------------------------------
+
+TEST(sema, a_true_static_assertion_costs_nothing_wherever_it_stands)
+{
+	CHECK(checkSource("_Static_assert(sizeof(int) == 4, \"a word\");\nint main() { return 0; }").ok);
+	CHECK(checkSource("int main() { _Static_assert(sizeof(char) == 1, \"a byte\"); return 0; }").ok);
+	CHECK(checkSource("struct H { char k; int n; _Static_assert(sizeof(int) == 4, \"a word\"); };").ok);
+	CHECK(checkSource("_Static_assert(1);").ok);
+	CHECK(checkSource("enum { N = 3 };\n_Static_assert(N * 2 == 6 && N != 4, \"enumerators fold\");").ok);
+	CHECK(checkSource("struct P { int x, y; };\n_Static_assert(sizeof(struct P) == 8, \"layout\");").ok);
+	CHECK(checkSource("_Static_assert(sizeof(int) == 4 ? 1 : 0, \"a ternary\");").ok);
+}
+
+TEST(sema, a_false_static_assertion_is_an_error_that_carries_its_message)
+{
+	CheckOutcome withMessage = checkSource("_Static_assert(sizeof(int) == 2, \"an int is two bytes\");");
+	CHECK(!withMessage.ok);
+	CHECK(containsMessage(withMessage, "static assertion failed: an int is two bytes"));
+	CheckOutcome bare = checkSource("_Static_assert(0);");
+	CHECK(!bare.ok);
+	CHECK(containsMessage(bare, "static assertion failed"));
+	CHECK(!checkSource("int main() { _Static_assert(1 == 2, \"in a block\"); return 0; }").ok);
+	CHECK(!checkSource("struct H { char k; _Static_assert(sizeof(struct H) == 2, \"no\"); };").ok);   // checked once the body has made H complete
+	CHECK(!checkSource("struct P { int x, y; };\n_Static_assert(sizeof(struct P) == 4, \"layout\");").ok);
+}
+
+TEST(sema, the_condition_of_a_static_assertion_must_be_a_constant)
+{
+	CheckOutcome variable = checkSource("int n = 3;\n_Static_assert(n == 3, \"n\");");
+	CHECK(!variable.ok);
+	CHECK(containsMessage(variable, "must be a constant expression"));
+	CHECK(!checkSource("int f(void);\n_Static_assert(f(), \"call\");").ok);
+	CHECK(!checkSource("_Static_assert(undeclared_name, \"x\");").ok);
+}
+
+TEST(sema, func_names_the_function_it_is_used_in)
+{
+	CHECK(checkSource("const char* who(void) { return __func__; }").ok);
+	CHECK(checkSource("int first(void) { return __FUNCTION__[0]; }").ok);
+	CheckOutcome outside = checkSource("const char* name = __func__;");
+	CHECK(!outside.ok);
+	CHECK(containsMessage(outside, "undeclared identifier '__func__'"));
+}

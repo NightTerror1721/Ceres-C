@@ -105,6 +105,7 @@ namespace ceresc::sema
 		void visit(ast::EnumDecl& node) override;
 		void visit(ast::TypedefDecl& node) override;
 		void visit(ast::InterruptVectorDecl& node) override;
+		void visit(ast::StaticAssertDecl& node) override;
 		void visit(ast::TranslationUnit& node) override;
 
 	public:

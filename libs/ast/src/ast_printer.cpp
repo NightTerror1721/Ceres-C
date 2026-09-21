@@ -668,6 +668,19 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(StaticAssertDecl& node)
+	{
+		_output += "(static-assert ";
+		printChild(node.condition());
+		if (node.hasMessage())
+		{
+			_output += " \"";
+			_output += node.message().view();
+			_output += '"';
+		}
+		_output += ')';
+	}
+
 	void AstPrinter::visit(TranslationUnit& node)
 	{
 		_output += "(unit";

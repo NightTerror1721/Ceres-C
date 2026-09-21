@@ -79,6 +79,18 @@ be measured, because this unit does not know its size - `sizeof(table)` is E3082
 same name in the unit, before or after, gives it its size (a different size or element type is E3005). Without
 `extern`, and without an initializer to count, an array still needs its size (E2037).
 
+### `_Static_assert` and `__func__`
+
+`_Static_assert(condition, "message");` is checked while compiling and produces no code. The condition is an
+integer constant expression - the same kind a static initializer takes: enumerators, `sizeof` of any complete
+type, arithmetic and comparisons. A false one is E3084 carrying the message, a non-constant one E3083. It may
+stand at file scope, in a block, and in a struct body (where it is checked just after the struct, once its layout
+is known). The message is optional, as in C23; `assert.h` in the standard library spells it `static_assert`.
+
+`__func__` (and `__FUNCTION__`) inside a function is the function's name, as a string literal - so, unlike in
+C, it has the type of one (`char*`) and `sizeof(__func__)` is the size of a pointer. Outside a function it is an
+ordinary identifier, and undeclared.
+
 ## Grammar
 
 The EBNF `libs/parser` implements. Uppercase names are token kinds from `libs/lexer`.

@@ -77,6 +77,7 @@ namespace ceresc::ast
 		virtual void visit(EnumDecl& node) = 0;
 		virtual void visit(TypedefDecl& node) = 0;
 		virtual void visit(InterruptVectorDecl& node) = 0;
+		virtual void visit(StaticAssertDecl& node) = 0;
 		virtual void visit(TranslationUnit& node) = 0;
 	};
 
@@ -123,5 +124,6 @@ namespace ceresc::ast
 	inline void EnumDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void TypedefDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void InterruptVectorDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
+	inline void StaticAssertDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void TranslationUnit::accept(AstVisitor& visitor) { visitor.visit(*this); }
 }

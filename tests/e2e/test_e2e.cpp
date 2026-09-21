@@ -311,6 +311,25 @@ TEST(e2e, an_extern_array_of_unknown_size_is_completed_by_its_definition_in_the_
 		"", 20);
 }
 
+TEST(e2e, static_assertions_and_func_compile_away_and_name_the_function)
+{
+	// 'w' + 'm' + 'n' = 119 + 109 + 110 = 338, which the exit status keeps as 82
+	runsTheSameAtEveryLevel("static_assert_func",
+		"enum { LIMIT = 8 };\n"
+		"struct Header { unsigned char kind; unsigned char pad[3]; unsigned int length; _Static_assert(sizeof(int) == 4, \"a word\"); };\n"
+		"_Static_assert(sizeof(struct Header) == 8, \"the header is two words\");\n"
+		"_Static_assert(LIMIT * 2 == 16);\n"
+		"static const char* who(void) { return __func__; }\n"
+		"int main(void)\n"
+		"{\n"
+		"    _Static_assert(sizeof(char) == 1, \"a char is a byte\");\n"
+		"    const char* a = who();\n"
+		"    const char* b = __FUNCTION__;\n"
+		"    return a[0] + b[0] + b[3];\n"
+		"}\n",
+		"", 82);
+}
+
 TEST(e2e, global_variables_persist_across_calls)
 {
 	runsTheSameAtEveryLevel("global_counter",

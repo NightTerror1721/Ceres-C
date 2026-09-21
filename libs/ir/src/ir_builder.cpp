@@ -2036,6 +2036,11 @@ namespace ceresc::ir
 		// Codegen writes it straight from the AST, the same way it writes a global's `let`.
 	}
 
+	void IrBuilder::visit(ast::StaticAssertDecl&)
+	{
+		// Nothing to lower: sema has already decided it, and it emits no code and no data.
+	}
+
 	void IrBuilder::visit(ast::TypedefDecl&)
 	{
 		// Nothing to lower - see sema.cpp's own identical no-op and decl.h's note on why a typedef

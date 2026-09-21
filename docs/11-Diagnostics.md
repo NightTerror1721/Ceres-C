@@ -189,6 +189,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2035` | A function declared to return an array. |
 | `E2036` | An array of `void`, or of functions. |
 | `E2037` | An array with no size where nothing can give it one: no initializer (and not an `extern` declaration), a scalar or flat list for an array of arrays, a struct member, a cast. Only a variable's initializer infers the outermost size, and `extern int t[];` may leave it unknown. |
+| `E2038` | `_Static_assert(cond, x)` where `x` is not a string literal. |
 
 ### `3xxx` — sema
 
@@ -276,6 +277,8 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3080` | A field of a `struct` whose definition has not been seen. |
 | `E3081` | A `struct` that contains itself by value. |
 | `E3082` | `sizeof` of an array whose size is not known in this unit (`extern int t[];`). |
+| `E3083` | The condition of a `_Static_assert` is not a constant expression. |
+| `E3084` | A `_Static_assert` whose condition is 0; the message, when there is one, is in the error. |
 
 ### `4xxx` — codegen
 
