@@ -693,6 +693,7 @@ namespace ceresc::ir
 				case BinaryOp::Ge: return *lhs >= *rhs ? i64(1) : i64(0);
 				case BinaryOp::LogicalAnd: return (*lhs != 0 && *rhs != 0) ? i64(1) : i64(0);
 				case BinaryOp::LogicalOr: return (*lhs != 0 || *rhs != 0) ? i64(1) : i64(0);
+				case BinaryOp::Comma: break; // never a constant expression, even when both sides are
 			}
 			return std::nullopt;
 		}
@@ -1269,6 +1270,15 @@ namespace ceresc::ir
 		if (node.op() == BinaryOp::LogicalAnd || node.op() == BinaryOp::LogicalOr)
 		{
 			_lastValue = materializeBoolean(&node);
+			return;
+		}
+
+		if (node.op() == BinaryOp::Comma)
+		{
+			// The left side is lowered for what it does; its value goes unread and the optimizer
+			// drops whatever computed it that nothing else uses.
+			lowerExpr(node.lhs());
+			_lastValue = lowerExpr(node.rhs());
 			return;
 		}
 

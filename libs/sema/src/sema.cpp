@@ -559,6 +559,7 @@ namespace ceresc::sema
 				case BinaryOp::Ge: return *lhs >= *rhs ? i64(1) : i64(0);
 				case BinaryOp::LogicalAnd: return (*lhs != 0 && *rhs != 0) ? i64(1) : i64(0);
 				case BinaryOp::LogicalOr: return (*lhs != 0 || *rhs != 0) ? i64(1) : i64(0);
+				case BinaryOp::Comma: break; // never a constant expression, even when both sides are
 			}
 			return std::nullopt;
 		}
@@ -919,6 +920,12 @@ namespace ceresc::sema
 
 		switch (node.op())
 		{
+			case BinaryOp::Comma:
+				// Any operands at all: the left is evaluated for what it does, the right is the value.
+				// The result is an rvalue of the right side's (decayed) type.
+				resultType = rhsType ? rhsType : errorRecoveryType();
+				break;
+
 			case BinaryOp::LogicalOr:
 			case BinaryOp::LogicalAnd:
 				if (!isScalarType(lhsType) || !isScalarType(rhsType))

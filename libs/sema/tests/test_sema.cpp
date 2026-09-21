@@ -731,6 +731,21 @@ TEST(sema, a_null_pointer_constant_converts_to_a_function_pointer_too)
 	CHECK(!checkSource("int main() { int* p = 0; void (*h)(int) = (int*)0; return 0; }").ok);
 }
 
+TEST(sema, the_comma_operator_takes_the_type_of_its_right_side)
+{
+	CHECK(checkSource("int main() { int a; float f; a = (f = 1.5f, 3); return a; }").ok);
+	CHECK_EQ(typeOfMainLastExpr("int main() { int a; float f; (a = 1, f = 2.0f); }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { char* p; int a; (a = 1, p); }"), "char*");
+
+	// The result is an rvalue, and the left side may be anything, even a value nobody uses.
+	CHECK(!checkSource("int main() { int a; int b; (a, b) = 1; return 0; }").ok);
+	CHECK(checkSource("int main() { int a = 0; int b = 0; for (a = 1, b = 2; a < b; a++, b--) { } return 0; }").ok);
+
+	// Never a constant expression, so it cannot size an array or label a case.
+	CHECK(!checkSource("int a[(1, 2)]; int main() { return 0; }").ok);
+	CHECK(!checkSource("int main() { int x = 1; switch (x) { case (1, 2): return 0; } return 1; }").ok);
+}
+
 TEST(sema, a_call_through_a_pointer_is_checked_against_the_signature_it_carries)
 {
 	CHECK(checkSource("int main() { int (*p)(int) = 0; return p(1); }").ok);

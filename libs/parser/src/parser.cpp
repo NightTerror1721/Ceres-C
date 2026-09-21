@@ -263,7 +263,19 @@ namespace ceresc::parser
 
 	Expr* Parser::parseExpression()
 	{
-		return parseAssignment();
+		// The comma operator, the loosest of all: `a, b` evaluates a, throws it away and is b. It only
+		// exists here, where a whole expression is wanted (a statement, a condition, a for clause, the
+		// inside of parentheses); an argument, an initializer or an enumerator is an assignment
+		// expression, so there a comma is still what separates one from the next.
+		Expr* expr = parseAssignment();
+		while (check(TokenKind::Comma))
+		{
+			SourceLocation location = _current.location();
+			advance();
+			Expr* rhs = parseAssignment();
+			expr = _arena.create<ast::BinaryExpr>(location, BinaryOp::Comma, expr, rhs);
+		}
+		return expr;
 	}
 
 	Expr* Parser::parseAssignment()

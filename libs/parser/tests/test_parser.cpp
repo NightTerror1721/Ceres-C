@@ -567,6 +567,31 @@ TEST(parser, a_for_loop_can_declare_several_variables)
 		"(for (decl-stmt (var i int 0) (var j int 10)) (< i j) (= i (+ i 1)) (expr-stmt x))");
 }
 
+TEST(parser, the_comma_operator_is_the_loosest_and_groups_to_the_left)
+{
+	CHECK_EQ(printExpr("a, b"), "(, a b)");
+	CHECK_EQ(printExpr("a, b, c"), "(, (, a b) c)");
+	CHECK_EQ(printExpr("a = 1, b = 2"), "(, (= a 1) (= b 2))");
+	CHECK_EQ(printExpr("(a, b) + 1"), "(+ (, a b) 1)");
+}
+
+TEST(parser, a_comma_still_separates_arguments_and_initializers)
+{
+	// Only where a whole expression is wanted is a comma an operator; an argument is an assignment
+	// expression, so a comma between two of them is what it always was. Parentheses turn it back.
+	CHECK_EQ(printExpr("f(a, b)"), "(call f a b)");
+	CHECK_EQ(printExpr("f((a, b))"), "(call f (, a b))");
+	CHECK_EQ(printExpr("f(a, (b, c), d)"), "(call f a (, b c) d)");
+	CHECK_EQ(printDecl("int a[] = { 1, 2 };"), "(var a int[2] (init-list 1 2))");
+	CHECK_EQ(printDecl("int a = 1, b = 2;"), "(var a int 1) (var b int 2)");
+}
+
+TEST(parser, a_for_loop_takes_a_comma_in_its_init_and_its_step)
+{
+	CHECK_EQ(printStmt("for (i = 0, j = 9; i < j; i = i + 1, j = j - 1) x;"),
+		"(for (expr-stmt (, (= i 0) (= j 9))) (< i j) (, (= i (+ i 1)) (= j (- j 1))) (expr-stmt x))");
+}
+
 TEST(parser, function_prototype_has_no_body)
 {
 	CHECK_EQ(printDecl("int foo();"), "(func foo int (params) <null>)");

@@ -159,7 +159,7 @@ return-stmt            ::= "return" expression? ";"
 decl-stmt              ::= declaration
 expr-stmt              ::= expression? ";"
 
-expression             ::= assignment-expr
+expression             ::= assignment-expr ("," assignment-expr)*    // the comma operator: evaluate the left, yield the right
 assignment-expr        ::= conditional-expr (assign-op assignment-expr)?
 assign-op              ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
                          | "&=" | "|=" | "^=" | "<<=" | ">>="
@@ -214,6 +214,7 @@ table-driven function rather than ten near-identical ones.
 
 | Level | Operators | Associativity |
 | --- | --- | --- |
+| 0 | `,` | left — only where a whole expression is wanted (a statement, a condition, a `for` clause, parentheses); an argument, an initializer or an enumerator is an assignment-expression, so a comma there still separates |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | right |
 | 1½ | `?:` | right — the middle branch is a full assignment-expression, as in C |
 | 2 | `\|\|` | left |

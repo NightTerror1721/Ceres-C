@@ -44,6 +44,7 @@ namespace ceresc::ast
 				case BinaryOp::Mul: return "*";
 				case BinaryOp::Div: return "/";
 				case BinaryOp::Mod: return "%";
+				case BinaryOp::Comma: return ",";
 			}
 			return "<unknown-binary-op>";
 		}

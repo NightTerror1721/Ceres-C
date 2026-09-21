@@ -234,6 +234,7 @@ namespace ceresc::ast
 		Shl, Shr,							// level 9
 		Add, Sub,							// level 10
 		Mul, Div, Mod,						// level 11
+		Comma,								// level 1 - evaluate the left side, discard it, yield the right
 	};
 
 	class BinaryExpr final : public Expr

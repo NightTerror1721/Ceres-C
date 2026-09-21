@@ -175,6 +175,33 @@ TEST(e2e, a_function_whose_frame_outgrows_a_16_bit_displacement_still_assembles_
 		std::format("{}{}{}{}", middle / 10, middle % 10, value / 10, value % 10));
 }
 
+TEST(e2e, the_comma_operator_runs_its_left_side_first_and_yields_its_right_side)
+{
+	runsTheSameAtEveryLevel("comma_operator",
+		"int calls;"
+		"static int next(void) { calls = calls + 1; return calls; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int a; int b; int i; int j; int sum;"
+		"    a = (b = 4, b + 3);"
+		"    *term = 48 + a;"
+		"    *term = 48 + b;"
+		"    a = (next(), next(), next());"
+		"    *term = 48 + a;"
+		"    *term = 48 + calls;"
+		"    sum = 0;"
+		"    for (i = 0, j = 5; i < j; i++, j--) sum = sum + j - i;"
+		"    *term = 48 + sum;"
+		"    *term = 48 + i;"
+		"    *term = 48 + j;"
+		"    i = 0;"
+		"    while (i = i + 1, i < 4) { }"
+		"    *term = 48 + i;"
+		"    return (a = 1, 0);"
+		"}",
+		"74339324");
+}
+
 TEST(e2e, the_value_main_returns_is_the_exit_status_of_the_run)
 {
 	// Through every optimization level, and past the bits a byte holds: only the low eight survive,
