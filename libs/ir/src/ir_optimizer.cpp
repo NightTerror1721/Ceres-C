@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <format>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -656,6 +658,120 @@ namespace ceresc::ir
 					{
 						rewritten.push_back(instr);
 					}
+				}
+
+				if (blockChanged)
+				{
+					block->replaceInstrs(std::move(rewritten));
+					changedAtAll = true;
+				}
+			}
+			return changedAtAll;
+		}
+
+		// ---- pass: common subexpression elimination ----------------------------------------------------
+		//
+		// renameOperands() is defined with the copy-propagation pass further down; CSE reuses it to
+		// apply its own substitutions, so it is forward-declared here.
+		IrInstr* renameOperands(const IrInstr& instr, support::Arena& arena, const std::unordered_map<u32, IrValue>& replacement);
+
+		// If a pure expression was already computed in this block, computing it again is wasted. The
+		// pass value-numbers each block: an instruction whose operation and (already canonicalized)
+		// operands match one seen earlier is replaced by a reference to the earlier result, and the
+		// duplicate is dropped.
+		//
+		// Intra-block only, on purpose: sharing across blocks needs dominance, which this IR does
+		// not compute. A duplicate result is dropped only when every use of it is in the same block
+		// (useBlocks <= 1), so no other block is left naming a definition that no longer exists.
+		// Loads and stores are never numbered - they read and write memory - and a Call is never
+		// reused. A key is produced only for opcodes that are pure by construction.
+		std::string cseKey(const IrInstr& instr)
+		{
+			switch (instr.opcode())
+			{
+				case IrOpcode::BinOp:
+				{
+					const auto& p = instr.as<IrBinOpPayload>();
+					return std::format("b|{}|{}|{}|{}|{}", static_cast<int>(p.op), p.isUnsigned, p.isFloat, p.lhs.id, p.rhs.id);
+				}
+				case IrOpcode::UnOp:
+				{
+					const auto& p = instr.as<IrUnOpPayload>();
+					return std::format("u|{}|{}|{}|{}|{}", static_cast<int>(p.op), p.isFloat, p.isUnsigned,
+						static_cast<int>(p.narrowSize), p.operand.id);
+				}
+				case IrOpcode::Cmp:
+				{
+					const auto& p = instr.as<IrCmpPayload>();
+					return std::format("c|{}|{}|{}|{}|{}", static_cast<int>(p.predicate), p.isUnsigned, p.isFloat, p.lhs.id, p.rhs.id);
+				}
+				case IrOpcode::FrameAddr: return std::format("f|{}", instr.as<IrFrameAddrPayload>().localIndex);
+				case IrOpcode::GlobalAddr: return std::format("g|{}", instr.as<IrGlobalAddrPayload>().name);
+				case IrOpcode::Builtin:
+				{
+					const auto& p = instr.as<IrBuiltinPayload>();
+					return std::format("t|{}|{}|{}", static_cast<int>(p.builtin), p.a.id, p.b.id);
+				}
+				case IrOpcode::VaStart: return std::string("v");
+				default: return {}; // Const/Copy/Load/Store/Call/... : not numbered
+			}
+		}
+
+		bool eliminateCommonSubexpressions(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		{
+			if (!options.commonSubexpressionElimination)
+				return false;
+
+			// How many distinct blocks reference each temporary. A duplicate whose result is read
+			// from more than one block must stay, so those blocks keep a real definition to name.
+			std::vector<u32> useBlocks(function.tempCount(), 0);
+			for (const auto& block : function.blocks())
+			{
+				std::vector<bool> seen(function.tempCount(), false);
+				for (const IrInstr* instr : block->instrs())
+					forEachOperand(*instr, [&](IrValue value)
+					{
+						if (value.isValid() && value.id < useBlocks.size() && !seen[value.id])
+						{
+							seen[value.id] = true;
+							++useBlocks[value.id];
+						}
+					});
+			}
+
+			bool changedAtAll = false;
+			for (const auto& block : function.blocks())
+			{
+				std::unordered_map<std::string, IrValue> available;   // expression key -> first result
+				std::unordered_map<u32, IrValue> substitution;        // duplicate result -> canonical
+				std::vector<IrInstr*> rewritten;
+				rewritten.reserve(block->instrs().size());
+				bool blockChanged = false;
+
+				for (IrInstr* instr : block->instrs())
+				{
+					IrInstr* current = instr;
+					if (IrInstr* renamed = renameOperands(*instr, arena, substitution))
+						current = renamed;
+
+					if (IrValue result = resultOf(*current); result.isValid())
+					{
+						std::string key = cseKey(*current);
+						if (!key.empty())
+						{
+							auto found = available.find(key);
+							if (found != available.end() && useBlocks[result.id] <= 1)
+							{
+								substitution[result.id] = found->second;
+								blockChanged = true;
+								continue; // the earlier result is this one's value - drop it
+							}
+							if (found == available.end())
+								available.emplace(std::move(key), result);
+						}
+					}
+
+					rewritten.push_back(current);
 				}
 
 				if (blockChanged)
@@ -1829,6 +1945,7 @@ namespace ceresc::ir
 				changed |= forwardLoads(*function, arena, options);
 				changed |= forwardRestrictLoads(*function, arena, options);
 				changed |= propagateCopies(*function, arena, options);
+				changed |= eliminateCommonSubexpressions(*function, arena, options);
 				changed |= eliminateDeadStores(*function, options);
 				changed |= threadJumps(*function, arena, options);
 				changed |= removeUnreachableBlocks(*function, options);

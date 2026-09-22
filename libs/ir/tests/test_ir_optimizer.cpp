@@ -225,6 +225,45 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	CHECK(!og.inlining && og.constantFolding && og.jumpTables);
 }
 
+// ---- common subexpression elimination ------------------------------------------------------------
+
+TEST(ir_optimizer, cse_reuses_a_pure_expression_computed_twice_in_one_block)
+{
+	// Two identical `x * x` computations. Forwarding and copy propagation are on so both reads of
+	// `x` name the same value (the operand canonicalization CSE needs); with CSE off the second mul
+	// stays, with it on the second mul is the first.
+	std::string_view source = "int f(int a) { int x = a; return (x * x) + (x * x); }";
+
+	support::OptimizationOptions withoutCse = support::OptimizationOptions::none();
+	withoutCse.loadForwarding = true;
+	withoutCse.copyPropagation = true;
+
+	support::OptimizationOptions withCse = withoutCse;
+	withCse.commonSubexpressionElimination = true;
+
+	CHECK_EQ(countOf(optimizedIr(source, withoutCse, "f"), "mul"), usize(2));
+	CHECK_EQ(countOf(optimizedIr(source, withCse, "f"), "mul"), usize(1));
+}
+
+TEST(ir_optimizer, cse_leaves_a_load_alone_because_it_reads_memory)
+{
+	// Two reads of *p are NOT the same value - a store (or a device register) could sit between
+	// them - so loads are never numbered, and CSE changes nothing here.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::commonSubexpressionElimination);
+	std::string_view source = "int f(int* p) { return *p + *p; }";
+	CHECK_EQ(countOf(optimizedIr(source, options, "f"), "load"),
+		countOf(optimizedIr(source, support::OptimizationOptions::none(), "f"), "load"));
+}
+
+TEST(ir_optimizer, cse_is_off_at_O0)
+{
+	support::OptimizationOptions withoutCse = support::OptimizationOptions::none();
+	withoutCse.loadForwarding = true;
+	withoutCse.copyPropagation = true;
+	std::string text = optimizedIr("int f(int a) { int x = a; return (x * x) + (x * x); }", withoutCse, "f");
+	CHECK_EQ(countOf(text, "mul"), usize(2));
+}
+
 // ---- strength reduction --------------------------------------------------------------------------
 
 TEST(ir_optimizer, strength_reduction_turns_a_multiply_by_a_power_of_two_into_a_shift)
