@@ -872,15 +872,17 @@ TEST(codegen, turning_one_flag_on_top_of_O0_changes_only_that_one_thing)
 TEST(codegen, an_array_element_read_uses_the_indexed_load_form)
 {
 	// 05-Instruction-Set.md's whole point about indexed addressing: "Walking an array used to cost
-	// an add per element". One `mul` to scale the index, then the access reads base and index
-	// together - the assembler picks LDRX from the operand shapes, exactly as it picks ADDI over ADD.
+	// an add per element". One scaling of the index, then the access reads base and index together -
+	// the assembler picks LDRX from the operand shapes, exactly as it picks ADDI over ADD. The scale
+	// is `shl r2, r1, 2` rather than `mul r2, r1, 4`: strength reduction (ir_optimizer.h) turns the
+	// element size, a power of two, into a shift.
 	CHECK_EQ(atO2("int sum(int* a, int i) { return a[i]; }"),
 		"@text\n"
 		"\n"
 		"// sum - test.c:1\n"
 		"global sum:\n"
 		".L0:\n"
-		"    mul r2, r1, 4         // test.c:1\n"
+		"    shl r2, r1, 2         // test.c:1\n"
 		"    ldr r2, [r0 + r2]     // test.c:1\n"
 		"    mov r0, r2            // test.c:1\n"
 		"    ret                   // test.c:1\n");

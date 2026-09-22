@@ -208,6 +208,66 @@ TEST(ir_optimizer, algebraic_simplification_leaves_float_identities_alone)
 	CHECK(contains(text, "mul"));
 }
 
+// ---- strength reduction --------------------------------------------------------------------------
+
+TEST(ir_optimizer, strength_reduction_turns_a_multiply_by_a_power_of_two_into_a_shift)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::strengthReduction);
+	std::string text = optimizedIr("int f(int x) { return x * 8; }", options, "f");
+	CHECK(contains(text, "shl"));
+	CHECK(!contains(text, "mul"));
+}
+
+TEST(ir_optimizer, strength_reduction_turns_unsigned_division_into_a_logical_shift)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::strengthReduction);
+	std::string text = optimizedIr("unsigned f(unsigned x) { return x / 4; }", options, "f");
+	CHECK(contains(text, "shr"));
+	CHECK(!contains(text, "div"));
+}
+
+TEST(ir_optimizer, strength_reduction_turns_unsigned_remainder_into_a_mask)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::strengthReduction);
+	std::string text = optimizedIr("unsigned f(unsigned x) { return x % 8; }", options, "f");
+	CHECK(contains(text, "and"));
+	CHECK(!contains(text, "mod"));
+}
+
+TEST(ir_optimizer, strength_reduction_biases_signed_division_before_the_arithmetic_shift)
+{
+	// C truncates toward zero; a bare arithmetic shift rounds toward -inf, so the dividend is
+	// biased up by 2^k-1 when it is negative first (see rewriteStrength's own note).
+	support::OptimizationOptions options = only(&support::OptimizationOptions::strengthReduction);
+	std::string text = optimizedIr("int f(int x) { return x / 4; }", options, "f");
+	CHECK(contains(text, "shr"));  // the bias read
+	CHECK(contains(text, "add"));  // x + bias
+	CHECK(contains(text, "sar"));  // the arithmetic shift
+	CHECK(!contains(text, "div"));
+}
+
+TEST(ir_optimizer, strength_reduction_signed_remainder_keeps_the_sign_of_the_dividend)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::strengthReduction);
+	std::string text = optimizedIr("int f(int x) { return x % 4; }", options, "f");
+	CHECK(contains(text, "sub")); // x - ((x / 4) << 2)
+	CHECK(!contains(text, "mod"));
+}
+
+TEST(ir_optimizer, strength_reduction_leaves_a_non_power_of_two_division_alone)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::strengthReduction);
+	std::string text = optimizedIr("unsigned f(unsigned x) { return x / 10; }", options, "f");
+	CHECK(contains(text, "div"));
+}
+
+TEST(ir_optimizer, strength_reduction_is_off_at_O0)
+{
+	std::string text = optimizedIr("unsigned f(unsigned x) { return x / 4; }", support::OptimizationOptions::none(), "f");
+	CHECK(contains(text, "div"));
+	CHECK(!contains(text, "shr"));
+}
+
 // ---- branch simplification / unreachable blocks ---------------------------------------------------
 
 TEST(ir_optimizer, a_constant_condition_resolves_to_one_branch_and_the_other_arm_disappears)

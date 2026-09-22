@@ -17,6 +17,7 @@
 //   inlining              splices a small, single-block, call-free callee into its caller, so every
 //                         pass below then sees the callee's body as ordinary caller code
 //   constant folding      an operation whose operands are all known constants becomes a Const
+//   strength reduction    x*2^k / x/2^k / x%2^k become a shift, a mask, or a small bias sequence
 //   algebraic             x+0 / x-0 / x*1 / x*0 / x/1 / x<<0 / x>>0 collapse to a copy or a zero
 //   copy propagation      replaces a copied temporary with its original value where safe
 //   load forwarding       reuses a known same-width store instead of loading the local again

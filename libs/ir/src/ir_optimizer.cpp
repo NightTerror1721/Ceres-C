@@ -1,6 +1,7 @@
 #include <ceresc/ir/ir_optimizer.h>
 
 #include <algorithm>
+#include <bit>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -476,6 +477,173 @@ namespace ceresc::ir
 				block->replaceInstrs(std::move(rewritten));
 			}
 			return changed;
+		}
+
+		// ---- pass: strength reduction ------------------------------------------------------------------
+		//
+		// A multiplication, division or remainder by a compile-time CONSTANT POWER OF TWO is one
+		// shift or mask on any machine, and the arithmetic it replaces (imul/idiv/imod, and the
+		// unsigned mul/div/mod) is the expensive part of a loop body. The rewrites:
+		//
+		//   x * 2^k  ->  x << k                       (a multiply wraps the same way, either sign)
+		//   x /u 2^k ->  x >>u k                      (logical shift: the result is non-negative)
+		//   x %u 2^k ->  x & (2^k - 1)
+		//   x /s 2^k ->  (x + (x >>u (32-k))) >>s k   the bias rounds the dividend toward -inf
+		//   x %s 2^k ->  x - ((x /s 2^k) << k)        BEFORE the arithmetic shift, so the quotient
+		//                                             truncates toward zero exactly as C's / does
+		//
+		// The signed bias reads the dividend with a LOGICAL shift (x >>u (32-k) is 0 or 2^k-1), so
+		// it is one instruction and needs no wide mask - the textbook `(x >>s 31) & (2^k-1)` form
+		// would materialize the mask for every k above 16.
+		//
+		// Only a power of two is recognized. The general "magic number" division needs a
+		// 32x32 -> 64 multiply-high, and the IR has no opcode for one today (MULH/IMULH exist in
+		// the ISA but nothing reaches them); dividing by 10 still goes through IDIV. See docs/14.
+		bool rewriteStrength(const IrBinOpPayload& p, support::SourceLocation loc, IrFunction& function,
+			support::Arena& arena, const std::unordered_map<u32, ConstValue>& constants, std::vector<IrInstr*>& out)
+		{
+			if (p.isFloat)
+				return false;
+
+			const ConstValue* lhs = findConstant(constants, p.lhs);
+			const ConstValue* rhs = findConstant(constants, p.rhs);
+
+			const ConstValue* constant = nullptr;
+			IrValue value;
+			if (p.op == IrBinOp::Mul)
+			{
+				// Commutative: whichever side is the constant leaves the other as the value.
+				if (rhs && !lhs) { constant = rhs; value = p.lhs; }
+				else if (lhs && !rhs) { constant = lhs; value = p.rhs; }
+			}
+			else if (p.op == IrBinOp::Div || p.op == IrBinOp::Mod)
+			{
+				// Not commutative: only a constant DIVISOR becomes a shift.
+				if (rhs && !lhs) { constant = rhs; value = p.lhs; }
+			}
+			if (!constant || constant->isFloat)
+				return false;
+
+			u32 bits = static_cast<u32>(constant->intValue);
+			if (!std::has_single_bit(bits))
+				return false;
+			u32 k = std::countr_zero(bits);
+			if (k == 0)
+				return false; // x*1 / x/1 / x%1 are the identity cases algebraic simplification owns
+
+			// A signed divisor must be positive: a negative one would need an extra negation, and
+			// INT_MIN is the one signed value with no positive counterpart.
+			if (!p.isUnsigned && p.op != IrBinOp::Mul && static_cast<i32>(bits) <= 0)
+				return false;
+
+			auto emitConst = [&](i64 v) -> IrValue
+			{
+				IrValue result = function.newTemp();
+				IrConstPayload c;
+				c.result = result;
+				c.intValue = v;
+				out.push_back(arena.create<IrInstr>(loc, c));
+				return result;
+			};
+			auto emitBin = [&](IrValue result, IrBinOp op, IrValue a, IrValue b)
+			{
+				IrBinOpPayload bop;
+				bop.result = result;
+				bop.op = op;
+				bop.lhs = a;
+				bop.rhs = b;
+				out.push_back(arena.create<IrInstr>(loc, bop));
+			};
+			auto emitTemp = [&](IrBinOp op, IrValue a, IrValue b) -> IrValue
+			{
+				IrValue result = function.newTemp();
+				emitBin(result, op, a, b);
+				return result;
+			};
+
+			switch (p.op)
+			{
+				case IrBinOp::Mul:
+				{
+					IrValue shift = emitConst(k);
+					emitBin(p.result, IrBinOp::Shl, value, shift);
+					return true;
+				}
+				case IrBinOp::Div:
+				{
+					if (p.isUnsigned)
+					{
+						IrValue shift = emitConst(k);
+						emitBin(p.result, IrBinOp::Shr, value, shift);
+						return true;
+					}
+					IrValue bias = emitTemp(IrBinOp::Shr, value, emitConst(32 - k));
+					IrValue sum = emitTemp(IrBinOp::Add, value, bias);
+					emitBin(p.result, IrBinOp::Sar, sum, emitConst(k));
+					return true;
+				}
+				case IrBinOp::Mod:
+				{
+					if (p.isUnsigned)
+					{
+						emitBin(p.result, IrBinOp::And, value, emitConst(static_cast<i64>(bits) - 1));
+						return true;
+					}
+					IrValue bias = emitTemp(IrBinOp::Shr, value, emitConst(32 - k));
+					IrValue sum = emitTemp(IrBinOp::Add, value, bias);
+					// The quotient is read again below, so it needs a temporary of its own rather
+					// than p.result.
+					IrValue quotient = emitTemp(IrBinOp::Sar, sum, emitConst(k));
+					IrValue scaled = emitTemp(IrBinOp::Shl, quotient, emitConst(k));
+					emitBin(p.result, IrBinOp::Sub, value, scaled);
+					return true;
+				}
+				default:
+					return false;
+			}
+		}
+
+		bool reduceStrength(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		{
+			if (!options.strengthReduction)
+				return false;
+
+			std::unordered_map<u32, ConstValue> constants = collectConstants(function);
+			bool changedAtAll = false;
+
+			for (const auto& block : function.blocks())
+			{
+				std::vector<IrInstr*> rewritten;
+				rewritten.reserve(block->instrs().size());
+				bool blockChanged = false;
+
+				for (IrInstr* instr : block->instrs())
+				{
+					if (instr->opcode() != IrOpcode::BinOp)
+					{
+						rewritten.push_back(instr);
+						continue;
+					}
+
+					std::vector<IrInstr*> replacement;
+					if (rewriteStrength(instr->as<IrBinOpPayload>(), instr->location(), function, arena, constants, replacement))
+					{
+						rewritten.insert(rewritten.end(), replacement.begin(), replacement.end());
+						blockChanged = true;
+					}
+					else
+					{
+						rewritten.push_back(instr);
+					}
+				}
+
+				if (blockChanged)
+				{
+					block->replaceInstrs(std::move(rewritten));
+					changedAtAll = true;
+				}
+			}
+			return changedAtAll;
 		}
 
 		// ---- local escape analysis (shared by load forwarding and dead-store elimination) -----------
@@ -1569,6 +1737,7 @@ namespace ceresc::ir
 				// runs until nothing moves rather than trying to get the order exactly right.
 				bool changed = false;
 				changed |= foldFunction(*function, arena, options);
+				changed |= reduceStrength(*function, arena, options);
 				changed |= forwardLoads(*function, arena, options);
 				changed |= forwardRestrictLoads(*function, arena, options);
 				changed |= propagateCopies(*function, arena, options);
