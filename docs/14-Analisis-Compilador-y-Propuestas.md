@@ -1027,6 +1027,48 @@ de extremo a extremo la forma que los dos fallos altos podían romper.
 
 ---
 
+## 18. Ola C — profundidad de lenguaje
+
+| Parte | Estado | Commit |
+| --- | --- | --- |
+| **F9** — rangos en `case` (`case lo ... hi:`) | **hecha** | `Add GNU case ranges` |
+| **F10** — builtins del compilador (`__builtin_trap`/`unreachable`/`expect`/`constant_p`) | **hecha** | `Add __builtin_trap/unreachable/expect/constant_p` |
+| **F2** — aritmética marcada (`__builtin_add/sub/mul_overflow`) | **hecha** | `Add __builtin_add/sub/mul_overflow` |
+| **F3**, **F6**, **F7**, **F12**, **F14**, **O7** | **aplazadas, con motivo** | — |
+
+**Por qué se aplazan.** Igual que en la Ola B, cada una es un proyecto en sí:
+
+- **F3 (enteros de 64 bits)**: emulación en pareja de registros con `ADDC`/`SUBC`, layout de tipos,
+  promociones y ABI de 64 bits; es el mayor de los aplazados.
+- **F6 (alloca/VLA/FAM)** y **F7 (bitfields/packed)**: cambian el layout y el esquema de frame.
+- **F12 (preprocesador)**: `#line` rompe la premisa de que las ubicaciones vienen del `LineMap`;
+  `#include_next` necesita recordar de qué directorio vino cada fichero; `_Pragma` es un operador de
+  macro.
+- **F14 (`__asm__` con operandos/clobbers)** y **O7 (llamada de cola + `BL`/`BLR`)**: el primero
+  cambia el contrato de ensamble en línea; el segundo obliga a preservar epílogo y callee-saved antes
+  de saltar, y a una segunda convención de llamada.
+
+### Pasada de revisión sobre la Ola C
+
+`open-code-review` sobre `85932a4..HEAD` (15 ficheros, 8 hallazgos). **Un fallo alto, real**, en F2:
+
+- el tercer operando de `__builtin_*_overflow` es un **valor puntero**, no un lvalue del que tomar
+  dirección; `lowerAddress()` sobre un `NameExpr` daba la dirección del *propio objeto puntero*, así
+  que `int* p; __builtin_add_overflow(a, b, p)` escribía en `p` en vez de a través de él. Se corrigió
+  a `lowerExpr()` (que sirve para las dos formas: `&r` da la dirección, `p` da el puntero cargado).
+
+También corregidos dos desbordamientos/UB de enteros con signo y una complejidad cuadrática en el
+manejo de rangos: los bucles que expanden un rango (en sema y en el `IrBuilder`) ahora iteran por
+**desplazamiento** en vez de por valor, porque `high` puede ser `INT64_MAX` y `++valor` desbordaría;
+los valores ya vistos de un `switch` pasan de `std::vector` con `std::find` a `std::unordered_set`
+(un rango de 65536 valores ya no hace cuadrática la detección de duplicados); y la signatura de la
+operación de overflow en F2 se deriva de **ambos** operandos (conversión aritmética usual), no solo
+del primero, para no depender del orden. Además se endureció un test de codegen débil (`"add"`
+también casaba con `"addi"`) y se anotó en `examples/24` que `trap`/`unreachable` no pueden
+ejercitarse en un ejemplo que imprime.
+
+---
+
 ## Anexo — Referencias de código clave
 
 | Tema | Fichero / símbolo |

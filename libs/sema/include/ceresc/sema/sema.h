@@ -9,6 +9,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Sema - walks the parser's AST (which does not yet know whether `x` exists, or what type
@@ -168,7 +169,9 @@ namespace ceresc::sema
 		// switch.
 		struct SwitchContext
 		{
-			std::vector<i64> seenCaseValues;
+			// A set, not a vector: a `case low ... high:` range registers up to 65536 values, and a
+			// second overlapping range must not make that a quadratic scan.
+			std::unordered_set<i64> seenCaseValues;
 			bool defaultSeen = false;
 		};
 		std::vector<SwitchContext> _switchStack;

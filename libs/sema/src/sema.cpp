@@ -1831,22 +1831,20 @@ namespace ceresc::sema
 		else if (!_switchStack.empty())
 		{
 			SwitchContext& context = _switchStack.back();
-			i64 high = upper && node.upper() ? *upper : *value;
+			i64 high = node.upper() ? *upper : *value;
+			// Iterate by offset, not by value: `high` can be INT64_MAX (a legal one-value range),
+			// and `++value` there would overflow a signed integer. The span is bounded by sema's
+			// own cap above.
+			u64 span = static_cast<u64>(high) - static_cast<u64>(*value);
 			i64 firstDuplicate = 0;
 			bool foundDuplicate = false;
-			for (i64 candidate = *value; candidate <= high; ++candidate)
+			for (u64 offset = 0; offset <= span; ++offset)
 			{
-				if (std::find(context.seenCaseValues.begin(), context.seenCaseValues.end(), candidate) != context.seenCaseValues.end())
+				i64 candidate = *value + static_cast<i64>(offset);
+				if (!context.seenCaseValues.insert(candidate).second && !foundDuplicate)
 				{
-					if (!foundDuplicate)
-					{
-						foundDuplicate = true;
-						firstDuplicate = candidate;
-					}
-				}
-				else
-				{
-					context.seenCaseValues.push_back(candidate);
+					foundDuplicate = true;
+					firstDuplicate = candidate;
 				}
 			}
 			if (foundDuplicate)

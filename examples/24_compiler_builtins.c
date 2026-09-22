@@ -2,8 +2,11 @@
 //
 // `__builtin_constant_p(e)` is a compile-time question (1 when `e` folds to a constant, 0
 // otherwise) and does not evaluate `e`; `__builtin_expect(x, hint)` is a branch-prediction hint
-// whose value is just `x`. `__builtin_trap()` and `__builtin_unreachable()` both lower to the
-// machine's `trap`. Printed: 1, 0, 5.
+// whose value is just `x`. Printed: 1, 0, 5.
+//
+// `__builtin_trap()` and `__builtin_unreachable()` - which both lower to the machine's `trap` - are
+// not shown here: either one faults the VM rather than printing, so a runnable example cannot
+// demonstrate them. They are covered by the codegen suite instead.
 //
 //     ceresc examples/24_compiler_builtins.c --run
 

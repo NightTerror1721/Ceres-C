@@ -1408,11 +1408,26 @@ TEST(codegen, trap_emits_the_trap_instruction)
 
 TEST(codegen, expect_lowers_to_its_operand_and_constant_p_to_a_constant)
 {
-	// Neither is a machine instruction: a discarded `constant_p` leaves no call at all, and
-	// `expect` is a plain copy of its operand.
+	// Neither is a machine instruction, and `constant_p` does not even evaluate its operand: the
+	// `3 * 4` it asks about is never computed, and the function is just `x + 1`.
 	std::string casm = atO2("int f(int x) { return __builtin_expect(x, 1) + __builtin_constant_p(3 * 4); }");
 	CHECK(!contains(casm, "call"));
-	CHECK(contains(casm, "add")); // x + 1 (constant_p(12) folded to 1)
+	CHECK(!contains(casm, "mul")); // constant_p(12) is answered at compile time
+}
+
+TEST(codegen, overflow_builtins_store_and_return_a_flag_without_a_call)
+{
+	// Neither is a call; the signed add overflow test is a sign comparison, and the unsigned
+	// multiply uses the multiply-high. (The store through the pointer may be optimized away when
+	// the result local is only ever read back, so it is not asserted here.)
+	std::string signedCasm = atO2("int f(int a, int b) { int r; return __builtin_add_overflow(a, b, &r) + r; }");
+	CHECK(!contains(signedCasm, "call"));
+	CHECK(contains(signedCasm, "add "));  // the wrapping sum
+	CHECK(contains(signedCasm, "ifls ")); // the signed test ((a^sum) & (b^sum)) < 0
+
+	std::string unsignedCasm = atO2("unsigned f(unsigned a, unsigned b) { unsigned r; return __builtin_mul_overflow(a, b, &r) + r; }");
+	CHECK(!contains(unsignedCasm, "call"));
+	CHECK(contains(unsignedCasm, "mulh ")); // the unsigned test is mulhu == 0
 }
 
 TEST(codegen, a_machine_builtin_does_not_cost_a_function_its_register_window)

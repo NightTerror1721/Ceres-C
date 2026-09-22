@@ -1504,10 +1504,15 @@ namespace ceresc::ir
 		{
 			IrValue a = lowerExpr(args[0]);
 			IrValue b = lowerExpr(args[1]);
-			IrValue destination = lowerAddress(args[2]);
+			// The third operand is the pointer VALUE to store through, not an lvalue to take the
+			// address of: `&r` lowers to the address, a plain `int* p` to the pointer it holds.
+			IrValue destination = lowerExpr(args[2]);
 
-			const ast::Type* operandType = args[0] ? args[0]->type() : nullptr;
-			bool isUnsigned = operandType && !operandType->isSigned();
+			// C's usual arithmetic conversions: the operation is unsigned if EITHER operand is, so
+			// the overflow test does not depend on which operand came first.
+			const ast::Type* lhsType = args[0] ? args[0]->type() : nullptr;
+			const ast::Type* rhsType = args[1] ? args[1]->type() : nullptr;
+			bool isUnsigned = (lhsType && !lhsType->isSigned()) || (rhsType && !rhsType->isSigned());
 			ast::Builtin kind = node.builtin();
 			IrBinOp op = kind == ast::Builtin::AddOverflow ? IrBinOp::Add
 				: kind == ast::Builtin::SubOverflow ? IrBinOp::Sub
@@ -2066,8 +2071,10 @@ namespace ceresc::ir
 					if (std::optional<i64> upper = foldConstant(caseStmt->upper()); upper && *upper >= low)
 						high = *upper;
 				}
-				for (i64 expanded = low; expanded <= high; ++expanded)
-					cases.emplace_back(expanded, &block);
+				// Iterate by offset: `high` can be INT64_MAX, where `++value` would overflow.
+				u64 span = static_cast<u64>(high) - static_cast<u64>(low);
+				for (u64 offset = 0; offset <= span; ++offset)
+					cases.emplace_back(low + static_cast<i64>(offset), &block);
 			}
 			collectSwitchCases(caseStmt->body(), cases, defaultBlock);
 			return;
