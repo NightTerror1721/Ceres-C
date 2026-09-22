@@ -1069,6 +1069,35 @@ ejercitarse en un ejemplo que imprime.
 
 ---
 
+## 19. Backlog priorizado (lo que queda)
+
+Ordenado por **posibilidad de resolverlo sin dependencias** primero y, dentro de eso, por valor.
+Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por fila, con una pasada de
+`open-code-review` cada 3–4 commits.
+
+| # | Item | Depende de | Estado |
+| --- | --- | --- | --- |
+| 1 | **F14a** — `__builtin_stack_pointer()` (estado de máquina) | — | pendiente |
+| 2 | **F12** — preprocesador: `#line`, `#include_next`, `_Pragma` | — | pendiente |
+| 3 | **O9** — layout de bloques para fall-through | — | pendiente |
+| 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) recomendado | pendiente |
+| 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | verificar el ensamblador | pendiente |
+| 6 | **O7** — llamada de cola + `BL`/`BLR` | — | pendiente |
+| 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | pendiente |
+| 8 | **O12** — selección de patrones (`min`/`max`/`abs`/`clz`) | — | pendiente |
+| 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
+| 10 | **O11** — SCCP (propagación de constantes condicional) | — | pendiente |
+| 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |
+| 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
+| 13 | **O3** — optimizaciones de bucle (LICM, IV-SR) | detección de bucles | pendiente |
+| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 (detección de bucles) | pendiente |
+| 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
+| 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
+| 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
+
+---
+
 ## Anexo — Referencias de código clave
 
 | Tema | Fichero / símbolo |
