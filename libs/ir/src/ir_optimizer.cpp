@@ -1267,10 +1267,9 @@ namespace ceresc::ir
 
 			// A local that never appears as a load's address is never read at all - and since it did
 			// not escape, nothing outside this function can read it either. Every store into it is
-			// therefore dead. Deliberately whole-local rather than per-store: "is this particular
-			// store overwritten before any read" needs a reaching-stores analysis, and the
-			// whole-local case is the one inlining actually produces (a parameter copied in and then
-			// forwarded away entirely).
+			// therefore dead. That whole-local case is one half of this pass (and the one inlining
+			// produces: a parameter copied in and then forwarded away entirely); the other half,
+			// below, drops a store a later store overwrites before any read, within a block.
 			std::vector<bool> everRead(function.localCount(), false);
 			for (const auto& block : function.blocks())
 			{
@@ -1284,29 +1283,84 @@ namespace ceresc::ir
 				}
 			}
 
+			// Per-store, within a block: a full-width store to a non-escaping local that a later
+			// full-width store overwrites before any load of it is dead - the earlier value is
+			// never observed. Narrower stores are not tracked (a reinterpretation through a cast
+			// only touches part of the slot), and a load between two stores makes the earlier one
+			// observable. Nothing else can write a non-escaping local, so a call in between is
+			// irrelevant.
 			bool changed = false;
 			for (const auto& block : function.blocks())
 			{
 				std::vector<IrInstr*> live;
 				live.reserve(block->instrs().size());
+				std::unordered_map<u32, usize> lastFullStore; // local -> index into `live`
+				bool blockChanged = false;
+
+				auto localOf = [&](IrValue address) -> u32
+				{
+					if (!address.isValid() || address.id >= frameAddrLocal.size())
+						return ~0u;
+					u32 local = frameAddrLocal[address.id];
+					if (local == ~0u || local >= nonEscaping.size() || !nonEscaping[local])
+						return ~0u;
+					return local;
+				};
+
 				for (IrInstr* instr : block->instrs())
 				{
-					if (instr->opcode() == IrOpcode::Store)
+					if (instr->opcode() == IrOpcode::Load)
 					{
-						const auto& store = instr->as<IrStorePayload>();
-						IrValue address = store.address;
-						u32 local = (address.isValid() && address.id < frameAddrLocal.size()) ? frameAddrLocal[address.id] : ~0u;
-						if (local != ~0u && local < nonEscaping.size() && !function.localSlots()[local].isVolatile &&
-							!store.isVolatile && nonEscaping[local] && !everRead[local])
-						{
-							changed = true;
-							continue;
-						}
+						if (u32 local = localOf(instr->as<IrLoadPayload>().address); local != ~0u)
+							lastFullStore.erase(local); // the preceding store is now read
+						live.push_back(instr);
+						continue;
+					}
+					if (instr->opcode() != IrOpcode::Store)
+					{
+						live.push_back(instr);
+						continue;
+					}
+
+					const auto& store = instr->as<IrStorePayload>();
+					u32 local = localOf(store.address);
+					if (local == ~0u || function.localSlots()[local].isVolatile || store.isVolatile)
+					{
+						live.push_back(instr);
+						continue;
+					}
+					if (!everRead[local])
+					{
+						blockChanged = true; // never read anywhere - dead by the whole-local rule
+						continue;
+					}
+					const IrLocalSlot& slot = function.localSlots()[local];
+					bool fullWidth = store.size == irMemSizeForBytes(slot.sizeInBytes) && store.isFloat == slot.isFloat;
+					if (!fullWidth)
+					{
+						lastFullStore.erase(local);
+						live.push_back(instr);
+						continue;
+					}
+					if (auto it = lastFullStore.find(local); it != lastFullStore.end())
+					{
+						live[it->second] = nullptr; // that earlier store is overwritten unread
+						blockChanged = true;
 					}
 					live.push_back(instr);
+					lastFullStore[local] = live.size() - 1;
 				}
-				if (live.size() != block->instrs().size())
-					block->replaceInstrs(std::move(live));
+
+				if (blockChanged)
+				{
+					std::vector<IrInstr*> kept;
+					kept.reserve(live.size());
+					for (IrInstr* instr : live)
+						if (instr != nullptr)
+							kept.push_back(instr);
+					block->replaceInstrs(std::move(kept));
+					changed = true;
+				}
 			}
 			return changed;
 		}

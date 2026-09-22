@@ -517,6 +517,20 @@ TEST(ir_optimizer, dead_store_elimination_drops_a_store_nothing_ever_reads)
 	CHECK(!contains(text, "store"));
 }
 
+TEST(ir_optimizer, dead_store_elimination_drops_a_store_a_later_store_overwrites_unread)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::deadStoreElimination);
+	std::string text = optimizedIr("int f(int a, int b) { int x = a; x = b; return x; }", options, "f");
+	CHECK_EQ(countOf(text, "store"), usize(1)); // the `x = a` is never observed
+}
+
+TEST(ir_optimizer, dead_store_elimination_keeps_a_store_read_before_it_is_overwritten)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::deadStoreElimination);
+	std::string text = optimizedIr("int f(int a, int b) { int x = a; int y = x; x = b; return x + y; }", options, "f");
+	CHECK_EQ(countOf(text, "store"), usize(3)); // `x = a` is read into y, so none is dead
+}
+
 TEST(ir_optimizer, dead_store_elimination_keeps_a_store_to_an_escaping_local)
 {
 	support::OptimizationOptions options = support::OptimizationOptions::none();
