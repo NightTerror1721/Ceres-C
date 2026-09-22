@@ -135,6 +135,7 @@ namespace ceresc::support
 		PackedNotSupported             = 2043,
 		ExtendedAsmNotSupported        = 2044,
 		AsmOutsideFunction             = 2045,
+		ExpectedGenericAssociation     = 2046,
 
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
 		AttributeIgnored = kDiagnosticWarningBit | 2002,
@@ -232,6 +233,9 @@ namespace ceresc::support
 		DesignatorIndexOutOfRange        = 3090,
 		UnionMemberDesignator            = 3091,
 		InvalidCompoundLiteralType       = 3092,
+		DuplicateGenericAssociation      = 3093,
+		MultipleGenericDefaults          = 3094,
+		NoMatchingGenericAssociation     = 3095,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,

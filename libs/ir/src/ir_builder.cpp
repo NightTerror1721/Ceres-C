@@ -1498,6 +1498,18 @@ namespace ceresc::ir
 		}
 	}
 
+	void IrBuilder::visit(ast::GenericSelectionExpr& node)
+	{
+		// _Generic's controlling expression and every non-selected association are a non-evaluated
+		// context, exactly like sizeof's operand (see visit(SizeofExpr&) above): sema already picked
+		// the winning association (node.selectedIndex()), so only that one expr is ever lowered here.
+		// node.controlling() itself is NEVER lowered - a controlling expression with a side effect,
+		// e.g. `_Generic(x++, ...)`, never actually increments x, per the C11 rule sema's own comment
+		// on GenericSelectionExpr explains.
+		Expr* selected = node.selectedExpr();
+		_lastValue = selected ? lowerExpr(selected) : IrValue{};
+	}
+
 	void IrBuilder::visit(ast::TernaryExpr& node)
 	{
 		support::SourceLocation loc = node.location();

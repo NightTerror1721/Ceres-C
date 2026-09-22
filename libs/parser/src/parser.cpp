@@ -235,6 +235,24 @@ namespace ceresc::parser
 		return std::span<const EnumeratorDecl>(stored, enumerators.size());
 	}
 
+	std::span<const GenericAssoc> Parser::copyGenericAssocsToArena(const std::vector<GenericAssoc>& assocs) noexcept
+	{
+		if (assocs.empty())
+			return {};
+
+		void* memory = _arena.allocate(sizeof(GenericAssoc) * assocs.size(), alignof(GenericAssoc));
+		if (!memory)
+		{
+			_diagnostics.error(DiagId::OutOfMemory, _current.location(), "out of memory allocating a '_Generic' association list");
+			return {};
+		}
+
+		GenericAssoc* stored = static_cast<GenericAssoc*>(memory);
+		for (usize i = 0; i < assocs.size(); ++i)
+			std::construct_at(stored + i, assocs[i]);
+		return std::span<const GenericAssoc>(stored, assocs.size());
+	}
+
 	void Parser::synchronizeStatement() noexcept
 	{
 		// Skip until we consume a ';' (the end of the broken statement) or reach a '}' we don't
@@ -561,6 +579,10 @@ namespace ceresc::parser
 				// stands for an instruction rather than for a function.
 				if (std::optional<ast::MachineOp> machineOp = machineBuiltinFor(name); machineOp && _next.is(TokenKind::LParen))
 					return parseMachineBuiltin(location, *machineOp);
+				// `_Generic(...)` is an expression, unlike `_Static_assert(...)` which is a declaration -
+				// recognized the same way, by name plus a following '(', so it needs no token kind of its own.
+				if (isGenericSelectionStart())
+					return parseGenericSelection();
 				// `__func__` is the name of the function being parsed, as a string: the same thing a
 				// literal spelled out by hand would be, made here because only the parser knows the name.
 				if (!_currentFunctionName.empty() && (name == "__func__" || name == "__FUNCTION__"))
@@ -1685,6 +1707,68 @@ namespace ceresc::parser
 	bool Parser::isStaticAssertStart() const noexcept
 	{
 		return _current.kind() == TokenKind::Identifier && _current.lexeme() == "_Static_assert" && _next.is(TokenKind::LParen);
+	}
+
+	bool Parser::isGenericSelectionStart() const noexcept
+	{
+		return _current.kind() == TokenKind::Identifier && _current.lexeme() == "_Generic" && _next.is(TokenKind::LParen);
+	}
+
+	// `_Generic(controlling, type1: expr1, ..., default: exprN)`. Each association starts with
+	// either `default` or a type-name - the same one-token lookahead parseSizeof() already uses to
+	// tell a type-name from an expression - so there is never a need to backtrack.
+	Expr* Parser::parseGenericSelection()
+	{
+		SourceLocation location = _current.location();
+		advance(); // '_Generic'
+		if (!expect(TokenKind::LParen, "'(' after '_Generic'"))
+			return nullptr;
+
+		Expr* controlling = parseAssignment();
+		if (!controlling)
+			return nullptr;
+		if (!expect(TokenKind::Comma, "',' after the controlling expression"))
+			return nullptr;
+
+		std::vector<GenericAssoc> assocs;
+		for (;;)
+		{
+			const Type* type = nullptr;
+			if (check(TokenKind::KwDefault))
+			{
+				advance(); // 'default'
+			}
+			else if (isDeclSpecifierStart(_current.kind()) || isTypeSpecStart(_current))
+			{
+				type = parseTypeName();
+				if (!type)
+					return nullptr;
+			}
+			else
+			{
+				_diagnostics.error(DiagId::ExpectedGenericAssociation, _current.location(),
+					"expected a type name or 'default' in a '_Generic' association, but found '{}'",
+					_current.isEndOfFile() ? std::string_view("end of file") : _current.lexeme());
+				return nullptr;
+			}
+
+			if (!expect(TokenKind::Colon, "':'"))
+				return nullptr;
+
+			Expr* assocExpr = parseAssignment();
+			if (!assocExpr)
+				return nullptr;
+
+			assocs.push_back(GenericAssoc{ type, assocExpr });
+
+			if (!match(TokenKind::Comma))
+				break;
+		}
+
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+
+		return _arena.create<ast::GenericSelectionExpr>(location, controlling, copyGenericAssocsToArena(assocs));
 	}
 
 	Decl* Parser::parseStaticAssert()

@@ -404,6 +404,24 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(GenericSelectionExpr& node)
+	{
+		_output += "(generic ";
+		printChild(node.controlling());
+		for (const GenericAssoc& assoc : node.associations())
+		{
+			_output += " (";
+			if (assoc.type)
+				appendTypeName(assoc.type);
+			else
+				_output += "default";
+			_output += ' ';
+			printChild(assoc.expr);
+			_output += ')';
+		}
+		_output += ')';
+	}
+
 	void AstPrinter::visit(TernaryExpr& node)
 	{
 		_output += "(?: ";

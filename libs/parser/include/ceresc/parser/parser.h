@@ -99,6 +99,7 @@ namespace ceresc::parser
 	using ast::Param;
 	using ast::FieldDecl;
 	using ast::EnumeratorDecl;
+	using ast::GenericAssoc;
 	using ast::StructDecl;
 	using ast::EnumDecl;
 	using ast::TranslationUnit;
@@ -390,6 +391,14 @@ namespace ceresc::parser
 		bool isStaticAssertStart() const noexcept;
 		Decl* parseStaticAssert();
 
+		// `_Generic(controlling, type1: expr1, ..., default: exprN)` - a C11 keyword recognized the
+		// same way `_Static_assert` is, by name rather than by a token kind of its own. Recognized
+		// only when a '(' follows, exactly like every other builtin in this file, so a program that
+		// uses the name `_Generic` for something else of its own (unlikely, but so is shadowing
+		// `_Static_assert`) is not silently broken.
+		bool isGenericSelectionStart() const noexcept;
+		Expr* parseGenericSelection();
+
 		// `__asm__("label")` after a declarator: the name the assembler is to use for the symbol. Recognized
 		// (`__asm__` or `__asm`, followed by a '(') the way _Static_assert is, without a token kind of its own.
 		bool isAsmLabelStart() const noexcept;
@@ -476,6 +485,7 @@ namespace ceresc::parser
 		std::span<const Param> copyParamsToArena(std::span<const Param> params) noexcept;
 		std::span<const FieldDecl> copyFieldsToArena(const std::vector<FieldDecl>& fields) noexcept;
 		std::span<const EnumeratorDecl> copyEnumeratorsToArena(const std::vector<EnumeratorDecl>& enumerators) noexcept;
+		std::span<const GenericAssoc> copyGenericAssocsToArena(const std::vector<GenericAssoc>& assocs) noexcept;
 
 	private:
 		// True for the tokens that can, by their kind ALONE, start a type-name (primitives +

@@ -144,6 +144,24 @@ is known). The message is optional, as in C23; `assert.h` in the standard librar
 C, it has the type of one (`char*`) and `sizeof(__func__)` is the size of a pointer. Outside a function it is an
 ordinary identifier, and undeclared.
 
+### `_Generic`
+
+`_Generic(controlling, type1: expr1, ..., default: exprN)` picks one association by the controlling expression's
+type - compared as a type, the same notion of "same type" everything else in sema uses, not by value - and the
+whole expression has that association's type and value. Nothing about the controlling expression's *value* is
+used, and it is never evaluated (`_Generic(x++, int: 1, default: 2)` never increments `x`, the same way
+`sizeof(x++)` never does), but its type still has to be resolved, which does mean checking it. Every association's
+expression is type-checked whether or not it is the one picked - only evaluation is skipped, not checking - so
+`_Generic(1, int: 1, float: undeclared)` is still an error even though the `float:` branch never runs.
+
+At most one `default:` association, and at most one association per type (E3093/E3094); with no `default` and no
+match, E3095. A type-name may be anything [`type-name`](#grammar) accepts, pointer types included, so
+`_Generic(p, int*: 1, char*: 2, default: 3)` tells two pointer types apart. Because only the *selected*
+association is ever lowered to code, the safe way to write one is to make every association a bare function name
+- never a call - and apply the call once, outside the selection: `_Generic(x, int: f_int, float: f_float)(x)`.
+A call written *inside* an association is still type-checked even when that association is not the one picked
+(see above), so a call whose arguments only make sense for one branch's type belongs outside the selection, not in it.
+
 ## Grammar
 
 The EBNF `libs/parser` implements. Uppercase names are token kinds from `libs/lexer`.
@@ -258,10 +276,16 @@ postfix-op             ::= "[" expression "]" | "(" arg-list? ")"
                          | "." IDENTIFIER | "->" IDENTIFIER | "++" | "--"
 primary-expr           ::= IDENTIFIER | INT_LITERAL | FLOAT_LITERAL | CHAR_LITERAL
                          | STRING_LITERAL | BOOL_LITERAL | "(" expression ")"
-                         | va-builtin | machine-builtin
+                         | va-builtin | machine-builtin | generic-selection
                                                      // STRING_LITERAL is a RUN of one or more
                                                      // adjacent literals, joined by the lexer
 arg-list               ::= assignment-expr ("," assignment-expr)*
+
+// "_Generic" is recognized by name plus a following "(", the same way "_Static_assert" is -
+// see the prose above and 06-Known-Limitations.md for why neither needs a token kind of its own.
+generic-selection      ::= "_Generic" "(" assignment-expr "," generic-assoc-list ")"
+generic-assoc-list     ::= generic-assoc ("," generic-assoc)*
+generic-assoc          ::= (type-name | "default") ":" assignment-expr
 
 // Syntax rather than calls: __builtin_va_arg's second operand is a type-name, and all four
 // write through the __builtin_va_list the caller named. Only recognized when directly followed

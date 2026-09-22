@@ -1769,6 +1769,59 @@ TEST(sema, func_names_the_function_it_is_used_in)
 	CHECK(containsMessage(outside, "undeclared identifier '__func__'"));
 }
 
+// ---- _Generic ------------------------------------------------------------------------------------------------
+
+TEST(sema, a_generic_selection_has_the_type_and_value_of_the_matching_association)
+{
+	CHECK_EQ(typeOfMainLastExpr("int main() { _Generic(1, int: 1, float: 2.0f); }"), "int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { _Generic(1.0f, int: 1, float: 2.0f); }"), "float");
+	// The controlling expression's own type decides, regardless of position in the list
+	CHECK_EQ(typeOfMainLastExpr("int main() { _Generic(1.0f, default: 1, float: 2.0f); }"), "float");
+	// `default` wins when nothing else matches
+	CHECK_EQ(typeOfMainLastExpr("int main() { _Generic('c', int: 1, default: 2.0f); }"), "float");
+	// Pointer types match by full type, not just by being pointers
+	CHECK_EQ(typeOfMainLastExpr("int main() { int* p = 0; _Generic(p, int*: 1, char*: 2); }"), "int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { char* p = 0; _Generic(p, int*: 1, char*: 2); }"), "int");
+}
+
+TEST(sema, a_generic_selections_controlling_expression_is_never_evaluated)
+{
+	// x++ must type-check (it does - int) but must never actually run: if it ran, x would be 1 and
+	// the program would return 1, not the 0 the still-zero x asserts below.
+	CHECK(checkSource(
+		"int main() { int x = 0; int r = _Generic(x++, int: 5, default: 6); "
+		"if (x != 0) return 1; return r == 5 ? 0 : 2; }"
+	).ok);
+}
+
+TEST(sema, a_generic_selection_needs_a_matching_association_or_a_default)
+{
+	CheckOutcome noMatch = checkSource("int main() { _Generic(1, float: 1.0f); return 0; }");
+	CHECK(!noMatch.ok);
+	CHECK(containsMessage(noMatch, "no association for type 'int'"));
+	CHECK(checkSource("int main() { _Generic(1, float: 1.0f, default: 0); return 0; }").ok);
+}
+
+TEST(sema, a_generic_selection_rejects_a_duplicate_type_or_more_than_one_default)
+{
+	CheckOutcome dup = checkSource("int main() { _Generic(1, int: 1, int: 2); return 0; }");
+	CHECK(!dup.ok);
+	CHECK(containsMessage(dup, "more than one association"));
+
+	CheckOutcome twoDefaults = checkSource("int main() { _Generic(1, default: 1, default: 2); return 0; }");
+	CHECK(!twoDefaults.ok);
+	CHECK(containsMessage(twoDefaults, "more than one 'default'"));
+}
+
+TEST(sema, every_association_of_a_generic_selection_is_type_checked_even_when_not_selected)
+{
+	// The int: branch is picked, but the float: branch still has to name a real identifier - this
+	// is what "non-evaluated but still checked" means, the same as sizeof(x++)'s operand.
+	CheckOutcome bad = checkSource("int main() { _Generic(1, int: 1, float: undeclared_name); return 0; }");
+	CHECK(!bad.ok);
+	CHECK(containsMessage(bad, "undeclared identifier 'undeclared_name'"));
+}
+
 // ---- __asm__("label") --------------------------------------------------------------------------------------------
 
 TEST(sema, an_asm_label_may_follow_a_declarator_at_file_scope)

@@ -199,6 +199,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E2043` | `__attribute__((packed))`: not supported, the machine faults on unaligned accesses. |
 | `E2044` | `__asm__` with operands or clobbers (a `:` after the text). |
 | `E2045` | `__asm__` text outside a function. |
+| `E2046` | A `_Generic` association that starts with neither a type-name nor `default`. |
 
 ### `3xxx` — sema
 
@@ -296,6 +297,9 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3090` | An array designator whose index is outside the array. |
 | `E3091` | A designator for a member of a `union` other than the first. |
 | `E3092` | A compound literal of type `void` or of a function type. |
+| `E3093` | A `_Generic` selection with the same type in more than one association. |
+| `E3094` | A `_Generic` selection with more than one `default` association. |
+| `E3095` | A `_Generic` selection whose controlling expression's type matches no association, and there is no `default`. |
 
 ### `4xxx` — codegen
 

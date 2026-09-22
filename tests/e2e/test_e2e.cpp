@@ -1619,3 +1619,39 @@ TEST(e2e, a_va_list_can_be_handed_to_another_function)
 		"}",
 		"5");
 }
+
+TEST(e2e, a_generic_selection_calls_through_the_function_its_controlling_types_type_picked)
+{
+	// Each association is a bare function name - never a call - so this is safe regardless of which
+	// branch is picked, the idiom the whole feature exists to make cheap. The call itself happens
+	// once, outside the selection, already on the right function.
+	runsTheSameAtEveryLevel("generic_dispatch",
+		"int pick_int(void) { return 1; }"
+		"int pick_float(void) { return 2; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int a = _Generic(3, int: pick_int, float: pick_float, default: pick_int)();"
+		"    float f = 1.5f;"
+		"    int b = _Generic(f, int: pick_int, float: pick_float, default: pick_int)();"
+		"    *term = 48 + a;" // '1'
+		"    *term = 48 + b;" // '2'
+		"    return 0;"
+		"}",
+		"12");
+}
+
+TEST(e2e, a_generic_selections_controlling_expression_never_runs_at_runtime)
+{
+	// x++ type-checks (sema needs its type) but must never execute - if it did, x would be 1 by the
+	// time main reads it back, not the 0 this test depends on.
+	runsTheSameAtEveryLevel("generic_controlling_not_evaluated",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int x = 0;"
+		"    int r = _Generic(x++, int: 5, default: 6);"
+		"    *term = 48 + x;"       // '0' - x++ never ran
+		"    *term = 48 + (r - 4);" // r == 5 -> '1'
+		"    return 0;"
+		"}",
+		"01");
+}

@@ -1459,6 +1459,61 @@ namespace ceresc::sema
 		_lastExprType = resultType;
 	}
 
+	void Sema::visit(ast::GenericSelectionExpr& node)
+	{
+		// The controlling expression is a non-evaluated context at RUN time - node.controlling() is
+		// never lowered to IR except through whichever association's expr gets selected below - but
+		// it is still type-checked here, the same way sizeof(x++) still type-checks x++. Its own
+		// value is never used for anything past this point; only its type is.
+		const Type* controllingType = checkExpr(node.controlling());
+
+		i32 matchIndex = -1;
+		i32 defaultIndex = -1;
+		std::span<const ast::GenericAssoc> assocs = node.associations();
+		for (usize i = 0; i < assocs.size(); ++i)
+		{
+			const ast::GenericAssoc& assoc = assocs[i];
+			if (!assoc.type) // `default:`
+			{
+				if (defaultIndex != -1)
+					_diagnostics.error(DiagId::MultipleGenericDefaults, node.location(), "'_Generic' selection has more than one 'default' association");
+				defaultIndex = static_cast<i32>(i);
+			}
+			else
+			{
+				for (usize j = 0; j < i; ++j)
+				{
+					if (assocs[j].type && *assocs[j].type == *assoc.type)
+					{
+						_diagnostics.error(DiagId::DuplicateGenericAssociation, node.location(),
+							"'_Generic' selection has type '{}' in more than one association", typeName(assoc.type));
+						break;
+					}
+				}
+				if (matchIndex == -1 && controllingType && *controllingType == *assoc.type)
+					matchIndex = static_cast<i32>(i);
+			}
+			// Every association's expr is checked, selected or not - it has to at least parse and
+			// type-check as ordinary C, exactly like the non-taken arm of `if (0) { ... }` does.
+			checkExpr(assoc.expr);
+		}
+
+		i32 selected = matchIndex != -1 ? matchIndex : defaultIndex;
+		if (selected == -1)
+		{
+			_diagnostics.error(DiagId::NoMatchingGenericAssociation, node.location(),
+				"'_Generic' selection has no association for type '{}', and no 'default'", typeName(controllingType));
+			node.setType(errorRecoveryType());
+			_lastExprType = errorRecoveryType();
+			return;
+		}
+
+		node.setSelectedIndex(selected);
+		const Type* resultType = assocs[static_cast<usize>(selected)].expr->type();
+		node.setType(resultType);
+		_lastExprType = resultType;
+	}
+
 	void Sema::visit(ast::TernaryExpr& node)
 	{
 		const Type* condType = decayArray(checkExpr(node.cond()));

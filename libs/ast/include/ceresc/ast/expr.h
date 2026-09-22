@@ -10,7 +10,7 @@
 
 // Expr hierarchy: IntLiteralExpr, FloatLiteralExpr, CharLiteralExpr, BoolLiteralExpr,
 // StringLiteralExpr, NameExpr, CallExpr, UnaryExpr, BinaryExpr, AssignExpr, IndexExpr, MemberExpr,
-// CastExpr, SizeofExpr, AlignofExpr, VaExpr, TernaryExpr, InitListExpr.
+// CastExpr, SizeofExpr, AlignofExpr, VaExpr, GenericSelectionExpr, TernaryExpr, InitListExpr.
 //
 // InitListExpr is the odd one out: `{ 1, 2, 3 }` is an *initializer*, not an expression the
 // grammar accepts anywhere an expression goes (§3: `initializer ::= assignment-expr | "{"
@@ -429,6 +429,52 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<VaExpr>, "VaExpr must be trivially destructible (Arena-allocated)");
+
+	// One association of `_Generic(controlling, type: expr, ..., default: expr)`. `type == nullptr`
+	// means this association was written `default:` rather than with a type-name - the parser is the
+	// one place that tells the two apart (a type-name always starts a declaration-specifier), so
+	// sema and everything after it only ever has to check this one field, never re-parse anything.
+	struct GenericAssoc
+	{
+		const Type* type; // nullptr for `default`
+		Expr* expr;
+	};
+
+	// `_Generic(controlling, type1: expr1, ..., default: exprN)` - C11's compile-time selection by
+	// the controlling expression's type. Sema resolves which association wins (matching
+	// Type::operator== against the controlling expression's already-annotated type, or the
+	// `default` association when nothing else matches) and records the winner's index in
+	// `_selected`; IrBuilder lowers only that one association's expr, the same way it already leaves
+	// SizeofExpr's operand unlowered - see ir_builder.cpp's SizeofExpr comment. Every association's
+	// expr is still type-checked by sema even when not selected (the controlling expression is a
+	// non-evaluated context, same as sizeof's operand, but "non-evaluated" is about run time, not
+	// about compile-time type-checking - see the parser's isGenericSelectionStart()).
+	class GenericSelectionExpr final : public Expr
+	{
+	private:
+		Expr* _controlling;
+		GenericAssoc const* _assocs; // non-owning view over arena-allocated storage - see CallExpr above
+		u32 _assocCount;
+		i32 _selected = -1; // index into _assocs of the winning association; -1 until sema runs, and
+							 // stays -1 if nothing matched and there was no `default` (sema has
+							 // already reported that as an error by then)
+
+	public:
+		GenericSelectionExpr(support::SourceLocation location, Expr* controlling, std::span<GenericAssoc const> assocs) noexcept :
+			Expr(location), _controlling(controlling), _assocs(assocs.data()), _assocCount(static_cast<u32>(assocs.size()))
+		{}
+
+	public:
+		Expr* controlling() const noexcept { return _controlling; }
+		std::span<GenericAssoc const> associations() const noexcept { return { _assocs, _assocCount }; }
+		u32 associationCount() const noexcept { return _assocCount; }
+		i32 selectedIndex() const noexcept { return _selected; }
+		void setSelectedIndex(i32 index) noexcept { _selected = index; }
+		// The winning association's expr, or nullptr before sema runs or when nothing matched.
+		Expr* selectedExpr() const noexcept { return (_selected >= 0 && static_cast<u32>(_selected) < _assocCount) ? _assocs[_selected].expr : nullptr; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<GenericSelectionExpr>, "GenericSelectionExpr must be trivially destructible (Arena-allocated)");
 
 	// One machine instruction this language has no other way to reach. All three govern interrupt
 	// delivery, which is the one part of the machine a program cannot express through ordinary C:

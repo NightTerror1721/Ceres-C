@@ -1390,6 +1390,39 @@ TEST(parser, func_is_the_name_of_the_function_being_parsed)
 	CHECK_EQ(printUnit("int x = __func__;"), "(unit (var x int __func__))");
 }
 
+// ---- _Generic ------------------------------------------------------------------------------------------------
+
+TEST(parser, a_generic_selection_prints_its_controlling_expression_and_every_association)
+{
+	CHECK_EQ(printExpr("_Generic(1, int: 10, float: 20, default: 30)"), "(generic 1 (int 10) (float 20) (default 30))");
+	// A type-name may be anything parseTypeName() accepts, pointers included
+	CHECK_EQ(printExpr("_Generic(p, int*: 1, char*: 2, default: 3)"), "(generic p (int* 1) (char* 2) (default 3))");
+	// `default` need not come last
+	CHECK_EQ(printExpr("_Generic(x, default: 1, int: 2)"), "(generic x (default 1) (int 2))");
+	// One association, no default, is legal syntax - sema is the one that requires a match
+	CHECK_EQ(printExpr("_Generic(x, int: 1)"), "(generic x (int 1))");
+}
+
+TEST(parser, a_generic_selection_needs_its_commas_colons_and_a_type_or_default_per_association)
+{
+	// A bare expression is not a valid top-level construct in C, so every case here is wrapped in a
+	// function body - parseFails would otherwise fail on that alone and not on _Generic's own syntax.
+	CHECK(parseFails("int main(void) { _Generic(x, int 1); }"));           // missing ':'
+	CHECK(parseFails("int main(void) { _Generic(x, 1: 2); }"));            // '1' is neither a type-name nor 'default'
+	CHECK(parseFails("int main(void) { _Generic(x, int: 1,); }"));         // trailing comma - not in the C11 grammar
+	CHECK(parseFails("int main(void) { _Generic(x, int: 1; }"));          // missing ')'
+	CHECK(parseFails("int main(void) { _Generic(x); }"));                  // no association list at all
+	CHECK(parseFails("int main(void) { _Generic x, int: 1); }"));         // missing '('
+	CHECK(!parseFails("int main(void) { _Generic(x, int: 1, default: 2); }"));
+}
+
+TEST(parser, generic_without_a_following_paren_is_an_ordinary_identifier)
+{
+	// `_Generic` is a reserved-namespace identifier like `_Static_assert`, not a keyword token - so
+	// a program that never calls it as a selection can still use the name for something of its own.
+	CHECK_EQ(printExpr("_Generic + 1"), "(+ _Generic 1)");
+}
+
 TEST(parser, an_asm_label_needs_a_string_in_parentheses)
 {
 	CHECK(!parseFails("int f(int) __asm__(\"g\");"));
