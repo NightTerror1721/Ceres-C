@@ -36,7 +36,9 @@ namespace ceresc::support
 	{
 		O0, // every optimization off - the simplified, uniform, easiest-to-explain output
 		O1, // everything except inlining (the default when no -O flag is given)
-		O2  // everything, inlining included
+		O2, // everything, inlining included
+		Os, // like O1, but for size: no inlining and no jump tables (a table costs .rodata)
+		Og  // like O1, but for debugging: no inlining and no frame-slot reuse (a slot per scope)
 	};
 
 	struct OptimizationOptions
@@ -126,6 +128,20 @@ namespace ceresc::support
 				break;
 			case OptimizationLevel::O2:
 				options.inlining = true;
+				break;
+			case OptimizationLevel::Os:
+				// For size: everything O1 does except the two transforms that grow the image.
+				// Inlining duplicates a body at every call site; a jump table spends 4 bytes per
+				// entry in .rodata, which for a sparse switch can dwarf the chain it replaces.
+				options.inlining = false;
+				options.jumpTables = false;
+				break;
+			case OptimizationLevel::Og:
+				// For debugging: everything O1 does except the transforms that make the generated
+				// code harder to follow. Reusing one frame slot for locals in disjoint scopes is
+				// the one that makes a slot's identity change across scopes.
+				options.inlining = false;
+				options.localSlotReuse = false;
 				break;
 		}
 		return options;

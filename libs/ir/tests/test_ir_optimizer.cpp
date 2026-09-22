@@ -208,6 +208,23 @@ TEST(ir_optimizer, algebraic_simplification_leaves_float_identities_alone)
 	CHECK(contains(text, "mul"));
 }
 
+// ---- optimization levels -------------------------------------------------------------------------
+
+TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
+{
+	support::OptimizationOptions o1 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O1);
+	support::OptimizationOptions os = support::OptimizationOptions::forLevel(support::OptimizationLevel::Os);
+	support::OptimizationOptions og = support::OptimizationOptions::forLevel(support::OptimizationLevel::Og);
+
+	// -Os drops the two transforms that grow the image, and nothing else.
+	CHECK(o1.jumpTables && !os.jumpTables);
+	CHECK(!os.inlining && os.constantFolding && os.registerAllocation);
+
+	// -Og drops the transforms that obscure the code, and nothing else.
+	CHECK(o1.localSlotReuse && !og.localSlotReuse);
+	CHECK(!og.inlining && og.constantFolding && og.jumpTables);
+}
+
 // ---- strength reduction --------------------------------------------------------------------------
 
 TEST(ir_optimizer, strength_reduction_turns_a_multiply_by_a_power_of_two_into_a_shift)

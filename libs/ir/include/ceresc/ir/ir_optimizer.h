@@ -48,8 +48,22 @@
 
 namespace ceresc::ir
 {
+	// What the pipeline did, filled in only when the caller asks (the driver's --stats): how many
+	// instructions the module held before and after, how many calls were spliced in, and how many
+	// jump tables the lowering left behind. Deliberately coarse - a per-pass breakdown would have to
+	// be threaded through every pass for a number nobody acts on.
+	struct OptimizationStats
+	{
+		u32 functions = 0;          // live functions after optimization
+		u32 instructionsBefore = 0; // IrInstr across every function, before any pass
+		u32 instructionsAfter = 0;  // ... and after
+		u32 inlinedCalls = 0;       // call sites the inliner spliced away
+		u32 jumpTables = 0;         // IrOpcode::TableJump instructions left in the module
+	};
+
 	// Applies every pass `options` enables to `module`, in place. A no-op when `options` has them
 	// all off (support::OptimizationOptions::none(), i.e. -O0), which is exactly what makes the
-	// unoptimized IR still reachable for comparison.
-	void optimize(IrModule& module, support::Arena& arena, const support::OptimizationOptions& options);
+	// unoptimized IR still reachable for comparison. `stats`, when given, receives the counts above.
+	void optimize(IrModule& module, support::Arena& arena, const support::OptimizationOptions& options,
+		OptimizationStats* stats = nullptr);
 }

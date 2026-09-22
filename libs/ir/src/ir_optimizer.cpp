@@ -1718,7 +1718,7 @@ namespace ceresc::ir
 			return true;
 		}
 
-		bool inlineCalls(IrModule& module, support::Arena& arena, const OptimizationOptions& options)
+		bool inlineCalls(IrModule& module, support::Arena& arena, const OptimizationOptions& options, u32& inlinedOut)
 		{
 			if (!options.inlining)
 				return false;
@@ -1770,6 +1770,7 @@ namespace ceresc::ir
 						{
 							rewritten = std::move(attempt);
 							blockChanged = true;
+							++inlinedOut;
 						}
 						else
 						{
@@ -1788,9 +1789,24 @@ namespace ceresc::ir
 		}
 	}
 
-	void optimize(IrModule& module, support::Arena& arena, const OptimizationOptions& options)
+	void optimize(IrModule& module, support::Arena& arena, const OptimizationOptions& options, OptimizationStats* stats)
 	{
-		inlineCalls(module, arena, options);
+		auto countInstructions = [](const IrModule& target)
+		{
+			u32 total = 0;
+			for (const auto& function : target.functions())
+				for (const auto& block : function->blocks())
+					total += static_cast<u32>(block->instrs().size());
+			return total;
+		};
+
+		u32 inlined = 0;
+		inlineCalls(module, arena, options, inlined);
+		if (stats)
+		{
+			stats->instructionsBefore = countInstructions(module);
+			stats->inlinedCalls = inlined;
+		}
 
 		// The functions declared `pure` or `const`. Dead-code elimination needs the set by name:
 		// it runs per function and cannot look a callee up in the module.
@@ -1824,5 +1840,16 @@ namespace ceresc::ir
 
 		// Last, so that a function left callerless BY inlining is dropped too.
 		removeUnusedFunctions(module, options);
+
+		if (stats)
+		{
+			stats->functions = static_cast<u32>(module.functions().size());
+			stats->instructionsAfter = countInstructions(module);
+			for (const auto& function : module.functions())
+				for (const auto& block : function->blocks())
+					for (const IrInstr* instr : block->instrs())
+						if (instr->opcode() == IrOpcode::TableJump)
+							++stats->jumpTables;
+		}
 	}
 }

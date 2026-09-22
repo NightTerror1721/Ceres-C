@@ -94,6 +94,23 @@ TEST(options, the_library_and_sysroot_switches_are_recognized)
 	CHECK_EQ(result.options->sysroot, std::string("C:/sdk"));
 }
 
+TEST(options, the_size_and_debug_levels_and_the_stats_switch_are_recognized)
+{
+	ParseResult size = parse({ "main.c", "-Os", "--stats" });
+	CHECK(size.options.has_value());
+	CHECK(size.options->emitStats);
+	CHECK(!size.options->optimization.inlining);       // -Os: no inlining
+	CHECK(!size.options->optimization.jumpTables);     //      and no jump tables
+	CHECK(size.options->optimization.constantFolding); // but still the O1 passes
+
+	ParseResult debug = parse({ "main.c", "-Og", "-fstats" });
+	CHECK(debug.options.has_value());
+	CHECK(debug.options->emitStats);
+	CHECK(!debug.options->optimization.inlining);       // -Og: no inlining
+	CHECK(!debug.options->optimization.localSlotReuse); //       and a slot per scope
+	CHECK(debug.options->optimization.jumpTables);      //       jump tables are fine
+}
+
 TEST(options, a_library_name_with_no_argument_is_rejected)
 {
 	ParseResult result = parse({ "main.c", "-l" });

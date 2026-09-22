@@ -558,7 +558,17 @@ namespace ceresc::driver
 			ir::IrModule module = builder.build(*unit);
 			// Optimized IR is what --emit-ir shows too: the point of that flag is to see what the back
 			// end will actually be handed, not an intermediate nobody compiles. -O0 leaves it untouched.
-			ir::optimize(module, arena, options.optimization);
+			ir::OptimizationStats stats;
+			ir::optimize(module, arena, options.optimization, options.emitStats ? &stats : nullptr);
+			if (options.emitStats)
+			{
+				u32 removed = stats.instructionsBefore > stats.instructionsAfter
+					? stats.instructionsBefore - stats.instructionsAfter : 0;
+				u32 percent = stats.instructionsBefore > 0 ? removed * 100 / stats.instructionsBefore : 0;
+				std::cerr << std::format("ceresc: stats {}: {} function(s), {} -> {} IR instructions (-{}%), {} inlined, {} jump table(s)\n",
+					inputPath, stats.functions, stats.instructionsBefore, stats.instructionsAfter, percent,
+					stats.inlinedCalls, stats.jumpTables);
+			}
 
 			if (options.emitIr)
 			{

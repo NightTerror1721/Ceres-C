@@ -69,6 +69,9 @@ namespace ceresc::driver
 		std::vector<std::string> runArguments;   // --run-arg <arg>, in order: more for `ceres run` after the program's name
 		bool warningsAsErrors = false; // -Werror
 		bool showVersion = false;    // --version: print the version and stop, before anything else
+		// --stats / -fstats: after compiling each unit, print what the IR optimizer did to it
+		// (instruction counts before and after, calls inlined, jump tables) on stderr.
+		bool emitStats = false;
 
 		std::vector<std::string> includeDirectories;                  // -I <dir>, in order
 		std::vector<std::pair<std::string, std::string>> defines;     // -D NAME[=value], in order

@@ -40,6 +40,7 @@ alongside the compiled ones, which is how a routine written in assembly becomes 
 | `--run-arg <arg>` | Repeatable: one more argument for `ceres run`, after the program's name, in order. For what only `ceres run` can do - `--run-arg --port --run-arg 0=stick.img` plugs a file into a peripheral port, `--run-arg --disk --run-arg disk.img` backs the disk. Used only with `--run`. |
 | `--ceres-path <dir\|file>` | Where to find `ceres`: the directory that holds it, or the executable itself. Without it the `CERES_PATH` variable says, and then `PATH` — see [Finding `ceres`](#finding-ceres). |
 | `-Werror` | Treat warnings as errors. A `#pragma warning(...)` outranks it in both directions - see [11-Diagnostics.md](11-Diagnostics.md). |
+| `--stats`, `-fstats` | After optimizing each unit, print what the IR optimizer did (functions, IR instructions before and after, calls inlined, jump tables) on stderr. |
 | `--version` | Print the version and stop. Works anywhere on the line and needs no input file. |
 | `--help`, `-h` | Print the usage text. |
 
@@ -130,6 +131,8 @@ Optimizations are **on by default**: no `-O` flag means `-O1`.
 | `-O1` | Everything except inlining. The default. |
 | `-O2` | Everything, inlining included. |
 | `-O3` | Accepted as an alias for `-O2`. There is no third tier; failing a build over a habit every other C compiler tolerates helps nobody. |
+| `-Os` | Everything `-O1` does except the two transforms that grow the image: no inlining and no jump tables. |
+| `-Og` | Everything `-O1` does except the two that make the code harder to follow: no inlining and no frame-slot reuse (a slot per scope). |
 
 Each individual optimization also has its own switch, and a `-f`/`-fno-` **overrides whatever `-O`
 set, in argument order** — the same resolution rule as `-S`/`--run`:

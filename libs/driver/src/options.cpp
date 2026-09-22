@@ -14,6 +14,8 @@ namespace ceresc::driver
 				"  -O1                 everything except inlining (the default)\n"
 				"  -O2                 everything, inlining included\n"
 				"  -O3                 accepted as an alias for -O2\n"
+				"  -Os                 like -O1 but for size: no inlining, no jump tables\n"
+				"  -Og                 like -O1 but for debugging: no inlining, no frame-slot reuse\n"
 				"  -f<opt>/-fno-<opt>  turn one optimization on/off, overriding -O in argument order:\n";
 
 			for (const support::OptimizationFlag& flag : support::optimizationFlags())
@@ -89,6 +91,7 @@ namespace ceresc::driver
 			"  --ceres-path <path> where to find `ceres`: its directory, or the executable itself. Without it the\n"
 			"                      CERES_PATH environment variable says, and then PATH\n"
 			"  -Werror             treat warnings as errors\n"
+			"  --stats, -fstats    after optimizing, report what changed (instruction counts, inlining)\n"
 			"  --version           print the version and stop\n"
 			"  --help, -h          print this text\n"
 			"\n"
@@ -135,8 +138,11 @@ namespace ceresc::driver
 			if (arg == "--version") { options.showVersion = true; continue; }
 			if (arg == "--help" || arg == "-h") { printUsage(diagnosticsOut); return std::nullopt; }
 
+			if (arg == "--stats" || arg == "-fstats") { options.emitStats = true; continue; }
 			if (arg == "-O0") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0); continue; }
 			if (arg == "-O1" || arg == "-O") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O1); continue; }
+			if (arg == "-Os") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::Os); continue; }
+			if (arg == "-Og") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::Og); continue; }
 			if (arg == "-O2" || arg == "-O3")
 			{
 				// -O3 is accepted as a synonym for -O2 rather than rejected: there is no third tier
