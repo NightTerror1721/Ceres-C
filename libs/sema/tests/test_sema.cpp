@@ -2027,6 +2027,15 @@ TEST(sema, discarding_the_result_of_a_warn_unused_result_function_is_warned_abou
 	CHECK(!containsMessage(used, "warn_unused_result"));
 }
 
+TEST(sema, warn_unused_result_on_a_void_function_does_not_warn)
+{
+	// There is no result to discard, so the attribute has nothing to say - warning "the result of
+	// this call is ignored" here would be misleading, and under -Werror a build breaker.
+	CheckOutcome outcome = checkSource("void f(void) __attribute__((warn_unused_result));\nint main() { f(); return 0; }");
+	CHECK(outcome.ok);
+	CHECK(!containsMessage(outcome, "warn_unused_result"));
+}
+
 TEST(sema, a_function_attribute_on_a_prototype_holds_for_the_definition)
 {
 	// The prototype carries `warn_unused_result`, the definition does not repeat it, and the call

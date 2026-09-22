@@ -1719,6 +1719,16 @@ namespace ceresc::parser
 			function->setDeprecated(attributes.deprecated);
 			function->setWarnUnusedResult(attributes.warnUnusedResult);
 		}
+		else if (decl && (attributes.noInline || attributes.alwaysInline || attributes.pure ||
+			attributes.constAttr || attributes.deprecated || attributes.warnUnusedResult))
+		{
+			// A specifier-position attribute (parsed with a non-null sink, so parseAttributes said
+			// nothing) on a declaration that turned out not to be a function. Reported here, since
+			// only now is it known what the declarator declared - otherwise it would be dropped in
+			// silence, which the non-null sink path above would not have caught.
+			_diagnostics.warning(DiagId::AttributeIgnored, decl->location(),
+				"attribute on '{}' ignored: it applies to a function", decl->name());
+		}
 		return decl;
 	}
 
@@ -2084,23 +2094,22 @@ namespace ceresc::parser
 				}
 
 				// The function-only attributes this compiler acts on. Where there is no function
-				// to hang one on (sink == nullptr: a struct member, a local, a type-name), the
-				// attribute is reported as ignored rather than silently lost.
+				// to hang one on (sink == nullptr: a struct member, a typedef, a parameter, a
+				// type-name), the attribute is reported as ignored rather than silently lost. The
+				// wording stays generic because some of these names (`deprecated`,
+				// `warn_unused_result`) are meaningful on non-function declarations in GCC too, so
+				// "it applies to a function" would be the wrong thing to say about them.
 				auto functionAttribute = [&](bool AttributeList::* field)
 				{
 					if (sink)
 						sink->*field = true;
 					else
-						_diagnostics.warning(DiagId::AttributeIgnored, where,
-							"attribute '{}' ignored: it applies to a function", name);
+						_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute '{}' ignored", name);
 				};
 
 				if (name == "noreturn")
 				{
-					if (sink)
-						sink->noReturn = true;
-					else
-						_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute 'noreturn' ignored: it applies to a function");
+					functionAttribute(&AttributeList::noReturn);
 				}
 				else if (name == "noinline")
 				{

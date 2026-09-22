@@ -342,7 +342,7 @@ namespace ceresc::ir
 	// Declaration order here must match IrOpcode's own order exactly - opcode() below derives the
 	// opcode from the variant's index() instead of storing a second, redundant tag. The size check
 	// alone only pins the *count*: swapping two payload types (e.g. Load/Store), or adding an
-	// IrOpcode enumerator without a matching payload, would keep the count at 17 while silently
+	// IrOpcode enumerator without a matching payload, would keep the count at 18 while silently
 	// remapping opcode() and every switch in ir_printer.cpp/ir_function.cpp to the wrong payload -
 	// so each alternative's *position* is pinned individually too, not just the total.
 	static_assert(std::variant_size_v<IrInstrPayload> == 18, "IrInstrPayload must have exactly one alternative per IrOpcode");

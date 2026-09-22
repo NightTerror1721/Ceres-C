@@ -1630,6 +1630,20 @@ TEST(parser, the_function_attributes_this_compiler_acts_on_are_recorded_not_drop
 	CHECK_EQ(parseAttributes("int f(void) __attribute__((noinline, always_inline, pure, const, deprecated, warn_unused_result));").warnings, usize{ 0 });
 }
 
+TEST(parser, a_function_only_attribute_on_something_that_is_not_a_function_is_reported)
+{
+	// In the specifier position the parser accepts it with a sink (no warning there), so it is
+	// finishDeclarator() that notices the declarator is not a function and says so - otherwise the
+	// attribute would be dropped in silence.
+	AttributeOutcome specifier = parseAttributes("__attribute__((pure)) int x;");
+	CHECK_EQ(specifier.errors, usize{ 0 });
+	CHECK_EQ(specifier.warnings, usize{ 1 });
+	CHECK(!specifier.messages.empty() && specifier.messages[0].find("applies to a function") != std::string::npos);
+
+	// A struct member is parsed with no function sink, so it warns where it is parsed.
+	CHECK_EQ(parseAttributes("struct S { int a __attribute__((warn_unused_result)); };").warnings, usize{ 1 });
+}
+
 TEST(parser, an_attribute_this_compiler_does_nothing_with_is_said_to_be_ignored_unless_it_is_a_common_harmless_one)
 {
 	AttributeOutcome unknown = parseAttributes("int f(void) __attribute__((made_up));");

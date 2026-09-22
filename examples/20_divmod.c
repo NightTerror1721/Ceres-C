@@ -88,6 +88,18 @@ int main(void)
     signedLine(100);
     signedLine(-100);
 
+    // Large magnitudes. These are what a biased-shift division gets wrong: a dividend whose top
+    // bits are NOT all ones (a negative one) or all zero (a positive one) is exactly where reading
+    // the dividend's top k bits instead of its sign rounds the wrong way.
+    signedLine(1073741824);   // 2^30
+    signedLine(-1073741824);
+    signedLine(1073741827);   // 2^30 + 3
+    signedLine(-1073741827);
+    signedLine(536870913);
+    signedLine(-536870913);
+    signedLine(2147483647);   // INT_MAX
+    signedLine(-2147483647);  // INT_MIN + 1
+
     putstr("unsigned:\n");
     unsignedLine(0u);
     unsignedLine(1u);

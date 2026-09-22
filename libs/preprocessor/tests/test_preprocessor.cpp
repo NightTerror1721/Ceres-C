@@ -142,6 +142,33 @@ TEST(preprocessor, __has_include_reports_whether_a_target_can_be_included)
 	CHECK(!contains(result.text, "int angledAbsent;"));
 }
 
+TEST(preprocessor, a_malformed_has_include_reports_one_diagnostic_and_is_not_rescanned)
+{
+	TempDirectory dir;
+
+	// A target with no closing ')': one diagnostic, not a second one from re-reading the target as
+	// expression text.
+	Result noParen = expand(dir.write("a.c", "#if __has_include(\"a.h\"\nint x;\n#endif\n"));
+	CHECK_EQ(noParen.diagnostics.size(), std::size_t(1));
+
+	// A target with no closing quote: same - one diagnostic.
+	Result noQuote = expand(dir.write("b.c", "#if __has_include(\"a.h\nint x;\n#endif\n"));
+	CHECK_EQ(noQuote.diagnostics.size(), std::size_t(1));
+}
+
+TEST(preprocessor, __has_include_works_in_an_elif)
+{
+	TempDirectory dir;
+	dir.write("present.h", "int y;\n");
+	std::string path = dir.write("main.c",
+		"#if 0\nint fromIf;\n#elif __has_include(\"present.h\")\nint fromElif;\n#endif\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(!contains(result.text, "int fromIf;"));
+	CHECK(contains(result.text, "int fromElif;"));
+}
+
 TEST(preprocessor, a_quoted_include_looks_next_to_the_including_file_first)
 {
 	// The whole reason a project whose headers sit beside its sources needs no -I at all.

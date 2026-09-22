@@ -627,10 +627,28 @@ namespace ceresc::ast
 		}
 	}
 
-	// A one-, two- or three-operand intrinsic recognized by name in call position. It is not a call:
-	// there is no function to declare, and the whole point is that it lowers to one instruction. A
-	// name used for something else of one's own still works, because only `__builtin_x(` is treated
-	// as the builtin - the same rule the va_* and sti/cli/halt builtins follow.
+	// Whether the builtin reads or writes the float register bank - a float result, or the two that
+	// reinterpret a float into an int (`float_bits`, `fclass`). One predicate so codegen's operand
+	// choice and its interrupt-handler float-bank scan cannot disagree. The one builtin that reads
+	// an integer and yields a float (`float_from_bits`) is NOT in this set: it is not a float op.
+	constexpr bool builtinTouchesFloatBank(Builtin builtin) noexcept
+	{
+		return builtinResultIsFloat(builtin) || builtin == Builtin::FloatBits || builtin == Builtin::Fclass;
+	}
+
+	// The bank of a builtin's OPERAND: float for everything that touches the bank except
+	// `float_from_bits` (which reads an integer bit pattern), integer otherwise.
+	constexpr bool builtinSourceIsFloat(Builtin builtin) noexcept
+	{
+		return builtinTouchesFloatBank(builtin) && builtin != Builtin::FloatFromBits;
+	}
+
+	// A one- or two-operand intrinsic recognized by name in call position. It is not a call: there
+	// is no function to declare, and the whole point is that it lowers to one instruction. A name
+	// used for something else of one's own still works, because only `__builtin_x(` is treated as
+	// the builtin - the same rule the va_* and sti/cli/halt builtins follow. (The payload carries
+	// two operands, which is the widest builtin there is; a three-operand one would need it widened
+	// too.)
 	class BuiltinExpr final : public Expr
 	{
 	private:

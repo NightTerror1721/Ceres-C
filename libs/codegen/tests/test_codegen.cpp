@@ -1413,7 +1413,8 @@ TEST(codegen, each_one_instruction_builtin_emits_its_own_instruction)
 	std::string ints = atO2(
 		"unsigned int f(unsigned int x, unsigned int n) {"
 		"  return __builtin_clz(x) ^ __builtin_ctz(x) ^ __builtin_popcount(x) ^ __builtin_bswap32(x)"
-		"       ^ __builtin_rotl32(x, n) ^ __builtin_rotr32(x, n) ^ __builtin_mulhu(x, n); }");
+		"       ^ __builtin_rotl32(x, n) ^ __builtin_rotr32(x, n) ^ __builtin_mulhu(x, n)"
+		"       ^ (unsigned int)__builtin_mulhs((int)x, (int)n); }");
 	CHECK(contains(ints, "    clz "));
 	CHECK(contains(ints, "    ctz "));
 	CHECK(contains(ints, "    popcnt "));
@@ -1421,12 +1422,14 @@ TEST(codegen, each_one_instruction_builtin_emits_its_own_instruction)
 	CHECK(contains(ints, "    rol "));
 	CHECK(contains(ints, "    ror "));
 	CHECK(contains(ints, "    mulh "));
+	CHECK(contains(ints, "    imulh "));
 
 	std::string floats = atO2(
 		"float f(float x, float y) {"
 		"  return __builtin_fabs(x) + __builtin_sqrt(y) + __builtin_floor(x) + __builtin_ceil(x)"
 		"       + __builtin_trunc(x) + __builtin_fmin(x, y) + __builtin_fmax(x, y)"
-		"       + __builtin_copysign(x, y) + __builtin_frcp(x) + __builtin_frsqrt(x); }");
+		"       + __builtin_copysign(x, y) + __builtin_frcp(x) + __builtin_frsqrt(x)"
+		"       + __builtin_fmod(x, y) + __builtin_rint(x); }");
 	CHECK(contains(floats, "    abs f"));
 	CHECK(contains(floats, "    sqrt f"));
 	CHECK(contains(floats, "    ffloor f"));
@@ -1437,13 +1440,18 @@ TEST(codegen, each_one_instruction_builtin_emits_its_own_instruction)
 	CHECK(contains(floats, "    fcopysign f"));
 	CHECK(contains(floats, "    frecipe f"));
 	CHECK(contains(floats, "    frsqrte f"));
+	CHECK(contains(floats, "    mod f"));
+	CHECK(contains(floats, "    fround f"));
 
-	// The bit moves: `mff` reads a float and yields an int, `mtf` the reverse.
+	// The bit moves and classification: `mff`/`fclass` read a float and yield an int, `mtf` the
+	// reverse.
 	std::string moves = atO2(
 		"unsigned int f(float x) { return __builtin_float_bits(x); }"
-		"float g(unsigned int b) { return __builtin_float_from_bits(b); }");
+		"float g(unsigned int b) { return __builtin_float_from_bits(b); }"
+		"int h(float x) { return __builtin_fclass(x); }");
 	CHECK(contains(moves, "    mff r"));
 	CHECK(contains(moves, "    mtf f"));
+	CHECK(contains(moves, "    fclass r"));
 }
 
 // ---- interrupt handlers ------------------------------------------------------------------------

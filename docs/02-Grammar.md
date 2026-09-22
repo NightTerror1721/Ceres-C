@@ -106,7 +106,7 @@ What is done with them:
 | --- | --- |
 | `noreturn` | Recorded on the function (a prototype's holds for its definition). A `return` inside such a function is warned about (W3002). No code is different: nothing here optimizes on it yet. |
 | `noinline` | Recorded on the function. The inliner never splices it into its callers, however small it is. |
-| `always_inline` | Recorded on the function. When inlining is on at all (`-O2`, or `-finline`), its size limit gives way entirely, so the body is spliced in regardless of length. |
+| `always_inline` | Recorded on the function. When inlining is on at all (`-O2`, or `-finline`), its size limit gives way entirely, so a body of any length is spliced in. The other inliner limits still apply: a body with control flow, a call, or a variadic parameter list is not inlined whatever it is marked, and no diagnostic is emitted for one that could not be. |
 | `pure`, `const` | Recorded on the function. A call whose result nothing reads may be removed, like any other computation with no observable effect. `const` also promises the function reads no memory; `pure` only that it has no side effects. |
 | `deprecated` | A call is warned about (W3003). Read wherever GCC allows it; a prototype's holds for its definition. |
 | `warn_unused_result` | Discarding a call's result is warned about (W3004). A prototype's holds for its definition. |

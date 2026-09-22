@@ -305,7 +305,10 @@ namespace ceresc::preprocessor
 		std::string protectedExpression;
 		for (usize i = 0; i < expression.size();)
 		{
-			if (expression.substr(i).starts_with("__has_include") &&
+			// The leading boundary matters as much as the trailing one: without it, an identifier
+			// that merely ENDS in `__has_include` (or `defined`) would match partway through.
+			if ((i == 0 || !isIdentifierChar(expression[i - 1])) &&
+				expression.substr(i).starts_with("__has_include") &&
 				(i + 13 == expression.size() || !isIdentifierChar(expression[i + 13])))
 			{
 				usize p = i + 13;
@@ -333,17 +336,20 @@ namespace ceresc::preprocessor
 								continue;
 							}
 							_diagnostics.error(DiagId::IncludeExpectsTarget, location, "'__has_include' expects a ')' after its target");
-							i = p;
+							// One mistake, one diagnostic: abandon the rest of the directive rather
+							// than re-scanning part of it as expression text.
+							i = expression.size();
 							continue;
 						}
 					}
 				}
 				_diagnostics.error(DiagId::IncludeExpectsTarget, location, "'__has_include' expects \"file\" or <file>");
 				protectedExpression += '0';
-				i = p < expression.size() ? p + 1 : expression.size();
+				i = expression.size();
 				continue;
 			}
-			if (expression.substr(i).starts_with("defined") &&
+			if ((i == 0 || !isIdentifierChar(expression[i - 1])) &&
+				expression.substr(i).starts_with("defined") &&
 				(i + 7 == expression.size() || !isIdentifierChar(expression[i + 7])))
 			{
 				usize p = i + 7;

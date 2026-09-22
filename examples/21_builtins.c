@@ -72,12 +72,17 @@ int main(void)
     line("abs(-5)         = ", __builtin_abs(-5));                 // 5
     // The high half of (2^32-1)^2 = 2^64 - 2^33 + 1 is 2^32 - 2.
     hexline("mulhu(ffffffff) = ", __builtin_mulhu(0xFFFFFFFFu, 0xFFFFFFFFu)); // 0xfffffffe
+    // The signed high half: (2^30)^2 = 2^60, whose high word is 2^28 = 268435456.
+    line("mulhs(2^30,2^30) = ", __builtin_mulhs(0x40000000, 0x40000000));      // 268435456
 
     // The float instructions, checked through an int so no float printer is needed.
     line("sqrt(16)        = ", (int)__builtin_sqrt(16.0f));       // 4
     line("floor(3.9)      = ", (int)__builtin_floor(3.9f));       // 3
     line("ceil(3.1)       = ", (int)__builtin_ceil(3.1f));        // 4
     line("trunc(-3.9)     = ", (int)__builtin_trunc(-3.9f));      // -3
+    line("rint(3.5)       = ", (int)__builtin_rint(3.5f));        // 4 (ties to even)
+    line("rint(2.5)       = ", (int)__builtin_rint(2.5f));        // 2 (ties to even)
+    line("fmod(7.5,2)     = ", (int)__builtin_fmod(7.5f, 2.0f));  // 1 (7.5 - 3*2)
     line("fabs(-3)        = ", (int)__builtin_fabs(-3.0f));       // 3
     line("fmin(2,5)       = ", (int)__builtin_fmin(2.0f, 5.0f));  // 2
     line("fmax(2,5)       = ", (int)__builtin_fmax(2.0f, 5.0f));  // 5
@@ -85,6 +90,10 @@ int main(void)
     // The raw bit moves: 1.0f is 0x3F800000, and 0x40000000 is 2.0f.
     hexline("bits(1.0)       = ", __builtin_float_bits(1.0f));    // 0x3f800000
     line("from_bits(4000) = ", (int)__builtin_float_from_bits(0x40000000u)); // 2
+
+    // Classification bits: -1.0f is bit 1, +1.0f is bit 6.
+    line("fclass(-1.0)    = ", __builtin_fclass(-1.0f));          // 2
+    line("fclass(1.0)     = ", __builtin_fclass(1.0f));           // 64
 
     return 0;
 }

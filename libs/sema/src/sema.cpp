@@ -1045,7 +1045,9 @@ namespace ceresc::sema
 			// expression statement can warn when its value is dropped.
 			if (funcDecl->isDeprecated())
 				_diagnostics.warning(DiagId::DeprecatedFunctionUse, node.location(), "call to deprecated function '{}'", funcDecl->name());
-			if (funcDecl->isWarnUnusedResult())
+			// Only meaningful when the call HAS a result: `void f(void) __attribute__((warn_unused_result))`
+			// must not warn that a result nobody could use was ignored.
+			if (funcDecl->isWarnUnusedResult() && funcDecl->returnType() && !funcDecl->returnType()->isVoid())
 				node.setWarnUnusedResult(true);
 		}
 		else if (info)
@@ -1646,7 +1648,8 @@ namespace ceresc::sema
 		checkExpr(node.expr());
 		// `f(x);` throws the result away. When f asked not to have that done, say so - at the
 		// statement, which is the only place a discarded result exists.
-		if (auto* call = dynamic_cast<ast::CallExpr*>(node.expr()); call && call->warnUnusedResult())
+		if (auto* call = dynamic_cast<ast::CallExpr*>(node.expr());
+			call && call->warnUnusedResult() && call->type() && !call->type()->isVoid())
 			_diagnostics.warning(DiagId::UnusedResult, call->location(), "the result of this call is ignored, but the function is declared 'warn_unused_result'");
 	}
 
@@ -2121,9 +2124,11 @@ namespace ceresc::sema
 			const ast::FunctionDecl* prototype = declared->funcDecl;
 			if (prototype->isNoReturn())
 				node.setNoReturn(true);
-			if (prototype->isNoInline())
+			// A definition's own attribute wins over a prototype's where the two contradict:
+			// `noinline` then `always_inline` must leave the definition inlinable.
+			if (prototype->isNoInline() && !node.isAlwaysInline())
 				node.setNoInline(true);
-			if (prototype->isAlwaysInline())
+			if (prototype->isAlwaysInline() && !node.isNoInline())
 				node.setAlwaysInline(true);
 			if (prototype->isConstAttr())
 				node.setConstAttr(true);

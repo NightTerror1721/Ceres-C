@@ -376,7 +376,7 @@ namespace ceresc::driver
 			}
 		}
 
-		if (cInputs.empty() && casmInputs.empty() && objectInputs.empty() && archiveInputs.empty() && options.libraries.empty())
+		if (cInputs.empty() && casmInputs.empty() && objectInputs.empty() && archiveInputs.empty())
 		{
 			std::cerr << "ceresc: no input files\n";
 			return 1;
@@ -385,45 +385,52 @@ namespace ceresc::driver
 		// -l <name>: find lib<name>.car (an archive) or lib<name>.cobj (an object) through -L and
 		// <sysroot>/lib, then hand the result to the linker exactly as a .car/.cobj named on the
 		// command line. This is what lets a program say `-l ceres` instead of spelling out the
-		// STDLIB archive's path.
+		// STDLIB archive's path. Only `--run` links, so without it the flags are reported as unused
+		// rather than resolved against a filesystem nothing is going to read.
 		std::vector<std::string> libraryDirectories = options.libraryDirectories;
 		if (!options.sysroot.empty())
-			libraryDirectories.insert(libraryDirectories.begin(), (fs::path(options.sysroot) / "lib").string());
-		for (const std::string& name : options.libraries)
+			libraryDirectories.push_back((fs::path(options.sysroot) / "lib").string());
+		if (!options.run && !options.libraries.empty())
+			std::cerr << "ceresc: warning: '-l' is only used when linking; add --run\n";
+		if (options.run)
 		{
-			std::string found;
-			for (const std::string& directory : libraryDirectories)
+			for (const std::string& name : options.libraries)
 			{
-				for (const char* extension : { ".car", ".cobj" })
+				std::string found;
+				for (const std::string& directory : libraryDirectories)
 				{
-					fs::path candidate = fs::path(directory) / ("lib" + name + extension);
-					if (fs::is_regular_file(candidate))
+					for (const char* extension : { ".car", ".cobj" })
 					{
-						found = candidate.string();
-						break;
+						fs::path candidate = fs::path(directory) / ("lib" + name + extension);
+						std::error_code error;
+						if (fs::is_regular_file(candidate, error))
+						{
+							found = candidate.string();
+							break;
+						}
 					}
+					if (!found.empty())
+						break;
 				}
-				if (!found.empty())
-					break;
-			}
-			if (found.empty())
-			{
-				std::cerr << "ceresc: cannot find library 'lib" << name << ".car' (or '.cobj')";
-				if (libraryDirectories.empty())
-					std::cerr << ": no -L directory and no --sysroot were given\n";
-				else
+				if (found.empty())
 				{
-					std::cerr << " in:";
-					for (const std::string& directory : libraryDirectories)
-						std::cerr << ' ' << directory;
-					std::cerr << '\n';
+					std::cerr << "ceresc: cannot find library 'lib" << name << ".car' (or '.cobj')";
+					if (libraryDirectories.empty())
+						std::cerr << ": no -L directory and no --sysroot were given\n";
+					else
+					{
+						std::cerr << " in:";
+						for (const std::string& directory : libraryDirectories)
+							std::cerr << ' ' << directory;
+						std::cerr << '\n';
+					}
+					return 1;
 				}
-				return 1;
+				if (fs::path(found).extension() == ".car")
+					archiveInputs.push_back(std::move(found));
+				else
+					objectInputs.push_back(std::move(found));
 			}
-			if (fs::path(found).extension() == ".car")
-				archiveInputs.push_back(std::move(found));
-			else
-				objectInputs.push_back(std::move(found));
 		}
 
 		// --sysroot <dir>: `<dir>/include` joins the include search after the -I directories, the

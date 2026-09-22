@@ -498,16 +498,18 @@ namespace ceresc::ir
 		// shift or mask on any machine, and the arithmetic it replaces (imul/idiv/imod, and the
 		// unsigned mul/div/mod) is the expensive part of a loop body. The rewrites:
 		//
-		//   x * 2^k  ->  x << k                       (a multiply wraps the same way, either sign)
-		//   x /u 2^k ->  x >>u k                      (logical shift: the result is non-negative)
+		//   x * 2^k  ->  x << k                          (a multiply wraps the same way, either sign)
+		//   x /u 2^k ->  x >>u k                         (logical shift: the result is non-negative)
 		//   x %u 2^k ->  x & (2^k - 1)
-		//   x /s 2^k ->  (x + (x >>u (32-k))) >>s k   the bias rounds the dividend toward -inf
-		//   x %s 2^k ->  x - ((x /s 2^k) << k)        BEFORE the arithmetic shift, so the quotient
-		//                                             truncates toward zero exactly as C's / does
+		//   x /s 2^k ->  (x + bias) >>s k                bias = ((x >>s 31) >>u (32-k)) is 2^k-1
+		//   x %s 2^k ->  x - ((x /s 2^k) << k)           for a negative x and 0 otherwise, so the
+		//                                                bias rounds toward -inf BEFORE the
+		//                                                arithmetic shift and the quotient truncates
+		//                                                toward zero exactly as C's / does
 		//
-		// The signed bias reads the dividend with a LOGICAL shift (x >>u (32-k) is 0 or 2^k-1), so
-		// it is one instruction and needs no wide mask - the textbook `(x >>s 31) & (2^k-1)` form
-		// would materialize the mask for every k above 16.
+		// The bias is built by shifting x's SIGN down, not x itself: `(x >>s 31) >>u (32-k)` is one
+		// instruction pair and needs no wide mask (the only other way to spell 0/2^k-1), and it is
+		// correct for every dividend - reading x's own top k bits is not.
 		//
 		// Only a power of two is recognized. The general "magic number" division needs a
 		// 32x32 -> 64 multiply-high, and the IR has no opcode for one today (MULH/IMULH exist in
@@ -590,7 +592,12 @@ namespace ceresc::ir
 						emitBin(p.result, IrBinOp::Shr, value, shift);
 						return true;
 					}
-					IrValue bias = emitTemp(IrBinOp::Shr, value, emitConst(32 - k));
+					// The bias is 2^k-1 for a negative dividend and 0 otherwise: x's sign (0 or -1),
+					// shifted logically down, leaves 0 or the k low bits set. Reading x itself
+					// instead (`x >>u (32-k)`) would take x's top k bits, which are all ones only in
+					// a narrow range - a large-magnitude dividend would then round the wrong way.
+					IrValue sign = emitTemp(IrBinOp::Sar, value, emitConst(31));
+					IrValue bias = emitTemp(IrBinOp::Shr, sign, emitConst(32 - k));
 					IrValue sum = emitTemp(IrBinOp::Add, value, bias);
 					emitBin(p.result, IrBinOp::Sar, sum, emitConst(k));
 					return true;
@@ -602,7 +609,8 @@ namespace ceresc::ir
 						emitBin(p.result, IrBinOp::And, value, emitConst(static_cast<i64>(bits) - 1));
 						return true;
 					}
-					IrValue bias = emitTemp(IrBinOp::Shr, value, emitConst(32 - k));
+					IrValue sign = emitTemp(IrBinOp::Sar, value, emitConst(31));
+					IrValue bias = emitTemp(IrBinOp::Shr, sign, emitConst(32 - k));
 					IrValue sum = emitTemp(IrBinOp::Add, value, bias);
 					// The quotient is read again below, so it needs a temporary of its own rather
 					// than p.result.
@@ -825,10 +833,12 @@ namespace ceresc::ir
 				}
 				case IrOpcode::Builtin:
 				{
+					// Operands only: renaming a definition is the inliner's remapInstr, not this
+					// pass. (The map is keyed by single-definition Copy results, so p.result can
+					// never be a key here anyway.)
 					IrBuiltinPayload p = instr.as<IrBuiltinPayload>();
 					p.a = rename(p.a);
 					p.b = rename(p.b);
-					p.result = rename(p.result);
 					return arena.create<IrInstr>(loc, p);
 				}
 				case IrOpcode::Return:
@@ -1430,9 +1440,27 @@ namespace ceresc::ir
 						IrValue result = resultOf(*instr);
 						bool dead = (isPure(*instr) || isPureCall(*instr, pureFunctions)) && result.isValid() && useCount[result.id] == 0;
 						if (dead)
+						{
+							// A dropped call takes its queued arguments with it: the Param
+							// instructions immediately before it feed nothing else, and keeping
+							// them would keep the argument computations alive too. They are by
+							// construction the last `argCount` instructions emitted, so they are
+							// the tail of `live`.
+							if (instr->opcode() == IrOpcode::Call)
+							{
+								u32 queued = instr->as<IrCallPayload>().argCount;
+								while (queued > 0 && !live.empty() && live.back()->opcode() == IrOpcode::Param)
+								{
+									live.pop_back();
+									--queued;
+								}
+							}
 							changed = true;
+						}
 						else
+						{
 							live.push_back(instr);
+						}
 					}
 					if (live.size() != block->instrs().size())
 						block->replaceInstrs(std::move(live));

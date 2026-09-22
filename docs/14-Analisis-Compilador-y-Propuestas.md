@@ -920,7 +920,61 @@ una sugerencia, y se cumple mientras la ola esté en curso.
    `open-code-review` sobre el diff de la ola; los hallazgos se corrigen en un commit adicional y se
    documentan en esta sección.
 
-**Estado: en curso.**
+### Estado de la Ola 1
+
+| Parte | Estado | Commit |
+| --- | --- | --- |
+| **O1** — reducción de fuerza (`*2^k`, `/2^k`, `%2^k`) | **hecha** | `Add strength reduction for multiplication and division by a power of two` |
+| **F11** — atributos con efecto (`noinline`, `always_inline`, `pure`, `const`, `deprecated`, `warn_unused_result`) | **hecha** | `Make __attribute__((...)) do something` |
+| **F1** — builtins de una instrucción (`clz`/`ctz`/`popcount`/`bswap`/`rol`/`ror`/`mulh`/`abs` y el flotante de una instrucción) | **hecha** | `Add one-instruction machine builtins` |
+| **F5** — integración de la STDLIB (`-L`/`-l`/`--sysroot`, `__has_include`) | **hecha** | `Add -L/-l/--sysroot and __has_include` |
+| **O15** — reconocimiento de idiomas de bucle byte→palabra | **aplazada, con diseño** | — |
+
+**O15 se aplaza a propósito.** Es la única parte que exige análisis de bucles naturales y una
+reescritura palabra-a-palabra, y no puede entregarse sin arriesgar miscompilaciones entre `-O0`,
+`-O1` y `-O2` — exactamente lo que la regla 3 prohíbe. El diseño a seguir:
+
+1. Detección de bucles naturales sobre el CFG (preheader, header, cuerpo, back-edge), que hoy no
+   existe y que O3 necesita igualmente.
+2. Reconocimiento de las formas canónicas: copia (`dst[i] = src[i]`), relleno (`dst[i] = c`) y
+   búsqueda (`while (*s) s++;`, `strcmp`, `memchr`).
+3. Bajada a una expansión palabra-a-palabra con cola de bytes (la prueba `(w - 0x01010101) & ~w &
+   0x80808080` de `asm/string_fast.casm`), o a una llamada a una rutina del propio compilador emitida
+   en CASM, nunca a `memcpy` de la biblioteca (que puede no estar enlazada).
+4. Tras el flag `-floop-idioms` (ON en O1, OFF en O0), con un banco de pruebas que compare los tres
+   niveles y, si es posible, las cifras de instrucciones medidas por el Timer que documenta
+   `asm/string_fast.casm`.
+
+La referencia de rendimiento es la que da la propia STDLIB: sus versiones C a `-O2` son ~3× más
+lentas que su asm a mano para `strcpy`/`strcmp`/`strchr`/`memchr` (§10.5).
+
+### Pasada de revisión sobre la Ola 1
+
+Tras cerrar las cuatro partes se ejecutó `open-code-review` sobre el diff completo
+(`5a26a2e..HEAD`): 34 ficheros revisados, 26 hallazgos. El más importante fue **crítico** y está
+corregido:
+
+- **O1, sesgo de la división con signo (crítico).** El sesgo se calculaba como `x >>u (32-k)`, que
+  son los *k* bits altos de `x`, no su signo; es `2^k-1` solo cuando esos bits son todos unos, así
+  que para dividendos de magnitud grande redondeaba mal (p. ej. `(2^30+3)/4` daba `268435457` en vez
+  de `268435456`). Se corrigió a `(x >>s 31) >>u (32-k)` y se añadió a `examples/20_divmod.c` un
+  bloque de dividendos grandes (2^30, INT_MAX, INT_MIN+1, …) cuyos valores ahora se comprueban a mano
+  en los tres niveles.
+
+Otros hallazgos corregidos: el driver ya no resuelve `-l` sin `--run` ni debilita el guardia de
+"no input files"; el `sysroot/lib` se busca *después* de `-L` (coherente con `sysroot/include`);
+se usa la sobrecarga con `std::error_code` de `is_regular_file`; `deprecated`/`warn_unused_result`
+en posiciones sin función se reportan con el mensaje genérico; los atributos de función en posición
+de especificador sobre algo que no es función ya se avisan en vez de perderse; `warn_unused_result`
+sobre una función `void` no avisa; un prototipo `noinline` no anula un `always_inline` de la
+definición; `__has_include` malformado produce un solo diagnóstico y respeta el límite de token;
+la DCE de una llamada `pure` retira también sus `Param`; y se centralizó en `ast/expr.h` el predicado
+`builtinTouchesFloatBank`, del que derivan codegen y el sondeo del banco flotante del handler.
+
+Quedan sin corregir dos hallazgos de severidad baja, anotados aquí: `typedef` con un atributo de
+función se descarta en silencio (mismo hueco que la posición de especificador, que sí se corrigió), y
+`builtinFromName()` enumera la lista de nombres a mano junto a `builtinName()` (sin `static_assert`
+que impida que las dos deriven).
 
 ---
 

@@ -1140,10 +1140,7 @@ namespace ceresc::codegen
 				}
 
 				bool resultFloat = ast::builtinResultIsFloat(p.builtin);
-				// The operand's bank: everything is a float operation except the integer builtins
-				// and FloatFromBits, which reads an integer bit pattern to make a float of.
-				bool sourceFloat = p.builtin != Builtin::FloatFromBits &&
-					(resultFloat || p.builtin == Builtin::FloatBits || p.builtin == Builtin::Fclass);
+				bool sourceFloat = ast::builtinSourceIsFloat(p.builtin);
 
 				std::string a = valueIn(p.a, kScratchA, sourceFloat, loc);
 				std::string dest = defineInto(p.result, kScratchB, resultFloat);
@@ -1374,14 +1371,9 @@ namespace ceresc::codegen
 						case IrOpcode::Return:  if (instr->as<IrReturnPayload>().isFloat) return true; break;
 						case IrOpcode::CondJump: if (instr->as<IrCondJumpPayload>().isFloat) return true; break;
 						case IrOpcode::Builtin:
-						{
-							// A float result uses the bank, and so do the builtins that READ a float
-							// but yield an int (`float_bits`, `fclass`).
-							ast::Builtin builtin = instr->as<IrBuiltinPayload>().builtin;
-							if (ast::builtinResultIsFloat(builtin) || builtin == ast::Builtin::FloatBits || builtin == ast::Builtin::Fclass)
+							if (ast::builtinTouchesFloatBank(instr->as<IrBuiltinPayload>().builtin))
 								return true;
 							break;
-						}
 						case IrOpcode::Call:
 							// A callee may use the bank whatever this body does, and nothing here can
 							// see into it - so any call at all makes the answer yes.
