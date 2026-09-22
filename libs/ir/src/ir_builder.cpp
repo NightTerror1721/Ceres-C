@@ -1443,6 +1443,28 @@ namespace ceresc::ir
 		_lastValue = IrValue{};
 	}
 
+	void IrBuilder::visit(ast::BuiltinExpr& node)
+	{
+		// One instruction with a result. The operands are lowered in source order; no conversion is
+		// needed between the argument's type and the instruction's, because a narrow integer value
+		// is already held sign- or zero-extended to a word (ir_instr.h's own invariant), which is
+		// exactly the integer promotion the machine instruction would assume.
+		support::SourceLocation loc = node.location();
+
+		IrBuiltinPayload payload;
+		payload.builtin = node.builtin();
+		payload.result = _currentFunction->newTemp();
+
+		std::span<ast::Expr* const> args = node.args();
+		if (!args.empty())
+			payload.a = lowerExpr(args[0]);
+		if (args.size() > 1)
+			payload.b = lowerExpr(args[1]);
+
+		emitVoid(loc, payload);
+		_lastValue = payload.result;
+	}
+
 	void IrBuilder::visit(ast::VaExpr& node)
 	{
 		using ast::VaOp;

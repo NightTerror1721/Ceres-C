@@ -1294,6 +1294,20 @@ TEST(parser, the_machine_builtins_are_syntax_rather_than_calls)
 		"(unit (var __builtin_sti int <null>) (func main int (params) (block (return __builtin_sti))))");
 }
 
+TEST(parser, the_one_instruction_builtins_are_recognized_by_name_in_call_position)
+{
+	CHECK_EQ(printExpr("__builtin_clz(x)"), "(__builtin_clz x)");
+	CHECK_EQ(printExpr("__builtin_rotl32(a, b)"), "(__builtin_rotl32 a b)");
+	CHECK_EQ(printExpr("__builtin_popcount(x) + 1"), "(+ (__builtin_popcount x) 1)");
+
+	// The arity is fixed by the builtin, so too few or too many arguments is a parse error.
+	CHECK(parseFails("int main(void) { return __builtin_rotl32(1); }"));
+	CHECK(parseFails("int main(void) { return __builtin_clz(1, 2); }"));
+
+	// And only in call position: the spelling is still usable as an ordinary identifier.
+	CHECK_EQ(printExpr("__builtin_clz + 1"), "(+ __builtin_clz 1)");
+}
+
 // ---- declarators -------------------------------------------------------------------------------
 
 TEST(parser, a_declarator_binds_suffixes_tighter_than_the_leading_star)

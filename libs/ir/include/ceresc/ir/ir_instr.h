@@ -56,7 +56,7 @@ namespace ceresc::ir
 	enum class IrOpcode : u8
 	{
 		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, TableJump,
-		Return, MachineOp
+		Return, MachineOp, Builtin
 	};
 
 	// Binary arithmetic/bitwise ops. Shr and Sar are two distinct opcodes - not one "Shr" opcode
@@ -322,18 +322,30 @@ namespace ceresc::ir
 		ast::MachineOp op = ast::MachineOp::Sti;
 	};
 
+	// A one-instruction machine builtin (ast::BuiltinExpr): clz/ctz/popcount/bswap/rotl/rotr,
+	// the two multiply-highs, abs, and the single-instruction float operations. `b` is used only by
+	// the two-operand builtins (rotl/rotr/mulh/fmod/fmin/fmax/copysign); it stays invalid for a
+	// unary one. The result's bank is a property of the builtin, not stored here - codegen asks
+	// ast::builtinResultIsFloat().
+	struct IrBuiltinPayload
+	{
+		IrValue result;
+		ast::Builtin builtin = ast::Builtin::Clz;
+		IrValue a, b;
+	};
+
 	using IrInstrPayload = std::variant<
 		IrConstPayload, IrBinOpPayload, IrUnOpPayload, IrCmpPayload, IrCopyPayload,
 		IrFrameAddrPayload, IrGlobalAddrPayload, IrLoadPayload, IrStorePayload, IrParamPayload,
 		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrTableJumpPayload,
-		IrReturnPayload, IrMachineOpPayload>;
+		IrReturnPayload, IrMachineOpPayload, IrBuiltinPayload>;
 	// Declaration order here must match IrOpcode's own order exactly - opcode() below derives the
 	// opcode from the variant's index() instead of storing a second, redundant tag. The size check
 	// alone only pins the *count*: swapping two payload types (e.g. Load/Store), or adding an
 	// IrOpcode enumerator without a matching payload, would keep the count at 17 while silently
 	// remapping opcode() and every switch in ir_printer.cpp/ir_function.cpp to the wrong payload -
 	// so each alternative's *position* is pinned individually too, not just the total.
-	static_assert(std::variant_size_v<IrInstrPayload> == 17, "IrInstrPayload must have exactly one alternative per IrOpcode");
+	static_assert(std::variant_size_v<IrInstrPayload> == 18, "IrInstrPayload must have exactly one alternative per IrOpcode");
 	template <IrOpcode Op, typename Payload>
 	concept OpcodeMapsToPayload = std::is_same_v<std::variant_alternative_t<static_cast<usize>(Op), IrInstrPayload>, Payload>;
 	static_assert(OpcodeMapsToPayload<IrOpcode::Const, IrConstPayload>);
@@ -353,6 +365,7 @@ namespace ceresc::ir
 	static_assert(OpcodeMapsToPayload<IrOpcode::TableJump, IrTableJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Return, IrReturnPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::MachineOp, IrMachineOpPayload>);
+	static_assert(OpcodeMapsToPayload<IrOpcode::Builtin, IrBuiltinPayload>);
 
 	// Declared before IrInstr so resultOf()/forEachOperand() below can be defined right after it -
 	// see their own comment for why they live here rather than in each consumer.
@@ -412,6 +425,7 @@ namespace ceresc::ir
 			case IrOpcode::GlobalAddr: return instr.as<IrGlobalAddrPayload>().result;
 			case IrOpcode::Load:       return instr.as<IrLoadPayload>().result;
 			case IrOpcode::VaStart:    return instr.as<IrVaStartPayload>().result;
+			case IrOpcode::Builtin:    return instr.as<IrBuiltinPayload>().result;
 			case IrOpcode::Call:
 			{
 				const IrCallPayload& payload = instr.as<IrCallPayload>();
@@ -458,6 +472,14 @@ namespace ceresc::ir
 			// A TableJump reads the value it dispatches on; its table entries are block addresses,
 			// not temporaries, so nothing else is an operand.
 			case IrOpcode::TableJump: fn(instr.as<IrTableJumpPayload>().discriminant); break;
+			case IrOpcode::Builtin:
+			{
+				const IrBuiltinPayload& p = instr.as<IrBuiltinPayload>();
+				fn(p.a);
+				if (p.b.isValid())
+					fn(p.b);
+				break;
+			}
 			case IrOpcode::Return:
 			{
 				const IrReturnPayload& p = instr.as<IrReturnPayload>();

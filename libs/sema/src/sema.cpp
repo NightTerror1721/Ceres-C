@@ -1385,6 +1385,71 @@ namespace ceresc::sema
 		_lastExprType = &Type::Void;
 	}
 
+	void Sema::visit(ast::BuiltinExpr& node)
+	{
+		for (ast::Expr* argument : node.args())
+			checkExpr(argument);
+
+		// The one-instruction machine builtins have a fixed argument list (the parser enforces its
+		// length), so the only thing left is the argument's TYPE and the result's. `abs` and the
+		// signed multiply-high take integers and yield an int; the rest of the integer set yields an
+		// unsigned int. FloatFromBits reads an integer bit pattern and yields a float; FloatBits and
+		// Fclass read a float and yield an integer; everything else float yields a float.
+		using ast::Builtin;
+		auto requireInteger = [&](const ast::Type* type)
+		{
+			if (!isIntegerType(type))
+				_diagnostics.error(DiagId::InvalidBuiltinOperand, node.location(),
+					"'{}' requires an integer argument, not '{}'", ast::builtinName(node.builtin()), typeName(type));
+		};
+		auto requireFloat = [&](const ast::Type* type)
+		{
+			if (!type || !type->isFloat())
+				_diagnostics.error(DiagId::InvalidBuiltinOperand, node.location(),
+					"'{}' requires a float argument, not '{}'", ast::builtinName(node.builtin()), typeName(type));
+		};
+
+		const Type* result = &Type::UInt;
+		switch (node.builtin())
+		{
+			case Builtin::FloatBits:
+				for (ast::Expr* argument : node.args())
+					requireFloat(argument ? argument->type() : nullptr);
+				result = &Type::UInt;
+				break;
+			case Builtin::FloatFromBits:
+				for (ast::Expr* argument : node.args())
+					requireInteger(argument ? argument->type() : nullptr);
+				result = &Type::Float;
+				break;
+			case Builtin::Fclass:
+				for (ast::Expr* argument : node.args())
+					requireFloat(argument ? argument->type() : nullptr);
+				result = &Type::Int;
+				break;
+			case Builtin::Abs:
+			case Builtin::MulhSigned:
+				for (ast::Expr* argument : node.args())
+					requireInteger(argument ? argument->type() : nullptr);
+				result = &Type::Int;
+				break;
+			case Builtin::Clz: case Builtin::Ctz: case Builtin::Popcount: case Builtin::Bswap:
+			case Builtin::Rotl: case Builtin::Rotr: case Builtin::MulhUnsigned:
+				for (ast::Expr* argument : node.args())
+					requireInteger(argument ? argument->type() : nullptr);
+				result = &Type::UInt;
+				break;
+			default: // every float operation
+				for (ast::Expr* argument : node.args())
+					requireFloat(argument ? argument->type() : nullptr);
+				result = &Type::Float;
+				break;
+		}
+
+		node.setType(result);
+		_lastExprType = result;
+	}
+
 	void Sema::visit(ast::VaExpr& node)
 	{
 		using ast::VaOp;

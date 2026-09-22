@@ -57,6 +57,28 @@ namespace ceresc::parser
 		return _arena.create<ast::MachineOpExpr>(location, op);
 	}
 
+	Expr* Parser::parseBuiltin(SourceLocation location, ast::Builtin builtin)
+	{
+		advance(); // the builtin's name
+		if (!expect(TokenKind::LParen, "'(' after a builtin"))
+			return nullptr;
+
+		std::vector<Expr*> args;
+		u32 arity = ast::builtinArity(builtin);
+		for (u32 i = 0; i < arity; ++i)
+		{
+			if (i > 0 && !expect(TokenKind::Comma, "','"))
+				return nullptr;
+			Expr* argument = parseAssignment();
+			if (!argument)
+				return nullptr;
+			args.push_back(argument);
+		}
+		if (!expect(TokenKind::RParen, "')'"))
+			return nullptr;
+		return _arena.create<ast::BuiltinExpr>(location, builtin, copyArgsToArena(args));
+	}
+
 	Expr* Parser::parseVaBuiltin(SourceLocation location, ast::VaOp op)
 	{
 		advance(); // the builtin's name
@@ -579,6 +601,10 @@ namespace ceresc::parser
 				// stands for an instruction rather than for a function.
 				if (std::optional<ast::MachineOp> machineOp = machineBuiltinFor(name); machineOp && _next.is(TokenKind::LParen))
 					return parseMachineBuiltin(location, *machineOp);
+				// And the one-instruction machine builtins one step up: names in call position that
+				// stand for an instruction with a result (clz, popcount, fabs, sqrt, ...).
+				if (std::optional<ast::Builtin> builtin = ast::builtinFromName(name); builtin && _next.is(TokenKind::LParen))
+					return parseBuiltin(location, *builtin);
 				// `_Generic(...)` is an expression, unlike `_Static_assert(...)` which is a declaration -
 				// recognized the same way, by name plus a following '(', so it needs no token kind of its own.
 				if (isGenericSelectionStart())

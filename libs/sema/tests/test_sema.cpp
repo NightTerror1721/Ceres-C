@@ -2051,6 +2051,23 @@ TEST(sema, noinline_and_purity_attributes_are_accepted_without_a_word)
 	CHECK(!containsMessage(outcome, "ignored"));
 }
 
+// ---- the one-instruction machine builtins ---------------------------------------------------------------
+
+TEST(sema, the_machine_builtins_type_their_result_and_their_arguments)
+{
+	CHECK(checkSource("unsigned int f(unsigned int x) { return __builtin_clz(x); }").ok);
+	CHECK(checkSource("int f(int x) { return __builtin_abs(x); }").ok);
+	CHECK(checkSource("float f(float x) { return __builtin_fabs(x); }").ok);
+	CHECK(checkSource("float f(float x, float y) { return __builtin_fmin(x, y); }").ok);
+	CHECK(checkSource("int f(float x) { return __builtin_fclass(x); }").ok);
+	CHECK(checkSource("unsigned int f(float x) { return __builtin_float_bits(x); }").ok);
+	CHECK(checkSource("float f(unsigned int b) { return __builtin_float_from_bits(b); }").ok);
+
+	// `clz` wants an integer and `sqrt` a float - the wrong bank is refused rather than converted.
+	CHECK(!checkSource("int f(float x) { return __builtin_clz(x); }").ok);
+	CHECK(!checkSource("float f(int x) { return __builtin_sqrt(x); }").ok);
+}
+
 TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
 {
 	CHECK(checkSource("int f(void) { __asm__(\"nop\"); return 1; }").ok);

@@ -63,6 +63,7 @@ namespace ceresc::ast
 		void visit(VaExpr& node) override;
 		void visit(GenericSelectionExpr& node) override;
 		void visit(MachineOpExpr& node) override;
+		void visit(BuiltinExpr& node) override;
 		void visit(TernaryExpr& node) override;
 		void visit(InitListExpr& node) override;
 

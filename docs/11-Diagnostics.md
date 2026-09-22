@@ -302,6 +302,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3093` | A `_Generic` selection with the same type in more than one association. |
 | `E3094` | A `_Generic` selection with more than one `default` association. |
 | `E3095` | A `_Generic` selection whose controlling expression's type matches no association, and there is no `default`. |
+| `E3096` | A one-instruction builtin given an argument of the wrong bank (an integer builtin a float, or a float builtin an integer). |
 
 ### `4xxx` — codegen
 

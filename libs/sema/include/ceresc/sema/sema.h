@@ -80,6 +80,7 @@ namespace ceresc::sema
 		void visit(ast::VaExpr& node) override;
 		void visit(ast::GenericSelectionExpr& node) override;
 		void visit(ast::MachineOpExpr& node) override;
+		void visit(ast::BuiltinExpr& node) override;
 		void visit(ast::TernaryExpr& node) override;
 		void visit(ast::InitListExpr& node) override;
 

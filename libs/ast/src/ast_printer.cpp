@@ -385,6 +385,18 @@ namespace ceresc::ast
 		_output += ')';
 	}
 
+	void AstPrinter::visit(BuiltinExpr& node)
+	{
+		_output += '(';
+		_output += builtinName(node.builtin());
+		for (Expr* arg : node.args())
+		{
+			_output += ' ';
+			printChild(arg);
+		}
+		_output += ')';
+	}
+
 	void AstPrinter::visit(VaExpr& node)
 	{
 		_output += '(';

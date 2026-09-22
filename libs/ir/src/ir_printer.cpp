@@ -211,6 +211,16 @@ namespace ceresc::ir
 				_output += '\n';
 				break;
 			}
+			case IrOpcode::Builtin:
+			{
+				const auto& payload = instr.as<IrBuiltinPayload>();
+				_output += std::format("{} = {}", valueName(payload.result), ast::builtinName(payload.builtin));
+				_output += std::format(" {}", valueName(payload.a));
+				if (payload.b.isValid())
+					_output += std::format(", {}", valueName(payload.b));
+				_output += '\n';
+				break;
+			}
 			case IrOpcode::Jump:
 			{
 				const auto& payload = instr.as<IrJumpPayload>();

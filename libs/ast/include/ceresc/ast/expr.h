@@ -537,6 +537,120 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<MachineOpExpr>, "MachineOpExpr must be trivially destructible (Arena-allocated)");
 
+	// The one-instruction machine operations that are not reachable from a C expression: the bit
+	// instructions (clz/ctz/popcount/bswap/rotl/rotr, the two multiply-highs, and abs) and the
+	// float instructions that are not an operator (`fabs`, `fmod`, `sqrt`, the roundings, min/max,
+	// copysign, the reciprocal estimates, `fclass`, and the raw bit moves). The Ceres STDLIB reaches
+	// these today through hand-written CASM (asm/bits.casm, asm/math_ops.casm) precisely because C
+	// cannot spell them; these builtins are how the compiler does it instead. See docs/14, F1.
+	//
+	// `Fma` is deliberately absent: `fma fd, fs, ft` ACCUMULATES into fd (fd = fd + fs*ft), so it
+	// needs a destination distinct from all three operands, which this back end's two scratch
+	// float registers cannot guarantee. A fused multiply-add would be a codegen project of its own.
+	enum class Builtin : u8
+	{
+		Clz, Ctz, Popcount, Bswap, Abs, Rotl, Rotr, MulhUnsigned, MulhSigned,
+		Fabs, Fmod, Sqrt, Floor, Ceil, Trunc, Rint, Fmin, Fmax, Copysign, Rcp, Rsqrt,
+		Fclass, FloatBits, FloatFromBits
+	};
+
+	constexpr std::string_view builtinName(Builtin builtin) noexcept
+	{
+		switch (builtin)
+		{
+			case Builtin::Clz:           return "__builtin_clz";
+			case Builtin::Ctz:           return "__builtin_ctz";
+			case Builtin::Popcount:      return "__builtin_popcount";
+			case Builtin::Bswap:         return "__builtin_bswap32";
+			case Builtin::Abs:           return "__builtin_abs";
+			case Builtin::Rotl:          return "__builtin_rotl32";
+			case Builtin::Rotr:          return "__builtin_rotr32";
+			case Builtin::MulhUnsigned:  return "__builtin_mulhu";
+			case Builtin::MulhSigned:    return "__builtin_mulhs";
+			case Builtin::Fabs:          return "__builtin_fabs";
+			case Builtin::Fmod:          return "__builtin_fmod";
+			case Builtin::Sqrt:          return "__builtin_sqrt";
+			case Builtin::Floor:         return "__builtin_floor";
+			case Builtin::Ceil:          return "__builtin_ceil";
+			case Builtin::Trunc:         return "__builtin_trunc";
+			case Builtin::Rint:          return "__builtin_rint";
+			case Builtin::Fmin:          return "__builtin_fmin";
+			case Builtin::Fmax:          return "__builtin_fmax";
+			case Builtin::Copysign:      return "__builtin_copysign";
+			case Builtin::Rcp:           return "__builtin_frcp";
+			case Builtin::Rsqrt:         return "__builtin_frsqrt";
+			case Builtin::Fclass:        return "__builtin_fclass";
+			case Builtin::FloatBits:     return "__builtin_float_bits";
+			case Builtin::FloatFromBits: return "__builtin_float_from_bits";
+		}
+		return "";
+	}
+
+	constexpr std::optional<Builtin> builtinFromName(std::string_view name) noexcept
+	{
+		for (Builtin builtin : { Builtin::Clz, Builtin::Ctz, Builtin::Popcount, Builtin::Bswap, Builtin::Abs,
+			Builtin::Rotl, Builtin::Rotr, Builtin::MulhUnsigned, Builtin::MulhSigned, Builtin::Fabs,
+			Builtin::Fmod, Builtin::Sqrt, Builtin::Floor, Builtin::Ceil, Builtin::Trunc, Builtin::Rint,
+			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
+			Builtin::FloatBits, Builtin::FloatFromBits })
+			if (name == builtinName(builtin))
+				return builtin;
+		return std::nullopt;
+	}
+
+	constexpr u32 builtinArity(Builtin builtin) noexcept
+	{
+		switch (builtin)
+		{
+			case Builtin::Rotl: case Builtin::Rotr:
+			case Builtin::MulhUnsigned: case Builtin::MulhSigned:
+			case Builtin::Fmod: case Builtin::Fmin: case Builtin::Fmax: case Builtin::Copysign:
+				return 2;
+			default:
+				return 1;
+		}
+	}
+
+	// The result's own bank. Everything else yields an unsigned int (the bit builtins) or a signed
+	// int (`abs`, `fclass`).
+	constexpr bool builtinResultIsFloat(Builtin builtin) noexcept
+	{
+		switch (builtin)
+		{
+			case Builtin::Fabs: case Builtin::Sqrt: case Builtin::Floor: case Builtin::Ceil:
+			case Builtin::Trunc: case Builtin::Rint: case Builtin::Fmod: case Builtin::Fmin:
+			case Builtin::Fmax: case Builtin::Copysign: case Builtin::Rcp: case Builtin::Rsqrt:
+			case Builtin::FloatFromBits:
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	// A one-, two- or three-operand intrinsic recognized by name in call position. It is not a call:
+	// there is no function to declare, and the whole point is that it lowers to one instruction. A
+	// name used for something else of one's own still works, because only `__builtin_x(` is treated
+	// as the builtin - the same rule the va_* and sti/cli/halt builtins follow.
+	class BuiltinExpr final : public Expr
+	{
+	private:
+		Builtin _builtin;
+		Expr* const* _args; // non-owning view over arena-allocated storage - see CallExpr's note above
+		u32 _argCount;
+
+	public:
+		BuiltinExpr(support::SourceLocation location, Builtin builtin, std::span<Expr* const> args) noexcept :
+			Expr(location), _builtin(builtin), _args(args.data()), _argCount(static_cast<u32>(args.size()))
+		{}
+
+	public:
+		Builtin builtin() const noexcept { return _builtin; }
+		std::span<Expr* const> args() const noexcept { return { _args, _argCount }; }
+		u32 argCount() const noexcept { return _argCount; }
+		void accept(AstVisitor& visitor) override;
+	};
+	static_assert(TriviallyDestructible<BuiltinExpr>, "BuiltinExpr must be trivially destructible (Arena-allocated)");
+
 	class TernaryExpr final : public Expr
 	{
 	private:

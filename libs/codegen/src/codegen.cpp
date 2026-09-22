@@ -1100,6 +1100,66 @@ namespace ceresc::codegen
 				break;
 			}
 
+			case IrOpcode::Builtin:
+			{
+				// One machine instruction, named by the builtin. The two scratch registers hold the
+				// operands while the single instruction is written, exactly like BinOp/UnOp - none of
+				// these builtins accumulates into a register it also reads (which is why `fma` is not
+				// among them; see ast::Builtin's note), so aliasing dest with an operand is safe.
+				const auto& p = instr.as<IrBuiltinPayload>();
+				using ast::Builtin;
+				std::string_view mnemonic;
+				switch (p.builtin)
+				{
+					case Builtin::Clz:          mnemonic = "clz"; break;
+					case Builtin::Ctz:          mnemonic = "ctz"; break;
+					case Builtin::Popcount:     mnemonic = "popcnt"; break;
+					case Builtin::Bswap:        mnemonic = "bswap"; break;
+					case Builtin::Abs:          mnemonic = "abs"; break;
+					case Builtin::Rotl:         mnemonic = "rol"; break;
+					case Builtin::Rotr:         mnemonic = "ror"; break;
+					case Builtin::MulhUnsigned: mnemonic = "mulh"; break;
+					case Builtin::MulhSigned:   mnemonic = "imulh"; break;
+					// `abs` (not `fabs`) is the mnemonic for the float absolute value too: the assembler
+					// picks ABS or FABS from the register bank, exactly as it picks ADDI over ADD.
+					case Builtin::Fabs:         mnemonic = "abs"; break;
+					case Builtin::Fmod:         mnemonic = "mod"; break; // FDIV's companion, F-typed
+					case Builtin::Sqrt:         mnemonic = "sqrt"; break;
+					case Builtin::Floor:        mnemonic = "ffloor"; break;
+					case Builtin::Ceil:         mnemonic = "fceil"; break;
+					case Builtin::Trunc:        mnemonic = "ftrunc"; break;
+					case Builtin::Rint:         mnemonic = "fround"; break; // ties to even: C's rint/nearbyint
+					case Builtin::Fmin:         mnemonic = "fmin"; break;
+					case Builtin::Fmax:         mnemonic = "fmax"; break;
+					case Builtin::Copysign:     mnemonic = "fcopysign"; break;
+					case Builtin::Rcp:          mnemonic = "frecipe"; break;
+					case Builtin::Rsqrt:        mnemonic = "frsqrte"; break;
+					case Builtin::Fclass:       mnemonic = "fclass"; break;
+					case Builtin::FloatBits:    mnemonic = "mff"; break;
+					case Builtin::FloatFromBits: mnemonic = "mtf"; break;
+				}
+
+				bool resultFloat = ast::builtinResultIsFloat(p.builtin);
+				// The operand's bank: everything is a float operation except the integer builtins
+				// and FloatFromBits, which reads an integer bit pattern to make a float of.
+				bool sourceFloat = p.builtin != Builtin::FloatFromBits &&
+					(resultFloat || p.builtin == Builtin::FloatBits || p.builtin == Builtin::Fclass);
+
+				std::string a = valueIn(p.a, kScratchA, sourceFloat, loc);
+				std::string dest = defineInto(p.result, kScratchB, resultFloat);
+				if (p.b.isValid())
+				{
+					std::string b = valueIn(p.b, kScratchB, sourceFloat, loc);
+					_emitter.instr(std::format("{} {}, {}, {}", mnemonic, dest, a, b), comment);
+				}
+				else
+				{
+					_emitter.instr(std::format("{} {}, {}", mnemonic, dest, a), comment);
+				}
+				storeResult(p.result, dest, loc);
+				break;
+			}
+
 			case IrOpcode::Jump:
 			{
 				const auto& p = instr.as<IrJumpPayload>();
@@ -1313,6 +1373,15 @@ namespace ceresc::codegen
 						case IrOpcode::Param:   if (instr->as<IrParamPayload>().isFloat) return true; break;
 						case IrOpcode::Return:  if (instr->as<IrReturnPayload>().isFloat) return true; break;
 						case IrOpcode::CondJump: if (instr->as<IrCondJumpPayload>().isFloat) return true; break;
+						case IrOpcode::Builtin:
+						{
+							// A float result uses the bank, and so do the builtins that READ a float
+							// but yield an int (`float_bits`, `fclass`).
+							ast::Builtin builtin = instr->as<IrBuiltinPayload>().builtin;
+							if (ast::builtinResultIsFloat(builtin) || builtin == ast::Builtin::FloatBits || builtin == ast::Builtin::Fclass)
+								return true;
+							break;
+						}
 						case IrOpcode::Call:
 							// A callee may use the bank whatever this body does, and nothing here can
 							// see into it - so any call at all makes the answer yes.

@@ -52,6 +52,7 @@ namespace ceresc::ast
 		virtual void visit(VaExpr& node) = 0;
 		virtual void visit(GenericSelectionExpr& node) = 0;
 		virtual void visit(MachineOpExpr& node) = 0;
+		virtual void visit(BuiltinExpr& node) = 0;
 		virtual void visit(TernaryExpr& node) = 0;
 		virtual void visit(InitListExpr& node) = 0;
 		virtual void visit(DesignatedInitExpr& node) = 0;
@@ -103,6 +104,7 @@ namespace ceresc::ast
 	inline void VaExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void GenericSelectionExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void MachineOpExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
+	inline void BuiltinExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void TernaryExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 	inline void InitListExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 

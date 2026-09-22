@@ -141,6 +141,7 @@ namespace ceresc::codegen
 				case IrOpcode::Copy: return instr.as<IrCopyPayload>().isFloat;
 				case IrOpcode::Load: return instr.as<IrLoadPayload>().isFloat;
 				case IrOpcode::Call: return instr.as<IrCallPayload>().isFloat;
+				case IrOpcode::Builtin: return ast::builtinResultIsFloat(instr.as<IrBuiltinPayload>().builtin);
 				default: return false; // Cmp yields 0/1, FrameAddr/GlobalAddr an address
 			}
 		}

@@ -124,6 +124,33 @@ rather than lost. A damaged one (`__attribute__(x)`, an unclosed list, a name th
 treated as a call for register allocation - see [07-CASM-Interop.md](07-CASM-Interop.md#assembly-inside-a-c-function).
 No operands or clobbers (E2044), and not outside a function (E2045).
 
+### One-instruction builtins
+
+A handful of machine instructions have no C expression, so they are spelled as builtins: a name in
+call position, recognized the way `__builtin_sti` and the `va_*` builtins are, with the fixed arity
+each one takes. Each lowers to exactly one Ceres instruction.
+
+| Builtin | Instruction | Result |
+| --- | --- | --- |
+| `__builtin_clz(u)`, `__builtin_ctz(u)` | `clz`, `ctz` | `unsigned int` (`32` for a zero operand) |
+| `__builtin_popcount(u)` | `popcnt` | `unsigned int` |
+| `__builtin_bswap32(u)` | `bswap` | `unsigned int` |
+| `__builtin_rotl32(u, n)`, `__builtin_rotr32(u, n)` | `rol`, `ror` | `unsigned int` |
+| `__builtin_mulhu(a, b)`, `__builtin_mulhs(a, b)` | `mulh`, `imulh` | high 32 bits of the product |
+| `__builtin_abs(i)` | `abs` | `int` |
+| `__builtin_fabs`, `__builtin_sqrt`, `__builtin_floor`, `__builtin_ceil`, `__builtin_trunc`, `__builtin_rint`, `__builtin_frcp`, `__builtin_frsqrt` | one float instruction each | `float` |
+| `__builtin_fmod`, `__builtin_fmin`, `__builtin_fmax`, `__builtin_copysign` | one float instruction each | `float` |
+| `__builtin_fclass(f)` | `fclass` | `int` classification bitmask |
+| `__builtin_float_bits(f)` / `__builtin_float_from_bits(u)` | `mff` / `mtf` | raw bit reinterpretation |
+
+`__builtin_rint` rounds ties to even, which is C's `rint`/`nearbyint`. `__builtin_abs` of
+`INT_MIN` sets the machine's Overflow flag rather than producing a value, exactly as the instruction
+does. The integer builtins take an integer and the float builtins a float, with no conversion applied
+- pass the bank you mean. None is a function call and none clobbers memory, so a call whose result
+nothing reads is removed like any other pure computation. There is no `__builtin_fma`: the machine's
+`fma` accumulates into its destination, which this back end's two scratch float registers cannot
+guarantee a spare register for.
+
 ### Compound literals
 
 `(T){ ... }` is an unnamed object of type `T` set up from a brace list: `(struct P){ 1, 2 }`, `(struct P){ .y = 2 }`,

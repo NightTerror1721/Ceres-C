@@ -236,6 +236,7 @@ namespace ceresc::support
 		DuplicateGenericAssociation      = 3093,
 		MultipleGenericDefaults          = 3094,
 		NoMatchingGenericAssociation     = 3095,
+		InvalidBuiltinOperand            = 3096,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,

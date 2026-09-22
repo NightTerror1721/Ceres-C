@@ -1408,6 +1408,44 @@ TEST(codegen, a_machine_builtin_does_not_cost_a_function_its_register_window)
 	CHECK(!contains(casm, "struct __frame_f"));
 }
 
+TEST(codegen, each_one_instruction_builtin_emits_its_own_instruction)
+{
+	std::string ints = atO2(
+		"unsigned int f(unsigned int x, unsigned int n) {"
+		"  return __builtin_clz(x) ^ __builtin_ctz(x) ^ __builtin_popcount(x) ^ __builtin_bswap32(x)"
+		"       ^ __builtin_rotl32(x, n) ^ __builtin_rotr32(x, n) ^ __builtin_mulhu(x, n); }");
+	CHECK(contains(ints, "    clz "));
+	CHECK(contains(ints, "    ctz "));
+	CHECK(contains(ints, "    popcnt "));
+	CHECK(contains(ints, "    bswap "));
+	CHECK(contains(ints, "    rol "));
+	CHECK(contains(ints, "    ror "));
+	CHECK(contains(ints, "    mulh "));
+
+	std::string floats = atO2(
+		"float f(float x, float y) {"
+		"  return __builtin_fabs(x) + __builtin_sqrt(y) + __builtin_floor(x) + __builtin_ceil(x)"
+		"       + __builtin_trunc(x) + __builtin_fmin(x, y) + __builtin_fmax(x, y)"
+		"       + __builtin_copysign(x, y) + __builtin_frcp(x) + __builtin_frsqrt(x); }");
+	CHECK(contains(floats, "    abs f"));
+	CHECK(contains(floats, "    sqrt f"));
+	CHECK(contains(floats, "    ffloor f"));
+	CHECK(contains(floats, "    fceil f"));
+	CHECK(contains(floats, "    ftrunc f"));
+	CHECK(contains(floats, "    fmin f"));
+	CHECK(contains(floats, "    fmax f"));
+	CHECK(contains(floats, "    fcopysign f"));
+	CHECK(contains(floats, "    frecipe f"));
+	CHECK(contains(floats, "    frsqrte f"));
+
+	// The bit moves: `mff` reads a float and yields an int, `mtf` the reverse.
+	std::string moves = atO2(
+		"unsigned int f(float x) { return __builtin_float_bits(x); }"
+		"float g(unsigned int b) { return __builtin_float_from_bits(b); }");
+	CHECK(contains(moves, "    mff r"));
+	CHECK(contains(moves, "    mtf f"));
+}
+
 // ---- interrupt handlers ------------------------------------------------------------------------
 
 TEST(codegen, an_interrupt_handler_saves_every_register_it_could_touch_and_ends_in_iret)

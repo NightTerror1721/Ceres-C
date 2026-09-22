@@ -50,6 +50,7 @@ namespace ceresc::ir
 				case IrOpcode::FrameAddr:
 				case IrOpcode::GlobalAddr:
 				case IrOpcode::VaStart:
+				case IrOpcode::Builtin:
 					return true;
 				case IrOpcode::Load:
 					return !instr.as<IrLoadPayload>().isVolatile;
@@ -822,6 +823,14 @@ namespace ceresc::ir
 					p.discriminant = rename(p.discriminant);
 					return arena.create<IrInstr>(loc, p);
 				}
+				case IrOpcode::Builtin:
+				{
+					IrBuiltinPayload p = instr.as<IrBuiltinPayload>();
+					p.a = rename(p.a);
+					p.b = rename(p.b);
+					p.result = rename(p.result);
+					return arena.create<IrInstr>(loc, p);
+				}
 				case IrOpcode::Return:
 				{
 					IrReturnPayload p = instr.as<IrReturnPayload>();
@@ -1574,6 +1583,14 @@ namespace ceresc::ir
 					IrStorePayload p = instr.as<IrStorePayload>();
 					p.address = mapValue(p.address);
 					p.value = mapValue(p.value);
+					return arena.create<IrInstr>(loc, p);
+				}
+				case IrOpcode::Builtin:
+				{
+					IrBuiltinPayload p = instr.as<IrBuiltinPayload>();
+					p.a = mapValue(p.a);
+					p.b = mapValue(p.b);
+					p.result = mapValue(p.result);
 					return arena.create<IrInstr>(loc, p);
 				}
 				default:

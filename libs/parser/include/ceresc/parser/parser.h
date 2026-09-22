@@ -429,6 +429,11 @@ namespace ceresc::parser
 		static std::optional<ast::MachineOp> machineBuiltinFor(std::string_view name) noexcept;
 		Expr* parseMachineBuiltin(support::SourceLocation location, ast::MachineOp op);
 
+		// The one-instruction machine builtins (clz/popcount/fabs/...): an intrinsic, recognized by
+		// name in call position like the va_* and machine builtins, with a fixed arity from
+		// ast::builtinArity(). See ast::BuiltinExpr.
+		Expr* parseBuiltin(support::SourceLocation location, ast::Builtin builtin);
+
 
 		// `long long`, `unsigned long long`, `double` and `long double` all name a width this
 		// machine does not have: there is no 64-bit register and no f64 register anywhere in Ceres.

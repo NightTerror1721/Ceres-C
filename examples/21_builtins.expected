@@ -1,0 +1,17 @@
+clz(1)          = 31
+ctz(8)          = 3
+popcount(f0f0)  = 8
+bswap(11223344) = 0x44332211
+rotl(80000001,1)= 0x00000003
+rotr(00000003,1)= 0x80000001
+abs(-5)         = 5
+mulhu(ffffffff) = 0xfffffffe
+sqrt(16)        = 4
+floor(3.9)      = 3
+ceil(3.1)       = 4
+trunc(-3.9)     = -3
+fabs(-3)        = 3
+fmin(2,5)       = 2
+fmax(2,5)       = 5
+bits(1.0)       = 0x3f800000
+from_bits(4000) = 2
