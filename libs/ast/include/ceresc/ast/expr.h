@@ -558,7 +558,10 @@ namespace ceresc::ast
 		// Compiler builtins that are not a machine instruction: `expect` is a branch hint that
 		// evaluates to its first operand, and `constant_p` is a compile-time question answered by
 		// the constant evaluator - both lower away in IrBuilder rather than reaching codegen.
-		Expect, ConstantP
+		Expect, ConstantP,
+		// `__builtin_add_overflow(a, b, &r)` and its siblings: store `a op b` into `*r` and return
+		// whether the operation overflowed. Three operands, and they too expand in IrBuilder.
+		AddOverflow, SubOverflow, MulOverflow
 	};
 
 	constexpr std::string_view builtinName(Builtin builtin) noexcept
@@ -591,6 +594,9 @@ namespace ceresc::ast
 			case Builtin::FloatFromBits: return "__builtin_float_from_bits";
 			case Builtin::Expect:        return "__builtin_expect";
 			case Builtin::ConstantP:     return "__builtin_constant_p";
+			case Builtin::AddOverflow:   return "__builtin_add_overflow";
+			case Builtin::SubOverflow:   return "__builtin_sub_overflow";
+			case Builtin::MulOverflow:   return "__builtin_mul_overflow";
 		}
 		return "";
 	}
@@ -601,7 +607,8 @@ namespace ceresc::ast
 			Builtin::Rotl, Builtin::Rotr, Builtin::MulhUnsigned, Builtin::MulhSigned, Builtin::Fabs,
 			Builtin::Fmod, Builtin::Sqrt, Builtin::Floor, Builtin::Ceil, Builtin::Trunc, Builtin::Rint,
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
-			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP })
+			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP,
+			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow })
 			if (name == builtinName(builtin))
 				return builtin;
 		return std::nullopt;
@@ -616,6 +623,8 @@ namespace ceresc::ast
 			case Builtin::Fmod: case Builtin::Fmin: case Builtin::Fmax: case Builtin::Copysign:
 			case Builtin::Expect:
 				return 2;
+			case Builtin::AddOverflow: case Builtin::SubOverflow: case Builtin::MulOverflow:
+				return 3;
 			default:
 				return 1;
 		}

@@ -374,6 +374,10 @@ namespace ceresc::ir
 		IrValue emitFrameAddr(support::SourceLocation loc, u32 localIndex);
 		IrValue emitGlobalAddr(support::SourceLocation loc, std::string_view name);
 		IrValue emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat = false);
+		IrValue emitCmp(support::SourceLocation loc, IrCmpPredicate predicate, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat = false);
+		// One machine builtin as an instruction of its own - used by the overflow builtins, which
+		// expand to arithmetic plus a multiply-high.
+		IrValue emitBuiltin(support::SourceLocation loc, ast::Builtin builtin, IrValue a, IrValue b = IrValue{});
 		IrValue emitUnOp(support::SourceLocation loc, IrUnOp op, IrValue operand, bool isFloat = false, bool isUnsigned = false);
 		IrValue emitNarrow(support::SourceLocation loc, IrValue operand, IrMemSize size, bool isUnsigned);
 

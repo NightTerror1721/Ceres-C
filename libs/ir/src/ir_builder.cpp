@@ -416,6 +416,30 @@ namespace ceresc::ir
 		return payload.result;
 	}
 
+	IrValue IrBuilder::emitCmp(support::SourceLocation loc, IrCmpPredicate predicate, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat)
+	{
+		IrCmpPayload payload;
+		payload.result = _currentFunction->newTemp();
+		payload.predicate = predicate;
+		payload.isUnsigned = isUnsigned;
+		payload.isFloat = isFloat;
+		payload.lhs = lhs;
+		payload.rhs = rhs;
+		emitVoid(loc, payload);
+		return payload.result;
+	}
+
+	IrValue IrBuilder::emitBuiltin(support::SourceLocation loc, ast::Builtin builtin, IrValue a, IrValue b)
+	{
+		IrBuiltinPayload payload;
+		payload.result = _currentFunction->newTemp();
+		payload.builtin = builtin;
+		payload.a = a;
+		payload.b = b;
+		emitVoid(loc, payload);
+		return payload.result;
+	}
+
 	IrValue IrBuilder::emitBinOp(support::SourceLocation loc, IrBinOp op, IrValue lhs, IrValue rhs, bool isUnsigned, bool isFloat)
 	{
 		IrBinOpPayload payload;
@@ -1468,6 +1492,62 @@ namespace ceresc::ir
 		{
 			bool isConstant = !args.empty() && foldConstant(args[0]).has_value();
 			_lastValue = emitConstInt(loc, isConstant ? 1 : 0);
+			return;
+		}
+
+		// The overflow builtins expand to the operation, a store, and an overflow test:
+		//   add.u:  sum < a                       add.s:  ((a^sum) & (b^sum)) < 0
+		//   sub.u:  a < b                         sub.s:  ((a^b) & (a^diff)) < 0
+		//   mul.u:  mulhu(a,b) != 0               mul.s:  mulhs(a,b) != (product >>s 31)
+		if (node.builtin() == ast::Builtin::AddOverflow || node.builtin() == ast::Builtin::SubOverflow ||
+			node.builtin() == ast::Builtin::MulOverflow)
+		{
+			IrValue a = lowerExpr(args[0]);
+			IrValue b = lowerExpr(args[1]);
+			IrValue destination = lowerAddress(args[2]);
+
+			const ast::Type* operandType = args[0] ? args[0]->type() : nullptr;
+			bool isUnsigned = operandType && !operandType->isSigned();
+			ast::Builtin kind = node.builtin();
+			IrBinOp op = kind == ast::Builtin::AddOverflow ? IrBinOp::Add
+				: kind == ast::Builtin::SubOverflow ? IrBinOp::Sub
+				: IrBinOp::Mul;
+			IrValue result = emitBinOp(loc, op, a, b, isUnsigned);
+			if (destination.isValid())
+				emitStore(loc, destination, IrMemSize::Word, result);
+
+			auto lessThanZero = [&](IrValue value) { return emitCmp(loc, IrCmpPredicate::Lt, value, emitConstInt(loc, 0), false); };
+
+			IrValue overflow;
+			if (kind == ast::Builtin::MulOverflow)
+			{
+				if (isUnsigned)
+					overflow = emitCmp(loc, IrCmpPredicate::Ne, emitBuiltin(loc, ast::Builtin::MulhUnsigned, a, b),
+						emitConstInt(loc, 0), true);
+				else
+					overflow = emitCmp(loc, IrCmpPredicate::Ne, emitBuiltin(loc, ast::Builtin::MulhSigned, a, b),
+						emitBinOp(loc, IrBinOp::Sar, result, emitConstInt(loc, 31), false), false);
+			}
+			else if (kind == ast::Builtin::AddOverflow)
+			{
+				if (isUnsigned)
+					overflow = emitCmp(loc, IrCmpPredicate::Lt, result, a, true);
+				else
+					overflow = lessThanZero(emitBinOp(loc, IrBinOp::And,
+						emitBinOp(loc, IrBinOp::Xor, a, result, false),
+						emitBinOp(loc, IrBinOp::Xor, b, result, false), false));
+			}
+			else // SubOverflow
+			{
+				if (isUnsigned)
+					overflow = emitCmp(loc, IrCmpPredicate::Lt, a, b, true);
+				else
+					overflow = lessThanZero(emitBinOp(loc, IrBinOp::And,
+						emitBinOp(loc, IrBinOp::Xor, a, b, false),
+						emitBinOp(loc, IrBinOp::Xor, a, result, false), false));
+			}
+
+			_lastValue = overflow; // a comparison already yields 0 or 1, which is the bool result
 			return;
 		}
 

@@ -151,6 +151,12 @@ promised never to be reached is read as a trap, which is the safe thing to do if
 does not evaluate `e` at all. `__builtin_offsetof` is not a builtin here - `<stddef.h>` provides it
 as a macro.
 
+`__builtin_add_overflow(a, b, &r)`, `__builtin_sub_overflow` and `__builtin_mul_overflow` store
+`a op b` into `*r` (wrapping, as the machine's 32-bit arithmetic always did) and return `bool`: 1
+when the signed or unsigned operation overflowed. Both operands must be 4-byte integers and the
+third a pointer to one; the multiplication test uses the machine's multiply-high. A narrower
+operand is rejected rather than silently widened.
+
 `__builtin_rint` rounds ties to even, which is C's `rint`/`nearbyint`. `__builtin_abs` of
 `INT_MIN` sets the machine's Overflow flag rather than producing a value, exactly as the instruction
 does. The integer builtins take an integer and the float builtins a float, with no conversion applied

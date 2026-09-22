@@ -1450,6 +1450,31 @@ namespace ceresc::sema
 			case Builtin::ConstantP:
 				result = &Type::Int; // a compile-time 1 or 0; the operand is not evaluated
 				break;
+			case Builtin::AddOverflow:
+			case Builtin::SubOverflow:
+			case Builtin::MulOverflow:
+			{
+				// (a, b, &result): a and b are 4-byte integers and the third operand is a pointer
+				// to a 4-byte integer, which is where the machine's word arithmetic lands.
+				std::span<ast::Expr* const> args = node.args();
+				auto fourByteInteger = [&](usize index) -> bool
+				{
+					const Type* type = index < args.size() && args[index] ? args[index]->type() : nullptr;
+					return type && isIntegerType(type) && type->sizeInBytes() == 4;
+				};
+				if (!fourByteInteger(0) || !fourByteInteger(1))
+					_diagnostics.error(DiagId::InvalidBuiltinOperand, node.location(),
+						"'{}' requires two 4-byte integer operands", ast::builtinName(node.builtin()));
+
+				const Type* pointer = args.size() > 2 && args[2] ? args[2]->type() : nullptr;
+				const Type* pointee = pointer && pointer->isPointer() ? pointer->arrayElementType() : nullptr;
+				if (!pointee || !isIntegerType(pointee) || pointee->sizeInBytes() != 4)
+					_diagnostics.error(DiagId::InvalidBuiltinOperand, node.location(),
+						"'{}' expects a pointer to a 4-byte integer as its third argument", ast::builtinName(node.builtin()));
+
+				result = &Type::Bool;
+				break;
+			}
 			default: // every float operation
 				for (ast::Expr* argument : node.args())
 					requireFloat(argument ? argument->type() : nullptr);

@@ -2106,6 +2106,21 @@ TEST(sema, the_compiler_builtins_type_their_result)
 	CHECK(checkSource("void f(void) { __builtin_unreachable(); }").ok);
 }
 
+TEST(sema, overflow_builtins_check_their_operands)
+{
+	CHECK(checkSource("int f(int a, int b) { int r; return __builtin_add_overflow(a, b, &r); }").ok);
+
+	// The third operand must be a pointer to a 4-byte integer.
+	CheckOutcome notPointer = checkSource("int f(int a, int b) { return __builtin_add_overflow(a, b, a); }");
+	CHECK(!notPointer.ok);
+	CHECK(containsMessage(notPointer, "pointer to a 4-byte integer"));
+
+	// 4-byte operands only.
+	CheckOutcome narrow = checkSource("int f(short a, short b) { short r; return __builtin_add_overflow(a, b, &r); }");
+	CHECK(!narrow.ok);
+	CHECK(containsMessage(narrow, "two 4-byte integer operands"));
+}
+
 TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
 {
 	CHECK(checkSource("int f(void) { __asm__(\"nop\"); return 1; }").ok);

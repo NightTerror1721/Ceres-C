@@ -1137,11 +1137,15 @@ namespace ceresc::codegen
 					case Builtin::Fclass:       mnemonic = "fclass"; break;
 					case Builtin::FloatBits:    mnemonic = "mff"; break;
 					case Builtin::FloatFromBits: mnemonic = "mtf"; break;
-					// Neither is a machine instruction: IrBuilder lowers `expect` to its operand and
-					// `constant_p` to a constant, so neither reaches here. Listed so the switch stays
+					// Not machine instructions: IrBuilder lowers `expect` to its operand,
+					// `constant_p` to a constant, and the overflow builtins to arithmetic plus a
+					// comparison, so none of these reaches here. Listed so the switch stays
 					// exhaustive over the machine builtins above, with the guard below as a backstop.
 					case Builtin::Expect:
 					case Builtin::ConstantP:
+					case Builtin::AddOverflow:
+					case Builtin::SubOverflow:
+					case Builtin::MulOverflow:
 						break;
 				}
 				if (mnemonic.empty())
