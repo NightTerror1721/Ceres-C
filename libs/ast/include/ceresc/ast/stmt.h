@@ -268,13 +268,16 @@ namespace ceresc::ast
 	{
 	private:
 		Expr* _value; // a constant-expression in real C - sema checks constancy, not the parser (see the header comment above)
+		Expr* _upper; // GNU `case low ... high:`: the high bound, or null for a single value
 		Stmt* _body;  // exactly the one statement following ':' - see the header comment above
 
 	public:
-		CaseStmt(support::SourceLocation location, Expr* value, Stmt* body) noexcept : Stmt(location), _value(value), _body(body) {}
+		CaseStmt(support::SourceLocation location, Expr* value, Stmt* body, Expr* upper = nullptr) noexcept :
+			Stmt(location), _value(value), _upper(upper), _body(body) {}
 
 	public:
 		Expr* value() const noexcept { return _value; }
+		Expr* upper() const noexcept { return _upper; } // null unless this is a `...` range
 		Stmt* body() const noexcept { return _body; }
 		void accept(AstVisitor& visitor) override;
 	};

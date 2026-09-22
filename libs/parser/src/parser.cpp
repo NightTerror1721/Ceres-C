@@ -1431,16 +1431,27 @@ namespace ceresc::parser
 		advance(); // 'case'
 
 		Expr* value = parseExpression(); // a constant-expression in real C - sema checks constancy, not the parser
-		if (!expect(TokenKind::Colon, "':'"))
-			return nullptr;
 		if (!value)
+			return nullptr;
+
+		// GNU `case low ... high:` - a range of case values, all of which share this body. sema
+		// checks both bounds are constant and that the range is not empty or enormous.
+		Expr* upper = nullptr;
+		if (match(TokenKind::Ellipsis))
+		{
+			upper = parseExpression();
+			if (!upper)
+				return nullptr;
+		}
+
+		if (!expect(TokenKind::Colon, "':'"))
 			return nullptr;
 
 		Stmt* body = parseStatement(); // exactly the one statement following ':' - see stmt.h
 		if (!body)
 			return nullptr;
 
-		return _arena.create<ast::CaseStmt>(location, value, body);
+		return _arena.create<ast::CaseStmt>(location, value, body, upper);
 	}
 
 	Stmt* Parser::parseDefaultStatement()

@@ -303,6 +303,8 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3094` | A `_Generic` selection with more than one `default` association. |
 | `E3095` | A `_Generic` selection whose controlling expression's type matches no association, and there is no `default`. |
 | `E3096` | A one-instruction builtin given an argument of the wrong bank (an integer builtin a float, or a float builtin an integer). |
+| `E3097` | An empty `case` range (`case 5 ... 1:`), whose low bound is greater than its high bound. |
+| `E3098` | A `case` range spanning more than 65536 values, which the dispatch cannot expand. |
 
 ### `4xxx` — codegen
 

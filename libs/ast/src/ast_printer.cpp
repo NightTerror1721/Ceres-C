@@ -570,6 +570,11 @@ namespace ceresc::ast
 	{
 		_output += "(case ";
 		printChild(node.value());
+		if (node.upper())
+		{
+			_output += " ... ";
+			printChild(node.upper());
+		}
 		_output += ' ';
 		printChild(node.body());
 		_output += ')';

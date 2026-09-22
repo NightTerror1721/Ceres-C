@@ -2060,6 +2060,26 @@ TEST(sema, noinline_and_purity_attributes_are_accepted_without_a_word)
 	CHECK(!containsMessage(outcome, "ignored"));
 }
 
+// ---- case ranges ----------------------------------------------------------------------------------------
+
+TEST(sema, a_case_range_is_accepted_and_its_bounds_are_checked)
+{
+	CHECK(checkSource("int f(int x) { switch (x) { case 1 ... 5: return 1; } return 0; }").ok);
+
+	CheckOutcome empty = checkSource("int f(int x) { switch (x) { case 5 ... 1: return 1; } return 0; }");
+	CHECK(!empty.ok);
+	CHECK(containsMessage(empty, "empty case range"));
+
+	CheckOutcome huge = checkSource("int f(int x) { switch (x) { case 0 ... 100000: return 1; } return 0; }");
+	CHECK(!huge.ok);
+	CHECK(containsMessage(huge, "spans more than"));
+
+	// A later single case overlapping the range is still a duplicate.
+	CheckOutcome overlap = checkSource("int f(int x) { switch (x) { case 1 ... 5: return 1; case 3: return 2; } return 0; }");
+	CHECK(!overlap.ok);
+	CHECK(containsMessage(overlap, "duplicate case value"));
+}
+
 // ---- the one-instruction machine builtins ---------------------------------------------------------------
 
 TEST(sema, the_machine_builtins_type_their_result_and_their_arguments)

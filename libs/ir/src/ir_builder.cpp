@@ -1957,7 +1957,20 @@ namespace ceresc::ir
 			// its own, so substituting it here could alias with (and shadow) a real `case 0:` in
 			// the same switch instead of just leaving this one case unreachable.
 			if (value)
-				cases.emplace_back(*value, &block);
+			{
+				// `case low ... high:` expands to one dispatch entry per value, all sharing this
+				// case's block. sema has already checked the range is non-empty and within the
+				// expansion cap, so the loop is bounded; `high >= low` is re-checked defensively.
+				i64 low = *value;
+				i64 high = low;
+				if (caseStmt->upper())
+				{
+					if (std::optional<i64> upper = foldConstant(caseStmt->upper()); upper && *upper >= low)
+						high = *upper;
+				}
+				for (i64 expanded = low; expanded <= high; ++expanded)
+					cases.emplace_back(expanded, &block);
+			}
 			collectSwitchCases(caseStmt->body(), cases, defaultBlock);
 			return;
 		}

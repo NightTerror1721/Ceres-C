@@ -272,7 +272,10 @@ do-stmt                ::= "do" statement "while" "(" expression ")" ";"
 for-stmt               ::= "for" "(" (decl-stmt | expr-stmt | ";")
                             expression? ";" expression? ")" statement
 switch-stmt            ::= "switch" "(" expression ")" "{" case-clause* default-clause? "}"
-case-clause            ::= "case" INT_LITERAL ":" statement*
+case-clause            ::= "case" constant-expr ("..." constant-expr)? ":" statement*
+                                                    // `case low ... high:` (GNU) covers every value in the
+                                                    // range; both bounds must be constants, low <= high, and
+                                                    // the range may not span more than 65536 values
 default-clause         ::= "default" ":" statement*
 goto-stmt              ::= "goto" IDENTIFIER ";"
 label-stmt             ::= IDENTIFIER ":" statement

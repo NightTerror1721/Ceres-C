@@ -1033,6 +1033,12 @@ TEST(parser, local_typedef_declaration_as_a_statement)
 
 // ---- switch / case / default (Fase 3 continued) --------------------------------------------------
 
+TEST(parser, a_case_may_name_a_range_of_values)
+{
+	CHECK_EQ(printStmt("switch (x) { case 1 ... 5: y; break; }"),
+		"(switch x (block (case 1 ... 5 (expr-stmt y)) (break)))");
+}
+
 TEST(parser, switch_with_case_and_default)
 {
 	CHECK_EQ(printStmt("switch (x) { case 1: y; break; default: z; }"),

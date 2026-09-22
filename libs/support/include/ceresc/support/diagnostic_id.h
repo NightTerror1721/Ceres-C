@@ -237,6 +237,8 @@ namespace ceresc::support
 		MultipleGenericDefaults          = 3094,
 		NoMatchingGenericAssociation     = 3095,
 		InvalidBuiltinOperand            = 3096,
+		CaseRangeEmpty                   = 3097,
+		CaseRangeTooLarge                = 3098,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,

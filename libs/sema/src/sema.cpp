@@ -1771,17 +1771,52 @@ namespace ceresc::sema
 
 		checkExpr(node.value());
 		std::optional<i64> value = evalConstantExpr(node.value());
-		if (!value)
+
+		// `case low ... high:` - the high bound is a second constant expression, and the range must
+		// be non-empty and small enough to expand (the dispatch enumerates every value in it).
+		std::optional<i64> upper;
+		if (node.upper())
+		{
+			checkExpr(node.upper());
+			upper = evalConstantExpr(node.upper());
+		}
+
+		constexpr i64 kMaxCaseRangeSpan = 65536;
+		if (!value || (node.upper() && !upper))
 		{
 			_diagnostics.error(DiagId::CaseNotConstant, node.location(), "case label does not reduce to an integer constant");
+		}
+		else if (node.upper() && *upper < *value)
+		{
+			_diagnostics.error(DiagId::CaseRangeEmpty, node.location(), "empty case range: the low bound is greater than the high bound");
+		}
+		else if (node.upper() && static_cast<u64>(*upper) - static_cast<u64>(*value) > static_cast<u64>(kMaxCaseRangeSpan))
+		{
+			_diagnostics.error(DiagId::CaseRangeTooLarge, node.location(), "case range spans more than {} values", kMaxCaseRangeSpan);
 		}
 		else if (!_switchStack.empty())
 		{
 			SwitchContext& context = _switchStack.back();
-			if (std::find(context.seenCaseValues.begin(), context.seenCaseValues.end(), *value) != context.seenCaseValues.end())
-				_diagnostics.error(DiagId::DuplicateCaseValue, node.location(), "duplicate case value '{}'", *value);
-			else
-				context.seenCaseValues.push_back(*value);
+			i64 high = upper && node.upper() ? *upper : *value;
+			i64 firstDuplicate = 0;
+			bool foundDuplicate = false;
+			for (i64 candidate = *value; candidate <= high; ++candidate)
+			{
+				if (std::find(context.seenCaseValues.begin(), context.seenCaseValues.end(), candidate) != context.seenCaseValues.end())
+				{
+					if (!foundDuplicate)
+					{
+						foundDuplicate = true;
+						firstDuplicate = candidate;
+					}
+				}
+				else
+				{
+					context.seenCaseValues.push_back(candidate);
+				}
+			}
+			if (foundDuplicate)
+				_diagnostics.error(DiagId::DuplicateCaseValue, node.location(), "duplicate case value '{}'", firstDuplicate);
 		}
 
 		checkStmt(node.body());
