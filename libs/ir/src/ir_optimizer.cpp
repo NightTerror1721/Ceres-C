@@ -298,6 +298,13 @@ namespace ceresc::ir
 			return std::nullopt;
 		}
 
+		// The truth of `x OP x` for a non-float x: true for ==, <= and >=, false for !=, < and >. A
+		// float x is excluded, because NaN makes even `x == x` false.
+		constexpr bool selfComparisonTruth(IrCmpPredicate predicate) noexcept
+		{
+			return predicate == IrCmpPredicate::Eq || predicate == IrCmpPredicate::Le || predicate == IrCmpPredicate::Ge;
+		}
+
 		IrInstr* makeConst(support::Arena& arena, support::SourceLocation loc, IrValue result, const ConstValue& value)
 		{
 			IrConstPayload payload;
@@ -437,9 +444,19 @@ namespace ceresc::ir
 
 						case IrOpcode::Cmp:
 						{
+							const auto& p = instr->as<IrCmpPayload>();
+							// `x == x` is 1 and `x < x` is 0 for every integer or pointer x - this
+							// shows up once load forwarding or copy propagation makes both operands
+							// the same temporary. Floats are excluded (NaN).
+							if (options.algebraicSimplification && !p.isFloat && p.lhs.isValid() && p.lhs == p.rhs)
+							{
+								ConstValue value{ false, selfComparisonTruth(p.predicate) ? 1 : 0, 0.0f };
+								replacement = makeConst(arena, instr->location(), p.result, value);
+								constants[p.result.id] = value;
+								break;
+							}
 							if (!options.constantFolding)
 								break;
-							const auto& p = instr->as<IrCmpPayload>();
 							const ConstValue* lhs = findConstant(constants, p.lhs);
 							const ConstValue* rhs = findConstant(constants, p.rhs);
 							if (!lhs || !rhs)
@@ -464,6 +481,13 @@ namespace ceresc::ir
 							if (p.trueTarget == p.falseTarget)
 							{
 								replacement = arena.create<IrInstr>(instr->location(), IrJumpPayload{ p.trueTarget });
+								break;
+							}
+							// `x OP x` is decided by the predicate alone (see selfComparisonTruth).
+							if (!p.isFloat && p.lhs.isValid() && p.lhs == p.rhs)
+							{
+								replacement = arena.create<IrInstr>(instr->location(), IrJumpPayload{
+									selfComparisonTruth(p.predicate) ? p.trueTarget : p.falseTarget });
 								break;
 							}
 							const ConstValue* lhs = findConstant(constants, p.lhs);

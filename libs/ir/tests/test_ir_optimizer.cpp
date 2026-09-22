@@ -229,6 +229,30 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).blockLayout);
 }
 
+// ---- self-comparison folding ---------------------------------------------------------------------
+
+TEST(ir_optimizer, a_comparison_of_a_value_with_itself_folds)
+{
+	// Once forwarding makes both reads of `x` the same value, `x == x` is 1 and `x < x` is 0.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.loadForwarding = true;
+	options.copyPropagation = true;
+	options.algebraicSimplification = true;
+
+	std::string text = optimizedIr("int f(int a) { int x = a; return (x == x) + (x < x); }", options, "f");
+	CHECK(!contains(text, "cmp"));
+	CHECK(contains(text, "const 1")); // x == x
+	CHECK(contains(text, "const 0")); // x < x
+}
+
+TEST(ir_optimizer, an_if_on_a_self_comparison_takes_its_branch)
+{
+	std::string text = optimizedIr("int f(int a) { int x = a; if (x == x) { return 1; } return 0; }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O1), "f");
+	CHECK(contains(text, "const 1"));
+	CHECK(!contains(text, "const 0")); // the impossible arm is gone
+}
+
 // ---- block layout --------------------------------------------------------------------------------
 
 TEST(ir_optimizer, block_layout_emits_a_branch_false_arm_before_its_true_arm)
