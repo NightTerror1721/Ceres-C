@@ -3,6 +3,7 @@
 #include "ir_instr.h"
 #include <ceresc/ast/type.h>
 #include <ceresc/support/string_pool.h>
+#include <algorithm>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -252,9 +253,14 @@ namespace ceresc::ir
 				{
 					// Every reachable table entry plus the out-of-range default: omitting any of them
 					// would let unreachable-block elimination drop a block the table still jumps to.
+					// Deduplicated, because every hole in the table points at `defaultTarget` too - a
+					// consumer (liveness) is entitled to read this as the SET of successors, and a
+					// dense switch with holes would otherwise list the same block up to entryCount times.
 					const IrTableJumpPayload& p = last.as<IrTableJumpPayload>();
 					std::vector<BasicBlock*> targets(p.targets, p.targets + p.entryCount);
 					targets.push_back(p.defaultTarget);
+					std::sort(targets.begin(), targets.end());
+					targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
 					return targets;
 				}
 				case IrOpcode::Return: return {};

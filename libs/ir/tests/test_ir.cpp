@@ -25,7 +25,7 @@ namespace
 	// pipeline succeeded (parse + sema) before printing, so a broken fixture fails loudly instead of
 	// silently comparing against "<not-found>".
 	std::string functionIr(std::string_view source, std::string_view functionName = "main",
-		support::OptimizationOptions options = support::OptimizationOptions::none())
+		const support::OptimizationOptions& options = support::OptimizationOptions::none())
 	{
 		support::Arena arena;
 		support::DiagnosticEngine diagnostics;

@@ -1177,7 +1177,11 @@ namespace ceresc::codegen
 					index = intReg(kScratchA);
 				}
 
-				if (p.entryCount <= 0xFFFF)
+				// `ifXX`'s immediate form is CMPI, whose 16-bit field is read SIGN-extended (unlike
+				// SUBI/ADDI below, which zero-extend) - so the safe ceiling here is 0x7FFF, not
+				// 0xFFFF. Beyond it the count goes in a register. IrBuilder caps a table at 256
+				// entries today, so this is the guard for a future caller, not a live path.
+				if (p.entryCount <= 0x7FFF)
 					_emitter.instr(std::format("ifae {}, {}, {}", index, p.entryCount, blockLabel(*p.defaultTarget)), comment);
 				else
 				{
@@ -1534,10 +1538,10 @@ namespace ceresc::codegen
 
 		for (usize b = 0; b < blocks.size(); ++b)
 		{
-			if (_globalBlockLabels)
-				_emitter.label(blockLabel(*blocks[b]));
-			else
-				_emitter.localLabel(std::format("L{}", blocks[b]->id()));
+			// `blockLabel()` is the single source of truth for a block's name: it already carries the
+			// leading dot for a local label, and `label()` emits `name:` either way, so the definition
+			// and every `jp`/`ifXX`/table entry that references it can never drift apart.
+			_emitter.label(blockLabel(*blocks[b]));
 			std::span<IrInstr* const> instrs = blocks[b]->instrs();
 			u32 nextBlockId = (b + 1 < blocks.size()) ? blocks[b + 1]->id() : ~0u;
 

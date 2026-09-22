@@ -503,7 +503,7 @@ TEST(e2e, a_dense_switch_with_holes_sends_the_gaps_to_default)
 
 TEST(e2e, a_sparse_switch_dispatches_through_a_balanced_tree_at_every_level)
 {
-	// Eight cases spread over 0..7000: too wide for a table, so -O1/-O2 lower it to a balanced tree
+	// Eight cases spread over 0..700: too wide for a table, so -O1/-O2 lower it to a balanced tree
 	// of `<` tests. pick(0..700) = 1+2+3+4+5+6+7+8 = 36, and the two misses add nothing.
 	runsTheSameAtEveryLevel("switch_binary_search",
 		"static int pick(int x)\n"
@@ -527,6 +527,55 @@ TEST(e2e, a_sparse_switch_dispatches_through_a_balanced_tree_at_every_level)
 		"    return total + pick(50) + pick(9999);\n"
 		"}\n",
 		"", 36);
+}
+
+TEST(e2e, a_switch_on_an_unsigned_value_matches_a_negative_case)
+{
+	// `case -1:` in a switch on an unsigned value: sema folds the case in its own type, so it reaches
+	// the tree as i64 -1 while the discriminant is 0xFFFFFFFF. The tree must normalize the case to the
+	// controlling type's 32-bit representation before ordering it, or 0xFFFFFFFF is routed to the
+	// wrong half and the case becomes unreachable at -O1/-O2 (the chain at -O0 never cared, since
+	// equality is sign-agnostic). f(0xFFFFFFFF)=1, f(300)=4, f(999)=0 -> 5.
+	runsTheSameAtEveryLevel("switch_unsigned_negative_case",
+		"static int f(unsigned x)\n"
+		"{\n"
+		"    switch (x) {\n"
+		"        case -1:  return 1;\n"
+		"        case 100: return 2;\n"
+		"        case 200: return 3;\n"
+		"        case 300: return 4;\n"
+		"        case 400: return 5;\n"
+		"        case 500: return 6;\n"
+		"        case 600: return 7;\n"
+		"        case 700: return 8;\n"
+		"        default:  return 0;\n"
+		"    }\n"
+		"}\n"
+		"int main(void) { return f(0xFFFFFFFFu) + f(300) + f(999); }\n",
+		"", 5);
+}
+
+TEST(e2e, a_switch_on_a_signed_value_matches_an_out_of_range_unsigned_case)
+{
+	// The mirror: `case 0xFFFFFFFF:` (4294967295 as an i64 literal) in a switch on a signed value is
+	// -1 as the runtime's 32-bit int. f(-1)=1, f(300)=4, f(5)=0 -> 5.
+	runsTheSameAtEveryLevel("switch_signed_unsigned_case",
+		"static int f(int x)\n"
+		"{\n"
+		"    switch (x) {\n"
+		"        case 0xFFFFFFFF: return 1;\n"
+		"        case 100: return 2;\n"
+		"        case 200: return 3;\n"
+		"        case 300: return 4;\n"
+		"        case 400: return 5;\n"
+		"        case 500: return 6;\n"
+		"        case 600: return 7;\n"
+		"        case 700: return 8;\n"
+		"        default:  return 0;\n"
+		"    }\n"
+		"}\n"
+		"int main(void) { return f(-1) + f(300) + f(5); }\n",
+		"", 5);
 }
 
 TEST(e2e, inline_assembly_writes_to_a_device_and_runs_its_own_loop_with_local_labels)

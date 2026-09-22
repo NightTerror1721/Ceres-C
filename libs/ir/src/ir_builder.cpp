@@ -1734,6 +1734,18 @@ namespace ceresc::ir
 		constexpr usize kSwitchTableMaxEntries = 256; // 4 * 256 = 1 KiB of `.rodata` ceiling
 		constexpr double kSwitchTableMinDensity = 0.5; // how full [low, high] must be to justify holes
 		constexpr usize kSwitchTreeMinCases = 8;     // below this a tree's larger code is not worth it
+
+		// A case value in the controlling expression's own 32-bit representation. Sema folds a case
+		// constant in ITS type rather than converting it to the switch's promoted type, so
+		// `case -1:` in a `switch (unsigned)` reaches IrBuilder as i64 -1 while the discriminant is
+		// 0xFFFFFFFF - equal as 32-bit bit patterns, but not as i64. Normalizing first is what makes
+		// the tree's ordering tests agree with the runtime comparison (and keeps the table's
+		// `high - low + 1` inside i64). The chain never needed this: equality is sign-agnostic.
+		i64 normalizeSwitchValue(i64 value, bool isUnsigned) noexcept
+		{
+			return isUnsigned ? static_cast<i64>(static_cast<u32>(value))
+							  : static_cast<i64>(static_cast<i32>(value));
+		}
 	}
 
 	bool IrBuilder::emitSwitchDispatch(support::SourceLocation loc, IrValue condValue, bool isUnsigned,
@@ -1742,19 +1754,24 @@ namespace ceresc::ir
 		if (!_options.jumpTables || cases.size() < kSwitchTableMinCases)
 			return false;
 
-		i64 low = cases.front().first;
-		i64 high = cases.front().first;
+		std::vector<std::pair<i64, BasicBlock*>> normalized;
+		normalized.reserve(cases.size());
 		for (const auto& [value, block] : cases)
+			normalized.emplace_back(normalizeSwitchValue(value, isUnsigned), block);
+
+		i64 low = normalized.front().first;
+		i64 high = normalized.front().first;
+		for (const auto& [value, block] : normalized)
 		{
 			low = std::min(low, value);
 			high = std::max(high, value);
 		}
 
-		// `high - low + 1` in 64 bits. Case values are C `int`s (32-bit), so this cannot overflow;
-		// a non-positive result would mean it wrapped, which no table can cover.
+		// Both bounds are 32-bit now, so the span is at most 2^32 and cannot overflow i64; a
+		// non-positive result would still mean it wrapped, which no table can cover.
 		i64 span = high - low + 1;
 		bool tableFits = span > 0 && span <= static_cast<i64>(kSwitchTableMaxEntries) &&
-			static_cast<double>(cases.size()) / static_cast<double>(span) >= kSwitchTableMinDensity;
+			static_cast<double>(normalized.size()) / static_cast<double>(span) >= kSwitchTableMinDensity;
 
 		if (tableFits)
 		{
@@ -1762,16 +1779,16 @@ namespace ceresc::ir
 			auto** targets = static_cast<BasicBlock**>(_arena.allocate(static_cast<usize>(span) * sizeof(BasicBlock*)));
 			for (i64 i = 0; i < span; ++i)
 				targets[i] = fallback; // a hole in the range goes to `default`, so one bounds check suffices
-			for (const auto& [value, block] : cases)
+			for (const auto& [value, block] : normalized)
 				targets[value - low] = block;
 			emitVoid(loc, IrTableJumpPayload{ condValue, targets, static_cast<u32>(span), low, fallback });
 			return true;
 		}
 
-		if (cases.size() < kSwitchTreeMinCases)
+		if (normalized.size() < kSwitchTreeMinCases)
 			return false; // sparse AND small: the chain is the best of the three
 
-		std::vector<std::pair<i64, BasicBlock*>> sorted = cases;
+		std::vector<std::pair<i64, BasicBlock*>> sorted = normalized;
 		std::sort(sorted.begin(), sorted.end(),
 			[](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
 		emitSwitchTree(loc, condValue, isUnsigned, sorted, 0, sorted.size(), defaultBlock ? defaultBlock : &exitBlock);

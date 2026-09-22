@@ -1662,3 +1662,29 @@ TEST(codegen, a_function_with_inline_assembly_is_never_spliced_into_its_callers)
 	CHECK(first != std::string::npos);
 	CHECK(text.find(".spot:", first + 1) == std::string::npos);   // written once, in the function itself
 }
+
+TEST(codegen, a_dense_switch_becomes_a_jump_table_and_the_flag_turns_it_off)
+{
+	// The TableJump dispatch and its `.rodata` table, pinned without needing the external assembler:
+	// the normalize/bounds-check/load/jump sequence, the file-scope block labels a table forces, and
+	// the table itself. `without(jumpTables)` must give back the comparison chain instead.
+	const char* source =
+		"int f(int x) { switch (x) { case 1: return 10; case 2: return 20; case 3: return 30; "
+		"case 4: return 40; case 5: return 50; default: return 0; } }\n"
+		"int main(void) { return f(2); }\n";
+
+	std::string withTable = atO2(source);
+	CHECK(contains(withTable, "ifae r4, 5, __ccbb_f_6"));    // unsigned bounds check -> default
+	CHECK(contains(withTable, "la r5, __ccjt_f_0"));         // the table's address
+	CHECK(contains(withTable, "shl r4, r4, 2"));             // index scaled by the 4-byte entry size
+	CHECK(contains(withTable, "ldr r5, [r5 + r4]"));         // LDRX
+	CHECK(contains(withTable, "jp r5"));                     // JPR
+	CHECK(contains(withTable, "let __ccjt_f_0: u32[5] = [__ccbb_f_1, __ccbb_f_2, __ccbb_f_3, __ccbb_f_4, __ccbb_f_5]"));
+	CHECK(contains(withTable, "__ccbb_f_0:"));               // f's blocks are file-scope so the table can name them
+
+	std::string withoutTable = generateCasm(source, without(&support::OptimizationOptions::jumpTables));
+	CHECK(!contains(withoutTable, "__ccjt"));
+	CHECK(!contains(withoutTable, "__ccbb"));
+	CHECK(contains(withoutTable, "ifne r0, 1, .L"));         // the chain is back
+	CHECK(contains(withoutTable, "ifeq r0, 2, .L2"));
+}
