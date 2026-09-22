@@ -59,6 +59,7 @@ namespace ceresc::driver
 	{
 		out <<
 			"usage: ceresc <file.c|file.casm|file.cobj|file.car>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
+			"               [-L <dir>] [-l <name>] [--sysroot <dir>]\n"
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
 			"               [--decls <file.casm>]... [--emit-decls <file.casm>]\n"
 			"               [--ceres-path <dir|file>] [--run-arg <arg>]...\n"
@@ -75,6 +76,9 @@ namespace ceresc::driver
 			"  -o <output>         the .casm to write (one C input), or the linked program (several)\n"
 			"  -I <dir>            a directory to search for #include <...> and #include \"...\"\n"
 			"  -D <name>[=<val>]   predefine an object-like macro (a bare name means 1)\n"
+			"  -L <dir>            a directory to search for -l libraries (lib<name>.car or .cobj)\n"
+			"  -l <name>           link lib<name>, found through -L and --sysroot/lib; only with --run\n"
+			"  --sysroot <dir>     <dir>/include joins the include search, <dir>/lib the library search\n"
 			"  --emit-ast          print the annotated AST (s-expression form) and stop\n"
 			"  --emit-ir           print the IR and stop\n"
 			"  -E                  print the preprocessed source and stop\n"
@@ -177,6 +181,23 @@ namespace ceresc::driver
 				options.defines.push_back(splitDefine(*value));
 				continue;
 			}
+			if (arg.starts_with("-L"))
+			{
+				std::optional<std::string> value = valueFor(arg, "-L", i);
+				if (!value)
+					return std::nullopt;
+				options.libraryDirectories.push_back(std::move(*value));
+				continue;
+			}
+			if (arg == "-l" || (arg.starts_with("-l") && arg.size() > 2))
+			{
+				// `-lceres` and `-l ceres` are both accepted, the same way -I/-D take either form.
+				std::optional<std::string> value = valueFor(arg, "-l", i);
+				if (!value)
+					return std::nullopt;
+				options.libraries.push_back(std::move(*value));
+				continue;
+			}
 			if (arg == "--decls" || arg == "--emit-decls")
 			{
 				std::optional<std::string> value = valueFor(arg, arg, i);
@@ -202,6 +223,14 @@ namespace ceresc::driver
 				if (!value)
 					return std::nullopt;
 				options.ceresPath = std::move(*value);
+				continue;
+			}
+			if (arg == "--sysroot")
+			{
+				std::optional<std::string> value = valueFor(arg, "--sysroot", i);
+				if (!value)
+					return std::nullopt;
+				options.sysroot = std::move(*value);
 				continue;
 			}
 

@@ -123,6 +123,25 @@ TEST(preprocessor, an_include_is_replaced_by_the_files_contents)
 	CHECK(contains(result.text, "int main(void)"));
 }
 
+TEST(preprocessor, __has_include_reports_whether_a_target_can_be_included)
+{
+	TempDirectory dir;
+	dir.write("present.h", "int x;\n");
+	dir.write("include/angled.h", "int y;\n");
+	std::string path = dir.write("main.c",
+		"#if __has_include(\"present.h\")\nint quotedPresent;\n#endif\n"
+		"#if __has_include(\"absent.h\")\nint quotedAbsent;\n#endif\n"
+		"#if __has_include(<angled.h>)\nint angledPresent;\n#endif\n"
+		"#if __has_include(<nope.h>)\nint angledAbsent;\n#endif\n");
+
+	Result result = expand(path, { (dir.path() / "include").string() });
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int quotedPresent;"));
+	CHECK(!contains(result.text, "int quotedAbsent;"));
+	CHECK(contains(result.text, "int angledPresent;"));
+	CHECK(!contains(result.text, "int angledAbsent;"));
+}
+
 TEST(preprocessor, a_quoted_include_looks_next_to_the_including_file_first)
 {
 	// The whole reason a project whose headers sit beside its sources needs no -I at all.

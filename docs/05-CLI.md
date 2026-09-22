@@ -4,6 +4,7 @@
 
 ```
 usage: ceresc <file.c|file.casm|file.cobj|file.car>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]
+               [-L <dir>] [-l <name>] [--sysroot <dir>]
                [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]
                [--decls <file.casm>]... [--emit-decls <file.casm>]
                [--ceres-path <dir|file>]
@@ -24,6 +25,9 @@ alongside the compiled ones, which is how a routine written in assembly becomes 
 | `-o <output>` | With a single C input and no `--run`, the `.casm` to write. Otherwise the linked program. |
 | `-I <dir>` | A directory to search for `#include`. Repeatable; searched in order. Also spelled `-Idir`. |
 | `-D <name>[=<value>]` | Predefine an object-like macro. A bare name means `1`. Also spelled `-DNAME=1`. |
+| `-L <dir>` | A directory to search for `-l` libraries. Repeatable; searched in order. Also spelled `-Ldir`. |
+| `-l <name>` | Link `lib<name>.car` (an archive) or `lib<name>.cobj`, found through `-L` and `--sysroot/lib`. Repeatable, and only used with `--run`. Also spelled `-lname`. |
+| `--sysroot <dir>` | `<dir>/include` joins the include search (after the `-I` directories) and `<dir>/lib` the `-l` search, so a toolchain or the STDLIB install lives under one root. |
 | `--emit-ast` | Print the type-checked syntax tree and stop. |
 | `--emit-ir` | Print the IR — after optimization, so it is what the back end will actually be handed — and stop. |
 | `-E` | Print the preprocessed source and stop. |

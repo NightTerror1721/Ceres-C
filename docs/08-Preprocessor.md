@@ -16,6 +16,7 @@ into one buffer.
 | `#undef NAME` | Forgets one. |
 | `#if`, `#elif`, `#else`, `#endif` | Selects source based on an integer constant expression. |
 | `#ifdef`, `#ifndef` | Selects source based on whether a macro is defined. |
+| `__has_include("f")`, `__has_include(<f>)` | Inside a `#if`, `1` when the target can be included (resolved exactly as `#include` would), else `0`. |
 | `#error message` | Emits an error and stops a successful compilation. |
 | `#warning message` | Emits a warning without failing preprocessing. |
 | `#pragma once` | This file contributes nothing if it is included again. |

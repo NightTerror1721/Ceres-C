@@ -376,11 +376,61 @@ namespace ceresc::driver
 			}
 		}
 
-		if (cInputs.empty() && casmInputs.empty() && objectInputs.empty() && archiveInputs.empty())
+		if (cInputs.empty() && casmInputs.empty() && objectInputs.empty() && archiveInputs.empty() && options.libraries.empty())
 		{
 			std::cerr << "ceresc: no input files\n";
 			return 1;
 		}
+
+		// -l <name>: find lib<name>.car (an archive) or lib<name>.cobj (an object) through -L and
+		// <sysroot>/lib, then hand the result to the linker exactly as a .car/.cobj named on the
+		// command line. This is what lets a program say `-l ceres` instead of spelling out the
+		// STDLIB archive's path.
+		std::vector<std::string> libraryDirectories = options.libraryDirectories;
+		if (!options.sysroot.empty())
+			libraryDirectories.insert(libraryDirectories.begin(), (fs::path(options.sysroot) / "lib").string());
+		for (const std::string& name : options.libraries)
+		{
+			std::string found;
+			for (const std::string& directory : libraryDirectories)
+			{
+				for (const char* extension : { ".car", ".cobj" })
+				{
+					fs::path candidate = fs::path(directory) / ("lib" + name + extension);
+					if (fs::is_regular_file(candidate))
+					{
+						found = candidate.string();
+						break;
+					}
+				}
+				if (!found.empty())
+					break;
+			}
+			if (found.empty())
+			{
+				std::cerr << "ceresc: cannot find library 'lib" << name << ".car' (or '.cobj')";
+				if (libraryDirectories.empty())
+					std::cerr << ": no -L directory and no --sysroot were given\n";
+				else
+				{
+					std::cerr << " in:";
+					for (const std::string& directory : libraryDirectories)
+						std::cerr << ' ' << directory;
+					std::cerr << '\n';
+				}
+				return 1;
+			}
+			if (fs::path(found).extension() == ".car")
+				archiveInputs.push_back(std::move(found));
+			else
+				objectInputs.push_back(std::move(found));
+		}
+
+		// --sysroot <dir>: `<dir>/include` joins the include search after the -I directories, the
+		// same place a system include directory would sit.
+		std::vector<std::string> includeDirectories = options.includeDirectories;
+		if (!options.sysroot.empty())
+			includeDirectories.push_back((fs::path(options.sysroot) / "include").string());
 
 		// What was built before is not read by the compiler, only handed on, so a missing file is reported
 		// here rather than by the linker after the whole compile.
@@ -434,7 +484,7 @@ namespace ceresc::driver
 		{
 			// ---- preprocess ------------------------------------------------------------------------
 			preprocessor::Preprocessor preprocess(sourceManager, diagnostics);
-			for (const std::string& directory : options.includeDirectories)
+			for (const std::string& directory : includeDirectories)
 				preprocess.addIncludeDirectory(directory);
 			for (const auto& [name, value] : options.defines)
 				preprocess.define(name, value);

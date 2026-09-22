@@ -73,6 +73,16 @@ namespace ceresc::driver
 		std::vector<std::string> includeDirectories;                  // -I <dir>, in order
 		std::vector<std::pair<std::string, std::string>> defines;     // -D NAME[=value], in order
 
+		// -L <dir> and -l <name>: where to find `lib<name>.car`/`.cobj`, and which to link. A
+		// program built against the Ceres STDLIB names one archive; this and --sysroot are what let
+		// it say so without spelling the path out. Resolved by the driver, then linked exactly like
+		// a .car/.cobj given by name.
+		std::vector<std::string> libraryDirectories;                  // -L <dir>, in order
+		std::vector<std::string> libraries;                           // -l <name>, in order
+		// --sysroot <dir>: `<dir>/include` joins the include search and `<dir>/lib` the library
+		// search, so a toolchain or the STDLIB install lives under one root.
+		std::string sysroot;
+
 		// -O<n> and the -f switches, already resolved into the individual toggles every stage reads.
 		// A later -f<name>/-fno-<name> overrides what the -O level set, in command-line order, the
 		// same way a C compiler resolves them.

@@ -295,13 +295,54 @@ namespace ceresc::preprocessor
 			return std::string(target);
 		return {};
 	}
-	bool Preprocessor::evaluateIfExpression(std::string_view expression, support::SourceLocation location, i64& value)
+	bool Preprocessor::evaluateIfExpression(std::string_view expression, support::SourceLocation location,
+		std::string_view includingFile, i64& value)
 	{
 		// `defined(NAME)` is recognized before ordinary substitution so NAME remains an identifier
-		// even when it is itself an object-like macro.
+		// even when it is itself an object-like macro. `__has_include("x")` is answered here too:
+		// it needs the file system, not an expression, so it is folded to 1 or 0 before the
+		// expression parser ever sees it.
 		std::string protectedExpression;
 		for (usize i = 0; i < expression.size();)
 		{
+			if (expression.substr(i).starts_with("__has_include") &&
+				(i + 13 == expression.size() || !isIdentifierChar(expression[i + 13])))
+			{
+				usize p = i + 13;
+				while (p < expression.size() && (expression[p] == ' ' || expression[p] == '\t')) ++p;
+				if (p < expression.size() && expression[p] == '(')
+				{
+					++p;
+					while (p < expression.size() && (expression[p] == ' ' || expression[p] == '\t')) ++p;
+					if (p < expression.size() && (expression[p] == '"' || expression[p] == '<'))
+					{
+						char open = expression[p];
+						char close = open == '<' ? '>' : '"';
+						usize end = p + 1;
+						while (end < expression.size() && expression[end] != close) ++end;
+						if (end < expression.size())
+						{
+							std::string target(expression.substr(p + 1, end - p - 1));
+							bool angled = open == '<';
+							protectedExpression += resolveInclude(target, angled, std::string(includingFile)).empty() ? '0' : '1';
+							p = end + 1;
+							while (p < expression.size() && (expression[p] == ' ' || expression[p] == '\t')) ++p;
+							if (p < expression.size() && expression[p] == ')')
+							{
+								i = p + 1;
+								continue;
+							}
+							_diagnostics.error(DiagId::IncludeExpectsTarget, location, "'__has_include' expects a ')' after its target");
+							i = p;
+							continue;
+						}
+					}
+				}
+				_diagnostics.error(DiagId::IncludeExpectsTarget, location, "'__has_include' expects \"file\" or <file>");
+				protectedExpression += '0';
+				i = p < expression.size() ? p + 1 : expression.size();
+				continue;
+			}
 			if (expression.substr(i).starts_with("defined") &&
 				(i + 7 == expression.size() || !isIdentifierChar(expression[i + 7])))
 			{
@@ -572,9 +613,9 @@ namespace ceresc::preprocessor
 			{
 				std::string_view directive = withoutDirectiveComment(trim(trimmed.substr(1)));
 				auto condition = [&](bool value) { bool parent = active(); conditionals.push_back({ parent, parent && value, value, false, here }); };
-				if (isDirective(directive, "if")) { i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(2)), here, value); condition(valid && value != 0); blank(); continue; }
+				if (isDirective(directive, "if")) { i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(2)), here, path, value); condition(valid && value != 0); blank(); continue; }
 				if (isDirective(directive, "ifdef") || isDirective(directive, "ifndef")) { bool negated = isDirective(directive, "ifndef"); std::string_view name = trim(directive.substr(negated ? 6 : 5)); if (name.empty() || !isIdentifierStart(name.front()) || std::any_of(name.begin()+1, name.end(), [](char c){ return !isIdentifierChar(c); })) { _diagnostics.error(DiagId::ConditionalExpectsMacroName, here, "#{} expects a macro name", negated ? "ifndef" : "ifdef"); ok = false; condition(false); } else condition(_macros.contains(std::string(name)) != negated); blank(); continue; }
-				if (isDirective(directive, "elif")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(DiagId::ElifWithoutIf, here, "#elif without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(4)), here, value); c.active = c.parentActive && !c.branchTaken && valid && value != 0; c.branchTaken = c.branchTaken || (valid && value != 0); } blank(); continue; }
+				if (isDirective(directive, "elif")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(DiagId::ElifWithoutIf, here, "#elif without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); i64 value = 0; bool valid = evaluateIfExpression(trim(directive.substr(4)), here, path, value); c.active = c.parentActive && !c.branchTaken && valid && value != 0; c.branchTaken = c.branchTaken || (valid && value != 0); } blank(); continue; }
 				if (isDirective(directive, "else")) { if (conditionals.empty() || conditionals.back().sawElse) { _diagnostics.error(DiagId::ElseWithoutIf, here, "#else without a matching #if"); ok = false; } else { Conditional& c = conditionals.back(); c.active = c.parentActive && !c.branchTaken; c.branchTaken = true; c.sawElse = true; } blank(); continue; }
 				if (isDirective(directive, "endif")) { if (conditionals.empty()) { _diagnostics.error(DiagId::EndifWithoutIf, here, "#endif without a matching #if"); ok = false; } else conditionals.pop_back(); blank(); continue; }
 				if (!active()) { blank(); continue; }

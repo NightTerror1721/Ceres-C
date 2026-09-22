@@ -80,6 +80,26 @@ TEST(options, the_ordinary_switches_are_recognized)
 	CHECK(result.options->warningsAsErrors);
 }
 
+TEST(options, the_library_and_sysroot_switches_are_recognized)
+{
+	// Both spellings of -L and -l, and --sysroot, in command-line order.
+	ParseResult result = parse({ "main.c", "-L", "libs", "-Lmore", "-lceres", "-l", "extra", "--sysroot", "C:/sdk" });
+	CHECK(result.options.has_value());
+	CHECK_EQ(result.options->libraryDirectories.size(), std::size_t(2));
+	CHECK_EQ(result.options->libraryDirectories[0], std::string("libs"));
+	CHECK_EQ(result.options->libraryDirectories[1], std::string("more"));
+	CHECK_EQ(result.options->libraries.size(), std::size_t(2));
+	CHECK_EQ(result.options->libraries[0], std::string("ceres"));
+	CHECK_EQ(result.options->libraries[1], std::string("extra"));
+	CHECK_EQ(result.options->sysroot, std::string("C:/sdk"));
+}
+
+TEST(options, a_library_name_with_no_argument_is_rejected)
+{
+	ParseResult result = parse({ "main.c", "-l" });
+	CHECK(!result.options.has_value());
+}
+
 TEST(options, S_and_run_are_opposites_resolved_in_argument_order)
 {
 	// -S is the default, so on its own it changes nothing...

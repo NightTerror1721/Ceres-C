@@ -150,7 +150,10 @@ namespace ceresc::preprocessor
 
 		// Substitutes object-like and function-like macros, leaving literals and comments alone.
 		std::string expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment);
-		bool evaluateIfExpression(std::string_view expression, support::SourceLocation location, i64& value);
+		// `includingFile` is the file the `#if` was written in, so `__has_include("...")` can resolve
+		// a quoted target relative to it exactly as `#include "..."` does.
+		bool evaluateIfExpression(std::string_view expression, support::SourceLocation location,
+			std::string_view includingFile, i64& value);
 
 		// One `#pragma warning(...)` - the body between the parentheses, already trimmed. Records
 		// what it asked for against `outputLine` of the expanded text, which is the coordinate every
