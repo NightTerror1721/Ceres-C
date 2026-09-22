@@ -562,10 +562,12 @@ namespace ceresc::driver
 			ir::optimize(module, arena, options.optimization, options.emitStats ? &stats : nullptr);
 			if (options.emitStats)
 			{
-				u32 removed = stats.instructionsBefore > stats.instructionsAfter
-					? stats.instructionsBefore - stats.instructionsAfter : 0;
-				u32 percent = stats.instructionsBefore > 0 ? removed * 100 / stats.instructionsBefore : 0;
-				std::cerr << std::format("ceresc: stats {}: {} function(s), {} -> {} IR instructions (-{}%), {} inlined, {} jump table(s)\n",
+				printer.flush(std::cerr); // a diagnostic the IR build reported belongs before this line
+				// Signed: the optimizer can grow a function (strength reduction rewrites one BinOp
+				// into a sequence), and a report of "-0%" would misstate that.
+				i64 delta = static_cast<i64>(stats.instructionsAfter) - static_cast<i64>(stats.instructionsBefore);
+				i64 percent = stats.instructionsBefore > 0 ? delta * 100 / static_cast<i64>(stats.instructionsBefore) : 0;
+				std::cerr << std::format("ceresc: stats {}: {} function(s), {} -> {} IR instructions ({:+}%), {} inlined, {} jump table(s)\n",
 					inputPath, stats.functions, stats.instructionsBefore, stats.instructionsAfter, percent,
 					stats.inlinedCalls, stats.jumpTables);
 			}

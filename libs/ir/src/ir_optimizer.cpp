@@ -680,40 +680,88 @@ namespace ceresc::ir
 		// operands match one seen earlier is replaced by a reference to the earlier result, and the
 		// duplicate is dropped.
 		//
-		// Intra-block only, on purpose: sharing across blocks needs dominance, which this IR does
-		// not compute. A duplicate result is dropped only when every use of it is in the same block
-		// (useBlocks <= 1), so no other block is left naming a definition that no longer exists.
+		// Two guards make this sound on a NON-SSA IR:
+		//   - a temporary can be defined more than once (materializeBoolean(), visit(TernaryExpr&)),
+		//     so only a result with exactly one definition, and whose operands each have exactly one,
+		//     is numbered - its value cannot change underneath the key;
+		//   - a duplicate may be dropped only when its result is used solely in the CURRENT block (or
+		//     nowhere), so no other block is left naming a definition that is gone.
 		// Loads and stores are never numbered - they read and write memory - and a Call is never
-		// reused. A key is produced only for opcodes that are pure by construction.
-		std::string cseKey(const IrInstr& instr)
+		// reused.
+
+		// A structural key for a pure instruction: a tag, up to three small fields (opcode/flags/
+		// width), and up to two operand ids. A POD, so numbering allocates nothing per instruction.
+		// GlobalAddr is deliberately not numbered: its key would be a name, which this fixed key
+		// cannot hold, and a repeated global address is rare anyway.
+		struct CseKey
 		{
+			u8 tag = 0, f0 = 0, f1 = 0, f2 = 0;
+			u32 x = 0, y = 0;
+			constexpr bool operator==(const CseKey&) const noexcept = default;
+		};
+
+		struct CseKeyHash
+		{
+			usize operator()(const CseKey& key) const noexcept
+			{
+				usize hash = 1469598103934665603ull; // FNV-1a
+				auto mix = [&](u64 value) { hash = (hash ^ value) * 1099511628211ull; };
+				mix(key.tag); mix(key.f0); mix(key.f1); mix(key.f2); mix(key.x); mix(key.y);
+				return hash;
+			}
+		};
+
+		// True (and fills `out`) only for an opcode that is pure by construction AND whose operands
+		// are each defined exactly once, so their value cannot change underneath the key.
+		bool cseNumberable(const IrInstr& instr, const std::vector<u32>& defCount, usize tempCount, CseKey& out)
+		{
+			auto stable = [&](IrValue value)
+			{
+				return !value.isValid() || (value.id < tempCount && defCount[value.id] == 1);
+			};
 			switch (instr.opcode())
 			{
 				case IrOpcode::BinOp:
 				{
 					const auto& p = instr.as<IrBinOpPayload>();
-					return std::format("b|{}|{}|{}|{}|{}", static_cast<int>(p.op), p.isUnsigned, p.isFloat, p.lhs.id, p.rhs.id);
+					if (!stable(p.lhs) || !stable(p.rhs))
+						return false;
+					out = CseKey{ 1, static_cast<u8>(p.op), static_cast<u8>(p.isUnsigned), static_cast<u8>(p.isFloat), p.lhs.id, p.rhs.id };
+					return true;
 				}
 				case IrOpcode::UnOp:
 				{
 					const auto& p = instr.as<IrUnOpPayload>();
-					return std::format("u|{}|{}|{}|{}|{}", static_cast<int>(p.op), p.isFloat, p.isUnsigned,
-						static_cast<int>(p.narrowSize), p.operand.id);
+					if (!stable(p.operand))
+						return false;
+					out = CseKey{ 2, static_cast<u8>(p.op), static_cast<u8>(p.isFloat), static_cast<u8>(p.isUnsigned),
+						p.operand.id, static_cast<u32>(p.narrowSize) };
+					return true;
 				}
 				case IrOpcode::Cmp:
 				{
 					const auto& p = instr.as<IrCmpPayload>();
-					return std::format("c|{}|{}|{}|{}|{}", static_cast<int>(p.predicate), p.isUnsigned, p.isFloat, p.lhs.id, p.rhs.id);
+					if (!stable(p.lhs) || !stable(p.rhs))
+						return false;
+					out = CseKey{ 3, static_cast<u8>(p.predicate), static_cast<u8>(p.isUnsigned), static_cast<u8>(p.isFloat), p.lhs.id, p.rhs.id };
+					return true;
 				}
-				case IrOpcode::FrameAddr: return std::format("f|{}", instr.as<IrFrameAddrPayload>().localIndex);
-				case IrOpcode::GlobalAddr: return std::format("g|{}", instr.as<IrGlobalAddrPayload>().name);
 				case IrOpcode::Builtin:
 				{
 					const auto& p = instr.as<IrBuiltinPayload>();
-					return std::format("t|{}|{}|{}", static_cast<int>(p.builtin), p.a.id, p.b.id);
+					if (!stable(p.a) || !stable(p.b))
+						return false;
+					out = CseKey{ 4, static_cast<u8>(p.builtin), 0, 0, p.a.id, p.b.id };
+					return true;
 				}
-				case IrOpcode::VaStart: return std::string("v");
-				default: return {}; // Const/Copy/Load/Store/Call/... : not numbered
+				case IrOpcode::FrameAddr:
+					out = CseKey{ 5, 0, 0, 0, instr.as<IrFrameAddrPayload>().localIndex, 0 };
+					return true;
+				case IrOpcode::VaStart:
+					out = CseKey{ 6, 0, 0, 0, 0, 0 };
+					return true;
+				default:
+					return false; // Const/Copy/Load/Store/Call/... : not numbered
 			}
 		}
 
@@ -722,28 +770,46 @@ namespace ceresc::ir
 			if (!options.commonSubexpressionElimination)
 				return false;
 
-			// How many distinct blocks reference each temporary. A duplicate whose result is read
-			// from more than one block must stay, so those blocks keep a real definition to name.
-			std::vector<u32> useBlocks(function.tempCount(), 0);
+			usize tempCount = function.tempCount();
+
+			// How many times each temporary is defined - see the soundness note above.
+			std::vector<u32> defCount(tempCount, 0);
 			for (const auto& block : function.blocks())
-			{
-				std::vector<bool> seen(function.tempCount(), false);
 				for (const IrInstr* instr : block->instrs())
+					if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
+						++defCount[result.id];
+
+			// The single block each temporary is USED in: kNoUse if unused, kMultiUse if used in more
+			// than one. A duplicate is only droppable when its result is used solely in the current
+			// block (or nowhere).
+			constexpr u32 kNoUse = 0xFFFFFFFEu;
+			constexpr u32 kMultiUse = 0xFFFFFFFFu;
+			std::vector<u32> useBlock(tempCount, kNoUse);
+			for (usize bi = 0; bi < function.blocks().size(); ++bi)
+			{
+				u32 b = static_cast<u32>(bi);
+				std::vector<bool> seen(tempCount, false);
+				for (const IrInstr* instr : function.blocks()[bi]->instrs())
 					forEachOperand(*instr, [&](IrValue value)
 					{
-						if (value.isValid() && value.id < useBlocks.size() && !seen[value.id])
-						{
-							seen[value.id] = true;
-							++useBlocks[value.id];
-						}
+						if (!value.isValid() || value.id >= tempCount || seen[value.id])
+							return;
+						seen[value.id] = true;
+						u32& slot = useBlock[value.id];
+						if (slot == kNoUse)
+							slot = b;
+						else if (slot != b)
+							slot = kMultiUse;
 					});
 			}
 
 			bool changedAtAll = false;
-			for (const auto& block : function.blocks())
+			for (usize bi = 0; bi < function.blocks().size(); ++bi)
 			{
-				std::unordered_map<std::string, IrValue> available;   // expression key -> first result
-				std::unordered_map<u32, IrValue> substitution;        // duplicate result -> canonical
+				u32 b = static_cast<u32>(bi);
+				const auto& block = function.blocks()[bi];
+				std::unordered_map<CseKey, IrValue, CseKeyHash> available; // expression -> first result
+				std::unordered_map<u32, IrValue> substitution;             // duplicate result -> canonical
 				std::vector<IrInstr*> rewritten;
 				rewritten.reserve(block->instrs().size());
 				bool blockChanged = false;
@@ -754,21 +820,20 @@ namespace ceresc::ir
 					if (IrInstr* renamed = renameOperands(*instr, arena, substitution))
 						current = renamed;
 
-					if (IrValue result = resultOf(*current); result.isValid())
+					IrValue result = resultOf(*current);
+					CseKey key;
+					if (result.isValid() && result.id < tempCount && defCount[result.id] == 1 &&
+						cseNumberable(*current, defCount, tempCount, key))
 					{
-						std::string key = cseKey(*current);
-						if (!key.empty())
+						auto found = available.find(key);
+						if (found != available.end() && (useBlock[result.id] == kNoUse || useBlock[result.id] == b))
 						{
-							auto found = available.find(key);
-							if (found != available.end() && useBlocks[result.id] <= 1)
-							{
-								substitution[result.id] = found->second;
-								blockChanged = true;
-								continue; // the earlier result is this one's value - drop it
-							}
-							if (found == available.end())
-								available.emplace(std::move(key), result);
+							substitution[result.id] = found->second;
+							blockChanged = true;
+							continue; // the earlier result is this one's value - drop it
 						}
+						if (found == available.end())
+							available.emplace(key, result);
 					}
 
 					rewritten.push_back(current);
@@ -1970,13 +2035,15 @@ namespace ceresc::ir
 			return total;
 		};
 
+		// Counted before ANY pass, including inlining - "instructionsBefore" is what the module
+		// held when optimize() was entered.
+		if (stats)
+			stats->instructionsBefore = countInstructions(module);
+
 		u32 inlined = 0;
 		inlineCalls(module, arena, options, inlined);
 		if (stats)
-		{
-			stats->instructionsBefore = countInstructions(module);
 			stats->inlinedCalls = inlined;
-		}
 
 		// The functions declared `pure` or `const`. Dead-code elimination needs the set by name:
 		// it runs per function and cannot look a callee up in the module.
@@ -2016,11 +2083,13 @@ namespace ceresc::ir
 		{
 			stats->functions = static_cast<u32>(module.functions().size());
 			stats->instructionsAfter = countInstructions(module);
+			u32 jumpTables = 0;
 			for (const auto& function : module.functions())
 				for (const auto& block : function->blocks())
 					for (const IrInstr* instr : block->instrs())
 						if (instr->opcode() == IrOpcode::TableJump)
-							++stats->jumpTables;
+							++jumpTables;
+			stats->jumpTables = jumpTables;
 		}
 	}
 }

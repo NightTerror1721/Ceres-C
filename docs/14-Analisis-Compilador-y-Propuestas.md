@@ -978,6 +978,55 @@ que impida que las dos deriven).
 
 ---
 
+## 17. Ola B — calidad de código y observabilidad
+
+| Parte | Estado | Commit |
+| --- | --- | --- |
+| **O13** — niveles `-Os`/`-Og` y `--stats` | **hecha** | `Add -Os/-Og optimization levels and --stats` |
+| **O2** — eliminación de subexpresiones comunes (CSE) | **hecha** | `Add common subexpression elimination` |
+| **O14 (parcial)** — eliminación de almacenamientos muertos por sobreescritura | **hecha** | `Extend dead-store elimination to overwritten stores` |
+| **O3**, **O4**, **O5**, **O8**, **O9**, **O10**, **O11**, **O12** | **aplazadas, con motivo** | — |
+| **F4**, **F8**, **F13** | **aplazadas, con motivo** | — |
+
+**Por qué se aplazan las restantes.** No son cambios de una tarde, y entregarlas a medias arriesga
+miscompilaciones entre niveles (lo que la regla 3 prohíbe):
+
+- **O3/O15 (bucles)** y **O11 (SCCP)**: necesitan análisis de bucles naturales y de dominancia, que
+  este IR no calcula hoy. Son la base de la ganancia de rendimiento medida en la STDLIB (~3× en
+  `strcpy`/`strcmp`/`strchr`/`memchr`), y merecen su propia ola.
+- **O4/O5 (calidad del asignador)**: reasignar registros de forma agresiva (linear scan/coloring,
+  coalescing) toca el conjunto callee-saved que asume `asm/setjmp.casm`; requiere un test de ABI
+  antes, no después.
+- **O8 (PC-relativo)**, **O9 (layout de bloques)**, **O10 (inlining)**, **O12 (patrones min/max/abs)**:
+  viables, pero cambian muchas golden de CASM o dependen de que el ensamblador exponga la forma
+  PC-relativa; se dejan para una ola centrada en el back-end.
+- **F4 (setjmp nativo)**, **F8 (info de depuración de C)**, **F13 (LTO)**: necesitan, respectivamente,
+  builtins de ABI, hablar el formato de depuración de CeresASM, o un IR serializable entre unidades.
+
+### Pasada de revisión sobre la Ola B
+
+`open-code-review` sobre `033fdb2..HEAD` (8 ficheros, 7 hallazgos). **Dos de severidad alta, ambos en
+el CSE nuevo y ambos reales**, corregidos:
+
+- el CSE numeraba y reutilizaba temporales sin comprobar que tuvieran **una sola definición**; este IR
+  no es SSA y reutiliza ids (`materializeBoolean`, ternarios), así que una redefinición invalidaba una
+  entrada y podía sustituir por un valor ya cambiado. Ahora solo numera un resultado con exactamente
+  una definición y cuyos operandos también la tengan (el mismo guardia que `propagateCopies`);
+- `useBlocks[result] <= 1` no probaba que el único uso estuviera **en el bloque actual**; un temporal
+  vivo fuera de su bloque se habría dejado sin definición. Ahora se registra el bloque (único, ninguno
+  o varios) de cada uso y solo se descarta si el uso está en el bloque actual o no existe.
+
+También corregidos: el `--stats` contaba las instrucciones *después* de inlining (ahora antes, como
+dice su comentario) y podía imprimir `(-0%)` para un crecimiento (ahora un delta con signo); se
+vuelca el impresor de diagnósticos antes de la línea de `--stats`; `jumpTables` se asigna en vez de
+acumularse con `++`; y la clave del CSE es ahora un POD con hash en lugar de una `std::string` por
+instrucción (GlobalAddr deja de numerarse, que además evita comparar nombres por una clave POD).
+
+Se añadió `examples/22_cse.c` (una expresión pura repetida junto a un ternario repetido) para cubrir
+de extremo a extremo la forma que los dos fallos altos podían romper.
+
+---
+
 ## Anexo — Referencias de código clave
 
 | Tema | Fichero / símbolo |
