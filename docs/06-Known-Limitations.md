@@ -41,12 +41,15 @@ can go.
 
 ## Limits
 
-### The preprocessor has no conditionals
+### The preprocessor has no `#line`
 
-`#include`, `#define` (object-like), `#undef` and `#pragma once` are implemented;
-`#if`/`#ifdef`/`#else`/`#endif`, macros with arguments, `#error`, `#line` and `__FILE__`/`__LINE__`
-are not. `#pragma once` is what makes headers usable without them. See
-[08-Preprocessor.md](08-Preprocessor.md).
+`#include`, `#define` (object-like and function-like, with variadic macros and `#`/`##`), `#undef`,
+`#if`/`#elif`/`#else`/`#endif`, `#ifdef`/`#ifndef`, `#error`, `#warning`, `#pragma once` and
+`#pragma warning` are all implemented, and so are `__LINE__`, `__FILE__`, `__BASE_FILE__`,
+`__INCLUDE_LEVEL__` and `__COUNTER__`. Only `#line` is missing: a diagnostic's true file and line
+come from a source-location map built during preprocessing instead, which is what
+[08-Preprocessor.md](08-Preprocessor.md) covers under "Line numbers across an include" — an
+alternative to teaching the lexer to read `#line` markers, not a gap still to close.
 
 ### A CeresASM reserved word is written with a prefix in the assembly
 
