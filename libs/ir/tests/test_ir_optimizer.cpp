@@ -532,6 +532,65 @@ TEST(ir_optimizer, inlining_is_off_at_O1)
 	CHECK(contains(text, "call"));
 }
 
+// ---- attribute-driven behaviour: noinline, always_inline, pure/const -----------------------------
+
+namespace
+{
+	// A single-block, call-free function whose body is far past the inliner's default size limit.
+	std::string bigFunction(std::string_view attribute)
+	{
+		std::string body = "int big(int x) " + std::string(attribute) + " {";
+		for (int i = 0; i < 20; i++)
+			body += " x = x + 1;";
+		body += " return x; }";
+		return body + " int main() { return big(0); }";
+	}
+}
+
+TEST(ir_optimizer, noinline_keeps_a_small_function_out_of_its_caller)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.inlining = true;
+	options.deadCodeElimination = true;
+	std::string text = optimizedIr(
+		"int __attribute__((noinline)) add(int a, int b) { return a + b; } int main() { return add(3, 4); }",
+		options);
+	CHECK(contains(text, "call")); // isInlinable() refuses it, however small it is
+}
+
+TEST(ir_optimizer, always_inline_splices_a_function_past_the_size_limit)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.inlining = true;
+	options.deadCodeElimination = true;
+
+	CHECK(contains(optimizedIr(bigFunction(""), options), "call"));                    // over the limit: left alone
+	CHECK(!contains(optimizedIr(bigFunction("__attribute__((always_inline))"), options), "call")); // forced
+}
+
+TEST(ir_optimizer, a_pure_call_whose_result_is_ignored_is_dropped)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::deadCodeElimination);
+	std::string text = optimizedIr("int pure_fn(int) __attribute__((pure)); int main() { pure_fn(1); return 0; }", options);
+	CHECK(!contains(text, "call"));
+}
+
+TEST(ir_optimizer, a_const_call_whose_result_is_ignored_is_dropped)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::deadCodeElimination);
+	std::string text = optimizedIr("int const_fn(int) __attribute__((const)); int main() { const_fn(1); return 0; }", options);
+	CHECK(!contains(text, "call"));
+}
+
+TEST(ir_optimizer, an_ordinary_call_whose_result_is_ignored_is_kept)
+{
+	// The contrast: without the attribute a discarded result proves nothing about side effects, so
+	// the call stays - the same distinction tests/sema pins from the warning side.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::deadCodeElimination);
+	std::string text = optimizedIr("int ordinary(int); int main() { ordinary(1); return 0; }", options);
+	CHECK(contains(text, "call"));
+}
+
 // ---- unused function elimination ---------------------------------------------------------------------
 
 TEST(ir_optimizer, a_function_nothing_calls_is_dropped)

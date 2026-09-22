@@ -1040,6 +1040,13 @@ namespace ceresc::sema
 			CallSignature signature{ funcDecl->returnType(), funcDecl->params(), funcDecl->isVariadic() };
 			checkCallArguments(node, signature, std::format("'{}'", funcDecl->name()));
 			resultType = funcDecl->returnType();
+			// Two attributes that only mean anything at a call site: deprecated warns wherever the
+			// name is called, and warn_unused_result is carried on the call so the enclosing
+			// expression statement can warn when its value is dropped.
+			if (funcDecl->isDeprecated())
+				_diagnostics.warning(DiagId::DeprecatedFunctionUse, node.location(), "call to deprecated function '{}'", funcDecl->name());
+			if (funcDecl->isWarnUnusedResult())
+				node.setWarnUnusedResult(true);
 		}
 		else if (info)
 		{
@@ -1572,6 +1579,10 @@ namespace ceresc::sema
 	void Sema::visit(ast::ExprStmt& node)
 	{
 		checkExpr(node.expr());
+		// `f(x);` throws the result away. When f asked not to have that done, say so - at the
+		// statement, which is the only place a discarded result exists.
+		if (auto* call = dynamic_cast<ast::CallExpr*>(node.expr()); call && call->warnUnusedResult())
+			_diagnostics.warning(DiagId::UnusedResult, call->location(), "the result of this call is ignored, but the function is declared 'warn_unused_result'");
 	}
 
 	void Sema::visit(ast::DeclStmt& node)
@@ -2037,10 +2048,27 @@ namespace ceresc::sema
 		checkInterruptHandler(node);
 		checkAsmLabel(node, true);
 
-		// `noreturn` on a prototype holds for the definition that comes after it
+		// Every function attribute declared on a prototype holds for the definition that comes
+		// after it, exactly as `noreturn` always has. The definition wins where it says otherwise.
 		if (Symbol* declared = _globalScope->lookupInThisScope(node.name());
-			declared && declared->kind == SymbolKind::Function && declared->funcDecl && declared->funcDecl->isNoReturn())
-			node.setNoReturn(true);
+			declared && declared->kind == SymbolKind::Function && declared->funcDecl)
+		{
+			const ast::FunctionDecl* prototype = declared->funcDecl;
+			if (prototype->isNoReturn())
+				node.setNoReturn(true);
+			if (prototype->isNoInline())
+				node.setNoInline(true);
+			if (prototype->isAlwaysInline())
+				node.setAlwaysInline(true);
+			if (prototype->isConstAttr())
+				node.setConstAttr(true);
+			else if (prototype->isPure())
+				node.setPure(true);
+			if (prototype->isDeprecated())
+				node.setDeprecated(true);
+			if (prototype->isWarnUnusedResult())
+				node.setWarnUnusedResult(true);
+		}
 
 		Symbol* existing = _globalScope->lookupInThisScope(node.name());
 		bool kindConflict = existing && existing->kind != SymbolKind::Function;

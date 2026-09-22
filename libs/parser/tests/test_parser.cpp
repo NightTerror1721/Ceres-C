@@ -1512,7 +1512,14 @@ namespace
 		usize errors = 0;
 		usize warnings = 0;
 		std::vector<std::string> messages;
-		bool noReturnFunction = false;   // the first function of the unit was marked noreturn
+		// The first function of the unit, and which attributes it was marked with.
+		bool noReturnFunction = false;
+		bool noInlineFunction = false;
+		bool alwaysInlineFunction = false;
+		bool pureFunction = false;
+		bool constFunction = false;
+		bool deprecatedFunction = false;
+		bool warnUnusedResultFunction = false;
 	};
 
 	AttributeOutcome parseAttributes(std::string_view source)
@@ -1538,6 +1545,12 @@ namespace
 				if (auto* function = dynamic_cast<ast::FunctionDecl*>(decl))
 				{
 					outcome.noReturnFunction = function->isNoReturn();
+					outcome.noInlineFunction = function->isNoInline();
+					outcome.alwaysInlineFunction = function->isAlwaysInline();
+					outcome.pureFunction = function->isPure();
+					outcome.constFunction = function->isConstAttr();
+					outcome.deprecatedFunction = function->isDeprecated();
+					outcome.warnUnusedResultFunction = function->isWarnUnusedResult();
 					break;
 				}
 		return outcome;
@@ -1582,6 +1595,25 @@ TEST(parser, noreturn_marks_the_function_and_the_others_are_read_and_dropped)
 	CHECK(parseAttributes("void f(void) __attribute__((__noreturn__));").noReturnFunction);
 	CHECK(!parseAttributes("void f(void) __attribute__((cold));").noReturnFunction);
 	CHECK(!parseAttributes("void f(void);").noReturnFunction);
+}
+
+TEST(parser, the_function_attributes_this_compiler_acts_on_are_recorded_not_dropped)
+{
+	AttributeOutcome outcome = parseAttributes(
+		"void f(void) __attribute__((noinline, always_inline, pure, deprecated, warn_unused_result));");
+	CHECK(outcome.noInlineFunction);
+	CHECK(outcome.alwaysInlineFunction);
+	CHECK(outcome.pureFunction);
+	CHECK(outcome.deprecatedFunction);
+	CHECK(outcome.warnUnusedResultFunction);
+	CHECK(!outcome.constFunction);   // `pure` was named, not `const`
+
+	// `__attribute__((const))` is the purity attribute, not the type qualifier.
+	CHECK(parseAttributes("int f(void) __attribute__((const));").constFunction);
+	CHECK(parseAttributes("int f(void) __attribute__((__const__));").constFunction);
+
+	// Recognized function attributes do not also get the "ignored" warning.
+	CHECK_EQ(parseAttributes("int f(void) __attribute__((noinline, always_inline, pure, const, deprecated, warn_unused_result));").warnings, usize{ 0 });
 }
 
 TEST(parser, an_attribute_this_compiler_does_nothing_with_is_said_to_be_ignored_unless_it_is_a_common_harmless_one)

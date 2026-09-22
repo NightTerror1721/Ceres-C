@@ -315,6 +315,15 @@ namespace ceresc::ast
 		bool _isInline = false;
 		bool _isVariadic = false;
 		bool _isInterrupt = false;
+		// The `__attribute__`s that actually do something here. They are function-only, so they
+		// live on FunctionDecl rather than on Decl (where `noreturn` sits, because a variable may
+		// carry it too - and be told it is ignored). See docs/14, F11.
+		bool _noInline = false;         // `__attribute__((noinline))`: never a candidate for inlining
+		bool _alwaysInline = false;     // `__attribute__((always_inline))`: inline whatever its size
+		bool _pure = false;             // `__attribute__((pure))`: no side effects (may read memory)
+		bool _isConstAttr = false;      // `__attribute__((const))`: no side effects and reads nothing
+		bool _deprecated = false;       // `__attribute__((deprecated))`: warn wherever it is called
+		bool _warnUnusedResult = false; // `__attribute__((warn_unused_result))`: warn on a discarded result
 
 	public:
 		FunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType, std::span<const Param> params,
@@ -352,6 +361,23 @@ namespace ceresc::ast
 		// that a handler and the number it answers can live in different files.
 		// See docs/10-Interrupts.md.
 		bool isInterruptHandler() const noexcept { return _isInterrupt; }
+
+		// The `__attribute__`s this compiler acts on. `const` is spelled with an -Attr suffix
+		// because `const` is already the type qualifier's name; the attribute is the function
+		// purity one, which nothing else here uses.
+		bool isNoInline() const noexcept { return _noInline; }
+		bool isAlwaysInline() const noexcept { return _alwaysInline; }
+		bool isPure() const noexcept { return _pure || _isConstAttr; }
+		bool isConstAttr() const noexcept { return _isConstAttr; }
+		bool isDeprecated() const noexcept { return _deprecated; }
+		bool isWarnUnusedResult() const noexcept { return _warnUnusedResult; }
+
+		void setNoInline(bool value) noexcept { _noInline = value; }
+		void setAlwaysInline(bool value) noexcept { _alwaysInline = value; }
+		void setPure(bool value) noexcept { _pure = value; }
+		void setConstAttr(bool value) noexcept { _isConstAttr = value; }
+		void setDeprecated(bool value) noexcept { _deprecated = value; }
+		void setWarnUnusedResult(bool value) noexcept { _warnUnusedResult = value; }
 
 		// True when the function has external linkage - i.e. `global` in the generated CASM, and
 		// therefore visible to another object at link time. `static` is the only thing that takes

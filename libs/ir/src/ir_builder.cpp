@@ -2043,6 +2043,11 @@ namespace ceresc::ir
 
 	void IrBuilder::visit(ast::FunctionDecl& node)
 	{
+		// Purity is recorded for a prototype too: the module lowers no body for one, but a call to
+		// it is still a call to a pure function, and dead-code elimination reads the names from the
+		// module rather than from the function list for exactly that reason.
+		if (node.isPure())
+			_module.addPureFunction(node.name());
 		if (!node.isDefinition())
 			return; // a prototype has nothing to lower - see the header comment
 
@@ -2055,6 +2060,9 @@ namespace ceresc::ir
 		// codegen must give one a frame pointer to read its argument tail through.
 		function.setVariadic(node.isVariadic());
 		function.setInterruptHandler(node.isInterruptHandler());
+		// And the `__attribute__`s that steer the optimizer: noinline/always_inline for the inliner,
+		// pure/const for dead-code elimination (docs/14, F11).
+		function.setFunctionAttributes(node.isNoInline(), node.isAlwaysInline(), node.isPure());
 		_currentFunction = &function;
 
 		// A struct returned through memory takes a hidden first parameter holding its destination

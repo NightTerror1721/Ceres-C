@@ -4,6 +4,7 @@
 #include <bit>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace ceresc::ir
@@ -55,6 +56,17 @@ namespace ceresc::ir
 				default:
 					return false;
 			}
+		}
+
+		// A call to a function declared `pure` or `const` has no side effects, so one whose result
+		// nothing reads may be dropped - which is what those attributes buy over an ordinary call.
+		// `pure` may still read memory, but reading is not an effect that has to happen.
+		bool isPureCall(const IrInstr& instr, const std::unordered_set<std::string_view>& pureFunctions)
+		{
+			if (instr.opcode() != IrOpcode::Call)
+				return false;
+			const IrCallPayload& payload = instr.as<IrCallPayload>();
+			return payload.hasResult && !payload.callee.empty() && pureFunctions.contains(payload.callee);
 		}
 
 		// ---- constant tracking ----------------------------------------------------------------------
@@ -1385,7 +1397,8 @@ namespace ceresc::ir
 
 		// ---- pass: dead code elimination -------------------------------------------------------------
 
-		bool eliminateDeadCode(IrFunction& function, const OptimizationOptions& options)
+		bool eliminateDeadCode(IrFunction& function, const OptimizationOptions& options,
+			const std::unordered_set<std::string_view>& pureFunctions)
 		{
 			if (!options.deadCodeElimination)
 				return false;
@@ -1406,7 +1419,7 @@ namespace ceresc::ir
 					for (IrInstr* instr : block->instrs())
 					{
 						IrValue result = resultOf(*instr);
-						bool dead = isPure(*instr) && result.isValid() && useCount[result.id] == 0;
+						bool dead = (isPure(*instr) || isPureCall(*instr, pureFunctions)) && result.isValid() && useCount[result.id] == 0;
 						if (dead)
 							changed = true;
 						else
@@ -1433,6 +1446,11 @@ namespace ceresc::ir
 		{
 			if (function.name() == "main")
 				return false;
+			// `__attribute__((noinline))` is an instruction, not a hint: the function is never a
+			// candidate however small it is. `always_inline` is the other side of it, and is
+			// handled by raising the size limit below.
+			if (function.isNoInline())
+				return false;
 			// Nothing calls an interrupt handler, so there is no call site to splice it into - and its
 			// prologue and epilogue are the point of it (save every register, `iret`), which a spliced
 			// body would leave behind.
@@ -1451,7 +1469,9 @@ namespace ceresc::ir
 			std::span<IrInstr* const> instrs = function.blocks().front()->instrs();
 			// `inline` raises the size limit rather than removing it: the request is a hint about what
 			// is worth copying, not a licence to copy a four-hundred-instruction body into every call.
-			usize limit = function.isInlineHint() ? kMaxInlineInstrsWhenRequested : kMaxInlineInstrs;
+			usize limit = function.isAlwaysInline() ? ~usize(0)
+				: function.isInlineHint() ? kMaxInlineInstrsWhenRequested
+				: kMaxInlineInstrs;
 			if (instrs.empty() || instrs.size() > limit)
 				return false;
 			if (instrs.back()->opcode() != IrOpcode::Return)
@@ -1727,6 +1747,13 @@ namespace ceresc::ir
 	{
 		inlineCalls(module, arena, options);
 
+		// The functions declared `pure` or `const`. Dead-code elimination needs the set by name:
+		// it runs per function and cannot look a callee up in the module.
+		std::unordered_set<std::string_view> pureFunctions(module.pureFunctions().begin(), module.pureFunctions().end());
+		for (const auto& function : module.functions())
+			if (function->isPure())
+				pureFunctions.insert(function->name());
+
 		for (const auto& function : module.functions())
 		{
 			for (u32 round = 0; round < kMaxRounds; ++round)
@@ -1744,7 +1771,7 @@ namespace ceresc::ir
 				changed |= eliminateDeadStores(*function, options);
 				changed |= threadJumps(*function, arena, options);
 				changed |= removeUnreachableBlocks(*function, options);
-				changed |= eliminateDeadCode(*function, options);
+				changed |= eliminateDeadCode(*function, options, pureFunctions);
 				if (!changed)
 					break;
 			}

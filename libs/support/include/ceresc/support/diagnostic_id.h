@@ -239,6 +239,8 @@ namespace ceresc::support
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,
+		DeprecatedFunctionUse   = kDiagnosticWarningBit | 3003,
+		UnusedResult            = kDiagnosticWarningBit | 3004,
 
 		// ---- 4xxx  codegen --------------------------------------------------------------------
 		RegisterAddressEscaped         = 4001,

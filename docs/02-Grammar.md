@@ -105,9 +105,14 @@ What is done with them:
 | Attribute | Effect |
 | --- | --- |
 | `noreturn` | Recorded on the function (a prototype's holds for its definition). A `return` inside such a function is warned about (W3002). No code is different: nothing here optimizes on it yet. |
+| `noinline` | Recorded on the function. The inliner never splices it into its callers, however small it is. |
+| `always_inline` | Recorded on the function. When inlining is on at all (`-O2`, or `-finline`), its size limit gives way entirely, so the body is spliced in regardless of length. |
+| `pure`, `const` | Recorded on the function. A call whose result nothing reads may be removed, like any other computation with no observable effect. `const` also promises the function reads no memory; `pure` only that it has no side effects. |
+| `deprecated` | A call is warned about (W3003). Read wherever GCC allows it; a prototype's holds for its definition. |
+| `warn_unused_result` | Discarding a call's result is warned about (W3004). A prototype's holds for its definition. |
 | `aligned(N)` | `N` must be a power of two from 1 to 65536 (E2042). Up to 4 is what every scalar already has. Above 4 it is **ignored with a warning**: the linker puts every section on a 4-byte boundary, so a larger alignment could not be kept. |
 | `packed` | **An error** (E2043): the machine faults on a 16- or 32-bit access that is not aligned, so a member cannot sit off its natural boundary. |
-| `unused`, `used`, `fallthrough`, `deprecated`, `noinline`, `always_inline`, `cold`, `hot`, `pure`, `const`, `nonnull`, `warn_unused_result`, `format`, `malloc`, `visibility`... | Accepted and dropped, silently: they tell a compiler how to check or optimize, and headers written for GCC are full of them. |
+| `unused`, `used`, `fallthrough`, `cold`, `hot`, `nonnull`, `format`, `malloc`, `visibility`... | Accepted and dropped, silently: they tell a compiler how to check or optimize, and headers written for GCC are full of them. |
 | any other | Accepted, and a warning says it is ignored (W2002), so a foreign header compiles. |
 
 An attribute that would have an effect where none can (`noreturn` on a field or a parameter) is reported as ignored

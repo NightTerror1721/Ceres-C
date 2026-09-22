@@ -1680,6 +1680,19 @@ namespace ceresc::parser
 			decl->setAsmLabel(asmLabel);
 		if (decl && attributes.noReturn)
 			decl->setNoReturn(true);
+		if (decl && type->isFunction() && signature)
+		{
+			// Attributes are function-only, so they are recorded only where there is a function to
+			// record them on. A prototype carries them, and sema copies them onto the definition
+			// that follows - the same rule `noreturn` already follows.
+			auto* function = static_cast<ast::FunctionDecl*>(decl);
+			function->setNoInline(attributes.noInline);
+			function->setAlwaysInline(attributes.alwaysInline);
+			function->setPure(attributes.pure);
+			function->setConstAttr(attributes.constAttr);
+			function->setDeprecated(attributes.deprecated);
+			function->setWarnUnusedResult(attributes.warnUnusedResult);
+		}
 		return decl;
 	}
 
@@ -1978,9 +1991,12 @@ namespace ceresc::parser
 		// without a word, since headers written for GCC are full of them.
 		bool isHarmlessAttribute(std::string_view name)
 		{
+			// The ones this compiler acts on - noreturn, noinline, always_inline, pure, const,
+			// deprecated and warn_unused_result - are deliberately NOT here: they are handled by
+			// parseAttributes() itself and must not also get the "ignored" warning.
 			static constexpr std::string_view kKnown[] = {
-				"unused", "used", "fallthrough", "deprecated", "noinline", "always_inline", "cold", "hot", "pure", "const",
-				"nonnull", "warn_unused_result", "format", "malloc", "visibility", "returns_nonnull", "nothrow", "leaf",
+				"unused", "used", "fallthrough", "cold", "hot",
+				"nonnull", "format", "malloc", "visibility", "returns_nonnull", "nothrow", "leaf",
 				"artificial", "gnu_inline", "may_alias", "flatten", "optimize", "no_instrument_function",
 			};
 			for (std::string_view known : kKnown)
@@ -2041,12 +2057,50 @@ namespace ceresc::parser
 						return;
 				}
 
+				// The function-only attributes this compiler acts on. Where there is no function
+				// to hang one on (sink == nullptr: a struct member, a local, a type-name), the
+				// attribute is reported as ignored rather than silently lost.
+				auto functionAttribute = [&](bool AttributeList::* field)
+				{
+					if (sink)
+						sink->*field = true;
+					else
+						_diagnostics.warning(DiagId::AttributeIgnored, where,
+							"attribute '{}' ignored: it applies to a function", name);
+				};
+
 				if (name == "noreturn")
 				{
 					if (sink)
 						sink->noReturn = true;
 					else
 						_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute 'noreturn' ignored: it applies to a function");
+				}
+				else if (name == "noinline")
+				{
+					functionAttribute(&AttributeList::noInline);
+				}
+				else if (name == "always_inline")
+				{
+					functionAttribute(&AttributeList::alwaysInline);
+				}
+				else if (name == "pure")
+				{
+					functionAttribute(&AttributeList::pure);
+				}
+				else if (name == "const")
+				{
+					// The attribute, not the type qualifier: `int f(void) __attribute__((const))`
+					// says f reads nothing and writes nothing.
+					functionAttribute(&AttributeList::constAttr);
+				}
+				else if (name == "deprecated")
+				{
+					functionAttribute(&AttributeList::deprecated);
+				}
+				else if (name == "warn_unused_result")
+				{
+					functionAttribute(&AttributeList::warnUnusedResult);
 				}
 				else if (name == "aligned")
 				{

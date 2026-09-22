@@ -191,6 +191,10 @@ namespace ceresc::ast
 							 // copied the collected argument list into arena storage before constructing
 							 // this node - CallExpr never owns or allocates it itself
 		u32 _argCount;
+		// The callee was declared `__attribute__((warn_unused_result))`. Set by sema where the
+		// callee resolves to a FunctionDecl - a call through a function pointer cannot know - and
+		// read by visit(ExprStmt&) when the result is thrown away.
+		bool _warnUnusedResult = false;
 
 	public:
 		CallExpr(support::SourceLocation location, Expr* callee, std::span<Expr* const> args) noexcept :
@@ -201,6 +205,8 @@ namespace ceresc::ast
 		Expr* callee() const noexcept { return _callee; }
 		std::span<Expr* const> args() const noexcept { return { _args, _argCount }; }
 		u32 argCount() const noexcept { return _argCount; }
+		bool warnUnusedResult() const noexcept { return _warnUnusedResult; }
+		void setWarnUnusedResult(bool value) noexcept { _warnUnusedResult = value; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<CallExpr>, "CallExpr must be trivially destructible (Arena-allocated)");

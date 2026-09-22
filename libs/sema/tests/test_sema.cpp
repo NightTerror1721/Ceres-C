@@ -2000,6 +2000,57 @@ TEST(sema, a_noreturn_function_that_contains_a_return_is_warned_about)
 	CHECK(!containsMessage(checkSource("void f(void) { return; }"), "declared 'noreturn'"));
 }
 
+// ---- the other __attribute__s that do something --------------------------------------------------------------
+
+TEST(sema, calling_a_deprecated_function_is_warned_about_wherever_it_is_called)
+{
+	CheckOutcome warned = checkSource(
+		"int old(void) __attribute__((deprecated));\n"
+		"int main() { return old(); }");
+	CHECK(warned.ok);
+	CHECK(containsMessage(warned, "deprecated"));
+
+	CHECK(!containsMessage(checkSource("int fresh(void);\nint main() { return fresh(); }"), "deprecated"));
+}
+
+TEST(sema, discarding_the_result_of_a_warn_unused_result_function_is_warned_about)
+{
+	std::string_view header = "int careful(void) __attribute__((warn_unused_result));\n";
+
+	CheckOutcome discarded = checkSource(std::string(header) + "int main() { careful(); return 0; }");
+	CHECK(discarded.ok);
+	CHECK(containsMessage(discarded, "warn_unused_result"));
+
+	// The warning is about the discarded result, not about the call: using it is silent.
+	CheckOutcome used = checkSource(std::string(header) + "int main() { return careful(); }");
+	CHECK(used.ok);
+	CHECK(!containsMessage(used, "warn_unused_result"));
+}
+
+TEST(sema, a_function_attribute_on_a_prototype_holds_for_the_definition)
+{
+	// The prototype carries `warn_unused_result`, the definition does not repeat it, and the call
+	// still warns - the same rule `noreturn` already follows.
+	CheckOutcome outcome = checkSource(
+		"int careful(void) __attribute__((warn_unused_result));\n"
+		"int careful(void) { return 1; }\n"
+		"int main() { careful(); return 0; }");
+	CHECK(outcome.ok);
+	CHECK(containsMessage(outcome, "warn_unused_result"));
+}
+
+TEST(sema, noinline_and_purity_attributes_are_accepted_without_a_word)
+{
+	CheckOutcome outcome = checkSource(
+		"int pure_fn(int a) __attribute__((pure));\n"
+		"int const_fn(int b) __attribute__((const));\n"
+		"int never(int c) __attribute__((noinline));\n"
+		"int force(int d) __attribute__((always_inline)) { return d + 3; }\n"
+		"int main() { return pure_fn(1) + const_fn(2) + never(3) + force(4); }");
+	CHECK(outcome.ok);
+	CHECK(!containsMessage(outcome, "ignored"));
+}
+
 TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
 {
 	CHECK(checkSource("int f(void) { __asm__(\"nop\"); return 1; }").ok);

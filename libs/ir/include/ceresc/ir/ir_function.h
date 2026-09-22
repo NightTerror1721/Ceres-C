@@ -112,6 +112,12 @@ namespace ceresc::ir
 		//                     applies, so the request means something rather than being decoration.
 		bool _externalLinkage = true;
 		bool _inlineHint = false;
+		// Two more declaration facts the optimizer cannot see in the body: `noinline` removes a
+		// function from the candidate set, `always_inline` lifts the size limit, and `pure`/`const`
+		// (both recorded as `_pure`) let a call whose result nothing reads be dropped.
+		bool _noInline = false;
+		bool _alwaysInline = false;
+		bool _pure = false;
 		// The declaration ended in `...`. Two passes need it and neither can see the AST: the
 		// inliner (a variadic callee has arguments its parameter list does not describe, so there is
 		// nothing to bind them to) and codegen (a variadic function reads its tail out of the
@@ -147,9 +153,18 @@ namespace ceresc::ir
 		std::span<const std::unique_ptr<BasicBlock>> blocks() const noexcept { return _blocks; }
 		bool hasExternalLinkage() const noexcept { return _externalLinkage; }
 		bool isInlineHint() const noexcept { return _inlineHint; }
+		bool isNoInline() const noexcept { return _noInline; }
+		bool isAlwaysInline() const noexcept { return _alwaysInline; }
+		bool isPure() const noexcept { return _pure; }
 		bool isVariadic() const noexcept { return _isVariadic; }
 		bool isInterruptHandler() const noexcept { return _isInterruptHandler; }
 		void setLinkage(bool external, bool inlineHint) noexcept { _externalLinkage = external; _inlineHint = inlineHint; }
+		void setFunctionAttributes(bool noInline, bool alwaysInline, bool pure) noexcept
+		{
+			_noInline = noInline;
+			_alwaysInline = alwaysInline;
+			_pure = pure;
+		}
 		void setVariadic(bool variadic) noexcept { _isVariadic = variadic; }
 		void setInterruptHandler(bool isHandler) noexcept { _isInterruptHandler = isHandler; }
 		bool isAddressTakenByData() const noexcept { return _addressTakenByData; }
@@ -303,6 +318,10 @@ namespace ceresc::ir
 		std::vector<std::unique_ptr<IrFunction>> _functions;
 		std::vector<IrGlobalString> _stringLiterals;
 		std::vector<IrStaticLocal> _staticLocals;
+		// Functions declared `pure` or `const`, by name. A prototype has no IrFunction (nothing to
+		// lower), so purity cannot be read off the function list - but a call to a pure prototype
+		// is still pure, and dead-code elimination needs to know it. See ir_builder.cpp.
+		std::vector<std::string_view> _pureFunctions;
 
 	public:
 		IrModule() = default;
@@ -317,6 +336,9 @@ namespace ceresc::ir
 		std::span<const std::unique_ptr<IrFunction>> functions() const noexcept { return _functions; }
 		std::span<const IrGlobalString> stringLiterals() const noexcept { return _stringLiterals; }
 		std::span<const IrStaticLocal> staticLocals() const noexcept { return _staticLocals; }
+		std::span<const std::string_view> pureFunctions() const noexcept { return _pureFunctions; }
+
+		void addPureFunction(std::string_view name) { _pureFunctions.push_back(name); }
 
 		IrFunction& addFunction(std::string_view name, const ast::Type* returnType)
 		{

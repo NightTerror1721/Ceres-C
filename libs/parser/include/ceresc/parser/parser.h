@@ -217,9 +217,18 @@ namespace ceresc::parser
 		// "was `auto` written" and "is this automatic" are different questions, and only the first
 		// one can be an error at file scope.
 		// What `__attribute__((...))` says that this compiler does something with.
+		// The `__attribute__`s this compiler acts on, gathered as one declaration is parsed. The
+		// rest are accepted and dropped (isHarmlessAttribute()), because headers written for GCC
+		// are full of them and failing on them would fail on code that is perfectly valid C.
 		struct AttributeList
 		{
 			bool noReturn = false;
+			bool noInline = false;
+			bool alwaysInline = false;
+			bool pure = false;
+			bool constAttr = false;
+			bool deprecated = false;
+			bool warnUnusedResult = false;
 		};
 
 		struct DeclSpecifiers

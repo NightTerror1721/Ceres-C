@@ -104,6 +104,8 @@ These are the codes a `#pragma warning(...)` can name.
 | `W2002` | An `__attribute__` that is ignored: one this compiler does nothing with, or `aligned` above 4 — see [02-Grammar.md](02-Grammar.md). |
 | `W3001` | A `const` variable with no initializer, which can therefore only ever be zero. |
 | `W3002` | A function declared `noreturn` that contains a `return`. |
+| `W3003` | A call to a function declared `__attribute__((deprecated))`. |
+| `W3004` | The result of a call to a `__attribute__((warn_unused_result))` function is discarded. |
 
 ## The errors
 
