@@ -145,17 +145,14 @@ namespace ceresc::preprocessor
 		// guard and what makes a cycle reportable by name rather than as a stack overflow.
 		bool expandFile(const std::string& path, PreprocessedSource& out, std::vector<std::string>& includeStack);
 
-		// Resolves an `#include` target to a path that exists, or returns an empty string. `outDirectoryIndex`
-		// receives which `_includeDirectories` entry matched (-1 when the target was found next to the
-		// including file, or through the bare-name fallback), which is what `#include_next` needs.
-		std::string resolveInclude(std::string_view target, bool angled, const std::string& includingFile,
-			i32* outDirectoryIndex = nullptr) const;
+		// Resolves an `#include` target to a path that exists, or returns an empty string.
+		std::string resolveInclude(std::string_view target, bool angled, const std::string& includingFile) const;
 
 		// `#include_next`: like `#include`, but searches the include directories AFTER the one that
 		// contained `currentFile` (a header's way of reaching the same-named header "further along"
-		// the search path). Falls back to searching from the first directory.
-		std::string resolveIncludeNext(std::string_view target, const std::string& currentFile,
-			i32* outDirectoryIndex = nullptr) const;
+		// the search path). Falls back to searching from the first directory when the current file
+		// is not itself inside one of them.
+		std::string resolveIncludeNext(std::string_view target, const std::string& currentFile) const;
 
 		// Substitutes object-like and function-like macros, leaving literals and comments alone.
 		std::string expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment);

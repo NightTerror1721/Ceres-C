@@ -283,44 +283,31 @@ namespace ceresc::preprocessor
 		}
 		_pragmaOnce.clear(); PreprocessedSource result; std::vector<std::string> stack; result.ok = expandFile(path, result, stack); return result;
 	}
-	std::string Preprocessor::resolveInclude(std::string_view target, bool angled, const std::string& includingFile, i32* outDirectoryIndex) const
+	std::string Preprocessor::resolveInclude(std::string_view target, bool angled, const std::string& includingFile) const
 	{
-		if (outDirectoryIndex)
-			*outDirectoryIndex = -1;
 		std::error_code error;
 		// generic_string() rather than string(): the resolved path becomes the header's NAME in the
 		// SourceManager, which is what a diagnostic about it prints and what __FILE__ expands to -
 		// and a path joined natively on Windows mixes both separators in one name.
 		if (!angled) { fs::path relative = fs::path(includingFile).parent_path() / std::string(target); if (fs::is_regular_file(relative, error)) return relative.generic_string(); }
-		for (usize i = 0; i < _includeDirectories.size(); ++i)
-		{
-			fs::path candidate = fs::path(_includeDirectories[i]) / std::string(target);
-			if (fs::is_regular_file(candidate, error))
-			{
-				if (outDirectoryIndex)
-					*outDirectoryIndex = static_cast<i32>(i);
-				return candidate.generic_string();
-			}
-		}
+		for (const std::string& directory : _includeDirectories) { fs::path candidate = fs::path(directory) / std::string(target); if (fs::is_regular_file(candidate, error)) return candidate.generic_string(); }
 		if (!angled && fs::is_regular_file(fs::path(std::string(target)), error))
 			return std::string(target);
 		return {};
 	}
 
-	std::string Preprocessor::resolveIncludeNext(std::string_view target, const std::string& currentFile, i32* outDirectoryIndex) const
+	std::string Preprocessor::resolveIncludeNext(std::string_view target, const std::string& currentFile) const
 	{
-		if (outDirectoryIndex)
-			*outDirectoryIndex = -1;
 		std::error_code error;
 
 		// Which include directory (if any) holds the file being expanded - the search resumes after
-		// it. The file itself was found by resolveInclude(), which canonicalizes the same way.
-		fs::path currentCanonical = fs::weakly_canonical(currentFile, error);
+		// it. It is the current file's own DIRECTORY that matters, not the target name: a header
+		// `a.h` doing `#include_next <b.h>` must still skip the directory `a.h` came from.
+		fs::path currentDirectory = fs::weakly_canonical(currentFile, error).parent_path();
 		i32 currentIndex = -1;
 		for (usize i = 0; i < _includeDirectories.size(); ++i)
 		{
-			fs::path candidate = fs::weakly_canonical(fs::path(_includeDirectories[i]) / std::string(target), error);
-			if (candidate == currentCanonical)
+			if (fs::weakly_canonical(fs::path(_includeDirectories[i]), error) == currentDirectory)
 			{
 				currentIndex = static_cast<i32>(i);
 				break;
@@ -331,11 +318,7 @@ namespace ceresc::preprocessor
 		{
 			fs::path candidate = fs::path(_includeDirectories[i]) / std::string(target);
 			if (fs::is_regular_file(candidate, error))
-			{
-				if (outDirectoryIndex)
-					*outDirectoryIndex = static_cast<i32>(i);
 				return candidate.generic_string();
-			}
 		}
 		return {};
 	}

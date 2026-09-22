@@ -316,8 +316,9 @@ TEST(codegen, comparison_used_as_a_value_still_materializes_at_O2)
 
 TEST(codegen, comparison_used_as_a_condition_fuses_into_one_branch_at_O2)
 {
-	// The same comparison, this time consumed by a branch: one `ifge` (the INVERTED predicate, so
-	// the true arm falls through) replaces the whole materialize-then-test sequence.
+	// The same comparison, this time consumed by a branch: one `ifls` replaces the whole
+	// materialize-then-test sequence. Block layout puts the false arm (return 0) right after the
+	// test, so the branch targets the true arm and the false arm falls through.
 	CHECK_EQ(atO2("int clamp(int a, int b) { if (a < b) return 1; return 0; }"),
 		"@text\n"
 		"\n"
@@ -712,7 +713,7 @@ TEST(codegen, cmp_branch_fusion_is_what_collapses_the_materialized_comparison)
 
 	std::string fused = atO2(source);
 	CHECK(!contains(fused, ".cmp0_true"));
-	CHECK(contains(fused, "ifls ")); // the comparison folded into the one conditional branch
+	CHECK_EQ(countOf(fused, "ifls "), usize(1)); // exactly one conditional instruction
 
 	// Simplified counterpart: the comparison becomes a real 0/1 and the branch tests that value.
 	std::string separate = generateCasm(source, without(&support::OptimizationOptions::cmpBranchFusion));
@@ -720,7 +721,7 @@ TEST(codegen, cmp_branch_fusion_is_what_collapses_the_materialized_comparison)
 	CHECK(contains(separate, "ifne r3, 0, .L")); // ...tested against zero, as its own instruction
 }
 
-TEST(codegen, block_layout_puts_a_branchs_false_arm_next_to_the_test)
+TEST(codegen, block_layout_puts_a_branch_false_arm_next_to_the_test)
 {
 	std::string_view source = "int clamp(int a, int b) { if (a < b) return 1; return 0; }";
 
@@ -1423,8 +1424,15 @@ TEST(codegen, trap_emits_the_trap_instruction)
 
 TEST(codegen, stack_pointer_reads_sp)
 {
-	std::string casm = atO2("unsigned int f(void) { return __builtin_stack_pointer(); }");
-	CHECK(contains(casm, ", sp"));
+	CHECK_EQ(atO2("unsigned int f(void) { return __builtin_stack_pointer(); }"),
+		"@text\n"
+		"\n"
+		"// f - test.c:1\n"
+		"global f:\n"
+		".L0:\n"
+		"    mov r3, sp            // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
+		"    ret                   // test.c:1\n");
 }
 
 TEST(codegen, expect_lowers_to_its_operand_and_constant_p_to_a_constant)

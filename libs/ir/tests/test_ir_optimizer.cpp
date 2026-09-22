@@ -229,6 +229,30 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).blockLayout);
 }
 
+// ---- block layout --------------------------------------------------------------------------------
+
+TEST(ir_optimizer, block_layout_emits_a_branch_false_arm_before_its_true_arm)
+{
+	// `if (a < b) return 1; return 0;` - layout puts the false arm (return 0) right after the test,
+	// so its `const 0` is emitted before the true arm's `const 1`.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::blockLayout);
+	std::string text = optimizedIr("int f(int a, int b) { if (a < b) return 1; return 0; }", options, "f");
+	usize falseArm = text.find("const 0");
+	usize trueArm = text.find("const 1");
+	CHECK(falseArm != std::string::npos && trueArm != std::string::npos);
+	CHECK(falseArm < trueArm);
+}
+
+TEST(ir_optimizer, block_layout_leaves_an_if_body_where_it_was)
+{
+	// `if (a) { body }` already falls through the body and drops the merge jump; layout must not
+	// sink the body behind the merge, which would add a jump back. So it changes nothing here.
+	std::string_view source = "void use(int); int f(int a, int b) { if (a) { use(b); } return 0; }";
+	support::OptimizationOptions options = only(&support::OptimizationOptions::blockLayout);
+	std::string before = optimizedIr(source, support::OptimizationOptions::none(), "f");
+	CHECK_EQ(optimizedIr(source, options, "f"), before);
+}
+
 // ---- common subexpression elimination ------------------------------------------------------------
 
 TEST(ir_optimizer, cse_reuses_a_pure_expression_computed_twice_in_one_block)

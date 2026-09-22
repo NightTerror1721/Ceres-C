@@ -871,6 +871,11 @@ namespace ceresc::ir
 				if (!block->isTerminated())
 					return false;
 
+			// The successor a block would rather fall into. A Jump wants its target; a CondJump
+			// wants its false arm, which is the arm codegen already falls into - UNLESS the true arm
+			// is itself just `Jump falseTarget` (the common `if (cond) { body }` shape). Following
+			// the false arm then would sink the body (the common path) to the end and turn its
+			// trailing jump into an explicit one, so the true arm is followed instead.
 			auto preferred = [](BasicBlock* block) -> BasicBlock*
 			{
 				std::span<IrInstr* const> instrs = block->instrs();
@@ -878,9 +883,51 @@ namespace ceresc::ir
 				if (last.opcode() == IrOpcode::Jump)
 					return last.as<IrJumpPayload>().target;
 				if (last.opcode() == IrOpcode::CondJump)
-					return last.as<IrCondJumpPayload>().falseTarget;
+				{
+					const IrCondJumpPayload& p = last.as<IrCondJumpPayload>();
+					std::span<IrInstr* const> trueArm = p.trueTarget->instrs();
+					if (!trueArm.empty() && trueArm.back()->opcode() == IrOpcode::Jump &&
+						trueArm.back()->as<IrJumpPayload>().target == p.falseTarget)
+						return p.trueTarget;
+					return p.falseTarget;
+				}
 				return nullptr; // a Return or a TableJump has no fall-through
 			};
+
+			// How many explicit jumps an order leaves that cannot be dropped: a Jump whose target is
+			// not the next block, and a CondJump where neither arm is (codegen can branch to one arm
+			// and fall through the other - either arm for an integer compare, but only the false arm
+			// for a float one, because NaN makes the predicates non-complementary).
+			auto explicitJumps = [](std::span<BasicBlock* const> order) -> u32
+			{
+				u32 total = 0;
+				for (usize i = 0; i < order.size(); ++i)
+				{
+					BasicBlock* next = (i + 1 < order.size()) ? order[i + 1] : nullptr;
+					std::span<IrInstr* const> instrs = order[i]->instrs();
+					if (instrs.empty())
+						continue;
+					const IrInstr& last = *instrs.back();
+					if (last.opcode() == IrOpcode::Jump)
+					{
+						if (last.as<IrJumpPayload>().target != next)
+							++total;
+					}
+					else if (last.opcode() == IrOpcode::CondJump)
+					{
+						const IrCondJumpPayload& p = last.as<IrCondJumpPayload>();
+						bool fallsThrough = p.falseTarget == next || (!p.isFloat && p.trueTarget == next);
+						if (!fallsThrough)
+							++total;
+					}
+				}
+				return total;
+			};
+
+			std::vector<BasicBlock*> current;
+			current.reserve(blocks.size());
+			for (const auto& block : blocks)
+				current.push_back(block.get());
 
 			std::unordered_set<const BasicBlock*> visited;
 			std::vector<BasicBlock*> order;
@@ -888,13 +935,13 @@ namespace ceresc::ir
 
 			auto trace = [&](BasicBlock* start)
 			{
-				BasicBlock* current = start;
-				while (current && !visited.contains(current))
+				BasicBlock* currentBlock = start;
+				while (currentBlock && !visited.contains(currentBlock))
 				{
-					visited.insert(current);
-					order.push_back(current);
-					BasicBlock* next = preferred(current);
-					current = (next && !visited.contains(next)) ? next : nullptr;
+					visited.insert(currentBlock);
+					order.push_back(currentBlock);
+					BasicBlock* next = preferred(currentBlock);
+					currentBlock = (next && !visited.contains(next)) ? next : nullptr;
 				}
 			};
 
@@ -903,6 +950,11 @@ namespace ceresc::ir
 				if (!visited.contains(block.get()))
 					trace(block.get());
 			if (order.size() != blocks.size())
+				return false;
+
+			// Commit only when the new order is no worse in explicit jumps - never trade a
+			// fall-through away for a reordering that does not pay for it.
+			if (explicitJumps(order) > explicitJumps(current))
 				return false;
 
 			for (usize i = 0; i < order.size(); ++i)

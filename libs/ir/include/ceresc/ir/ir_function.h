@@ -231,6 +231,27 @@ namespace ceresc::ir
 		// (ir_optimizer.h) to put a jump's target right after it, where the back end drops the jump.
 		void reorderBlocks(std::span<BasicBlock* const> order)
 		{
+			// Validate the permutation BEFORE moving anything: a block moved into a local cannot be
+			// put back, so a bad `order` must be rejected up front rather than leaving `_blocks`
+			// full of moved-from (null) pointers that later passes would dereference.
+			if (order.size() != _blocks.size())
+				return;
+			std::unordered_map<const BasicBlock*, bool> seen;
+			seen.reserve(_blocks.size());
+			for (const auto& block : _blocks)
+				seen.emplace(block.get(), false);
+			for (BasicBlock* block : order)
+			{
+				auto found = seen.find(block);
+				if (found == seen.end() || found->second)
+					return; // a foreign block, or one named twice
+				found->second = true;
+			}
+			// Codegen emits blocks in order and unreachable-block elimination starts at index 0, so
+			// the entry block has to stay first.
+			if (order.front() != _blocks.front().get())
+				return;
+
 			std::unordered_map<const BasicBlock*, std::unique_ptr<BasicBlock>> byPointer;
 			byPointer.reserve(_blocks.size());
 			for (auto& block : _blocks)
@@ -239,13 +260,8 @@ namespace ceresc::ir
 			std::vector<std::unique_ptr<BasicBlock>> reordered;
 			reordered.reserve(order.size());
 			for (BasicBlock* block : order)
-			{
-				auto found = byPointer.find(block);
-				if (found != byPointer.end())
-					reordered.push_back(std::move(found->second));
-			}
-			if (reordered.size() == byPointer.size())
-				_blocks = std::move(reordered);
+				reordered.push_back(std::move(byPointer.at(block)));
+			_blocks = std::move(reordered);
 		}
 
 		// Drops every block whose index in blocks() has `keep[i] == false` - unreachable-block

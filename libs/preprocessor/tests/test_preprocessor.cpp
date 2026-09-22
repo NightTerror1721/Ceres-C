@@ -156,6 +156,22 @@ TEST(preprocessor, include_next_searches_after_the_directory_that_holds_the_curr
 	CHECK(contains(result.text, "int fromSecond;"));
 }
 
+TEST(preprocessor, include_next_skips_its_own_directory_even_when_the_target_is_named_differently)
+{
+	// `first/a.h` asks for `<b.h>`; the directory to skip is a.h's OWN, not one derived from the
+	// target's name - so the `b.h` beside a.h must not be chosen.
+	TempDirectory dir;
+	dir.write("first/a.h", "#include_next <b.h>\nint fromFirstA;\n");
+	dir.write("first/b.h", "int FROM_FIRST_B;\n");
+	dir.write("second/b.h", "int fromSecondB;\n");
+	std::string path = dir.write("main.c", "#include <a.h>\n");
+
+	Result result = expand(path, { (dir.path() / "first").string(), (dir.path() / "second").string() });
+	CHECK(result.ok);
+	CHECK(!contains(result.text, "FROM_FIRST_B"));
+	CHECK(contains(result.text, "fromSecondB"));
+}
+
 TEST(preprocessor, include_next_from_a_file_not_on_the_search_path_starts_at_the_front)
 {
 	TempDirectory dir;
