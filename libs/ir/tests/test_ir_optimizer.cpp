@@ -245,6 +245,37 @@ TEST(ir_optimizer, a_comparison_of_a_value_with_itself_folds)
 	CHECK(contains(text, "const 0")); // x < x
 }
 
+TEST(ir_optimizer, a_self_comparison_folds_for_every_predicate)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.loadForwarding = true;
+	options.copyPropagation = true;
+	options.algebraicSimplification = true;
+
+	const struct { const char* op; bool truth; } cases[] = {
+		{ "==", true }, { "!=", false }, { "<", false }, { "<=", true }, { ">", false }, { ">=", true },
+	};
+	for (const auto& test : cases)
+	{
+		std::string source = std::string("int f(int a) { int x = a; return x ") + test.op + " x; }";
+		std::string text = optimizedIr(source, options, "f");
+		CHECK(!contains(text, "cmp"));
+		CHECK(contains(text, test.truth ? "const 1" : "const 0"));
+	}
+}
+
+TEST(ir_optimizer, a_self_comparison_of_a_float_is_left_alone)
+{
+	// NaN makes `x == x` false, so the fold must not apply to floats - even when forwarding makes
+	// both reads name the same value.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.loadForwarding = true;
+	options.copyPropagation = true;
+	options.algebraicSimplification = true;
+	std::string text = optimizedIr("float f(float a) { float x = a; return x == x; }", options, "f");
+	CHECK(contains(text, "cmp"));
+}
+
 TEST(ir_optimizer, an_if_on_a_self_comparison_takes_its_branch)
 {
 	std::string text = optimizedIr("int f(int a) { int x = a; if (x == x) { return 1; } return 0; }",

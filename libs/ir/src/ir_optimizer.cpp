@@ -483,13 +483,10 @@ namespace ceresc::ir
 								replacement = arena.create<IrInstr>(instr->location(), IrJumpPayload{ p.trueTarget });
 								break;
 							}
-							// `x OP x` is decided by the predicate alone (see selfComparisonTruth).
-							if (!p.isFloat && p.lhs.isValid() && p.lhs == p.rhs)
-							{
-								replacement = arena.create<IrInstr>(instr->location(), IrJumpPayload{
-									selfComparisonTruth(p.predicate) ? p.trueTarget : p.falseTarget });
-								break;
-							}
+							// No self-comparison CondJump branch is needed: a relational condition is
+							// lowered as `Cmp` + `CondJump Ne(cmpResult, 0)` (ir_builder.cpp), so the
+							// Cmp above folds `x OP x` to a constant and the constant path below then
+							// resolves the branch. A CondJump's operands are never the same value.
 							const ConstValue* lhs = findConstant(constants, p.lhs);
 							const ConstValue* rhs = findConstant(constants, p.rhs);
 							if (!lhs || !rhs)
