@@ -233,6 +233,22 @@ namespace ceresc::ir
 					_output += "ret\n";
 				break;
 			}
+			case IrOpcode::TableJump:
+			{
+				// `tbl.jmp %4 - 1, [L1, L2, L3], default L4` - the low value, the entries in order
+				// (entry i is `low + i`), and where an out-of-range value goes.
+				const auto& payload = instr.as<IrTableJumpPayload>();
+				std::string entries;
+				for (u32 i = 0; i < payload.entryCount; ++i)
+				{
+					if (i)
+						entries += ", ";
+					entries += blockName(*payload.targets[i]);
+				}
+				_output += std::format("tbl.jmp {} - {}, [{}], default {}\n", valueName(payload.discriminant),
+					payload.low, entries, blockName(*payload.defaultTarget));
+				break;
+			}
 		}
 	}
 }

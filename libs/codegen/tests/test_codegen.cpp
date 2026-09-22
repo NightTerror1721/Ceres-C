@@ -72,7 +72,7 @@ namespace
 	}
 
 	// The mirror of only(): everything on EXCEPT one flag, which is how the "simplified" counterpart
-	// of a single optimization is observed. -O0 would turn off all eighteen at once and tell you
+	// of a single optimization is observed. -O0 would turn off all nineteen at once and tell you
 	// nothing about which one produced a given difference.
 	support::OptimizationOptions without(bool support::OptimizationOptions::* flag)
 	{
@@ -677,7 +677,7 @@ TEST(codegen, a_loop_at_O2)
 // The goldens above pin the two endpoints. These pin each individual switch, so that a regression
 // in one optimization names itself instead of showing up as a diff in a 40-line golden. Each test
 // compares -O2 against -O2-minus-one-flag (without()), or -O0 against -O0-plus-one-flag (only()) -
-// never the two levels, which would change eighteen things at once.
+// never the two levels, which would change nineteen things at once.
 
 TEST(codegen, frameless_leaf_is_what_removes_enter_and_leave)
 {

@@ -448,6 +448,87 @@ TEST(e2e, attributes_are_read_wherever_they_stand_and_change_nothing_they_should
 		"", 37);
 }
 
+TEST(e2e, a_dense_switch_dispatches_through_a_jump_table_at_every_level)
+{
+	// Cases -2..3 are dense enough for the jump table (libs/ir/src/ir_builder.cpp's heuristic), so
+	// -O1/-O2 lower the switch to a TableJump and -O0 keeps the comparison chain. The out-of-range
+	// values on both sides (including a negative index, which wraps to a huge unsigned) must land in
+	// `default`. classify(-4..5) = 9+9+1+2+3+4+5+6+9+9 = 57.
+	runsTheSameAtEveryLevel("switch_jump_table",
+		"static int classify(int x)\n"
+		"{\n"
+		"    switch (x) {\n"
+		"        case -2: return 1;\n"
+		"        case -1: return 2;\n"
+		"        case 0:  return 3;\n"
+		"        case 1:  return 4;\n"
+		"        case 2:  return 5;\n"
+		"        case 3:  return 6;\n"
+		"        default: return 9;\n"
+		"    }\n"
+		"}\n"
+		"int main(void)\n"
+		"{\n"
+		"    int total = 0;\n"
+		"    for (int i = -4; i <= 5; i++) total = total + classify(i);\n"
+		"    return total;\n"
+		"}\n",
+		"", 57);
+}
+
+TEST(e2e, a_dense_switch_with_holes_sends_the_gaps_to_default)
+{
+	// 0,2,4,6,8 - a range of 9 with 5 cases is still dense enough for a table, and the four holes
+	// must go to `default` rather than into a neighboring case. g(0..9) = 10+7+20+7+30+7+40+7+50+7 = 185.
+	runsTheSameAtEveryLevel("switch_jump_table_holes",
+		"static int g(int x)\n"
+		"{\n"
+		"    switch (x) {\n"
+		"        case 0: return 10;\n"
+		"        case 2: return 20;\n"
+		"        case 4: return 30;\n"
+		"        case 6: return 40;\n"
+		"        case 8: return 50;\n"
+		"        default: return 7;\n"
+		"    }\n"
+		"}\n"
+		"int main(void)\n"
+		"{\n"
+		"    int total = 0;\n"
+		"    for (int i = 0; i <= 9; i++) total = total + g(i);\n"
+		"    return total;\n"
+		"}\n",
+		"", 185);
+}
+
+TEST(e2e, a_sparse_switch_dispatches_through_a_balanced_tree_at_every_level)
+{
+	// Eight cases spread over 0..7000: too wide for a table, so -O1/-O2 lower it to a balanced tree
+	// of `<` tests. pick(0..700) = 1+2+3+4+5+6+7+8 = 36, and the two misses add nothing.
+	runsTheSameAtEveryLevel("switch_binary_search",
+		"static int pick(int x)\n"
+		"{\n"
+		"    switch (x) {\n"
+		"        case 0:   return 1;\n"
+		"        case 100: return 2;\n"
+		"        case 200: return 3;\n"
+		"        case 300: return 4;\n"
+		"        case 400: return 5;\n"
+		"        case 500: return 6;\n"
+		"        case 600: return 7;\n"
+		"        case 700: return 8;\n"
+		"        default:  return 0;\n"
+		"    }\n"
+		"}\n"
+		"int main(void)\n"
+		"{\n"
+		"    int total = 0;\n"
+		"    for (int i = 0; i <= 700; i += 100) total = total + pick(i);\n"
+		"    return total + pick(50) + pick(9999);\n"
+		"}\n",
+		"", 36);
+}
+
 TEST(e2e, inline_assembly_writes_to_a_device_and_runs_its_own_loop_with_local_labels)
 {
 	runsTheSameAtEveryLevel("inline_asm_device",

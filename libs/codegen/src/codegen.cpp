@@ -307,6 +307,16 @@ namespace ceresc::codegen
 
 	std::string CodeGen::slotFieldName(u32 slotIndex) { return std::format("slot{}", slotIndex); }
 
+	std::string CodeGen::blockLabel(const ir::BasicBlock& block) const
+	{
+		// A function with a jump table names its blocks at file scope, so the table (a `.rodata`
+		// symbol emitted outside the function's local-label scope) can reference them. Every other
+		// function keeps the `.L<id>` local label it always had.
+		if (_globalBlockLabels)
+			return std::format("{}{}", _blockLabelPrefix, block.id());
+		return std::format(".L{}", block.id());
+	}
+
 	std::string CodeGen::fieldTypeName(u32 sizeInBytes, bool isFloat)
 	{
 		if (isFloat)
@@ -1095,7 +1105,7 @@ namespace ceresc::codegen
 				const auto& p = instr.as<IrJumpPayload>();
 				if (_options.fallthroughBranches && p.target->id() == nextBlockId)
 					break; // the target is the very next block emitted - falling through gets there
-				_emitter.instr(std::format("jp .L{}", p.target->id()), comment);
+				_emitter.instr(std::format("jp {}", blockLabel(*p.target)), comment);
 				break;
 			}
 
@@ -1129,14 +1139,63 @@ namespace ceresc::codegen
 					// Invert the test so the single branch goes to the false target and the taken
 					// path falls through.
 					emitConditionalBranch(invertPredicate(predicate), isUnsigned, isFloat, lhs, rhs,
-						std::format(".L{}", p.falseTarget->id()), loc);
+						blockLabel(*p.falseTarget), loc);
 					break;
 				}
 
 				emitConditionalBranch(predicate, isUnsigned, isFloat, lhs, rhs,
-					std::format(".L{}", p.trueTarget->id()), loc);
+					blockLabel(*p.trueTarget), loc);
 				if (!falseIsNext)
-					_emitter.instr(std::format("jp .L{}", p.falseTarget->id()), comment);
+					_emitter.instr(std::format("jp {}", blockLabel(*p.falseTarget)), comment);
+				break;
+			}
+
+			case IrOpcode::TableJump:
+			{
+				// The dispatch: normalize the discriminant to a zero-based index, bounds-check it
+				// unsigned (a value below `low` wraps to a huge unsigned and lands in `default` too),
+				// load the target address from the `.rodata` table and jump through it. `r4`/`r5` are
+				// the two scratch registers; the table's own base and the loaded address share `r5`.
+				const auto& p = instr.as<IrTableJumpPayload>();
+				std::string index = valueIn(p.discriminant, kScratchA, false, loc);
+				std::string tableLabel = std::format("__ccjt_{}_{}", casmName(_function->name()), _nextJumpTableId++);
+
+				if (p.low != 0)
+				{
+					if (p.low > 0 && p.low <= 0xFFFF)
+						_emitter.instr(std::format("sub {}, {}, {}", intReg(kScratchA), index, p.low), comment);
+					else
+					{
+						emitLoadImmediate(intReg(kScratchB), p.low, loc);
+						_emitter.instr(std::format("sub {}, {}, {}", intReg(kScratchA), index, intReg(kScratchB)), comment);
+					}
+					index = intReg(kScratchA);
+				}
+				else if (index != intReg(kScratchA))
+				{
+					_emitter.instr(std::format("mov {}, {}", intReg(kScratchA), index), comment);
+					index = intReg(kScratchA);
+				}
+
+				if (p.entryCount <= 0xFFFF)
+					_emitter.instr(std::format("ifae {}, {}, {}", index, p.entryCount, blockLabel(*p.defaultTarget)), comment);
+				else
+				{
+					emitLoadImmediate(intReg(kScratchB), p.entryCount, loc);
+					_emitter.instr(std::format("ifae {}, {}, {}", index, intReg(kScratchB), blockLabel(*p.defaultTarget)), comment);
+				}
+
+				_emitter.instr(std::format("la {}, {}", intReg(kScratchB), tableLabel), comment);
+				_emitter.instr(std::format("shl {}, {}, 2", index, index), comment);
+				_emitter.instr(std::format("ldr {}, [{} + {}]", intReg(kScratchB), intReg(kScratchB), index), comment);
+				_emitter.instr(std::format("jp {}", intReg(kScratchB)), comment);
+
+				JumpTable table;
+				table.label = std::move(tableLabel);
+				table.entries.reserve(p.entryCount);
+				for (u32 i = 0; i < p.entryCount; ++i)
+					table.entries.push_back(blockLabel(*p.targets[i]));
+				_jumpTables.push_back(std::move(table));
 				break;
 			}
 
@@ -1454,9 +1513,31 @@ namespace ceresc::codegen
 		}
 
 		std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+
+		// A function with a jump table names its blocks at file scope, so the `.rodata` table can
+		// reference them (see blockLabel()). Decided once, before the first label is emitted.
+		_globalBlockLabels = false;
+		for (const auto& block : blocks)
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				if (instr->opcode() == IrOpcode::TableJump)
+				{
+					_globalBlockLabels = true;
+					break;
+				}
+			}
+			if (_globalBlockLabels)
+				break;
+		}
+		_blockLabelPrefix = _globalBlockLabels ? std::format("__ccbb_{}_", casmName(decl.name())) : std::string{};
+
 		for (usize b = 0; b < blocks.size(); ++b)
 		{
-			_emitter.localLabel(std::format("L{}", blocks[b]->id()));
+			if (_globalBlockLabels)
+				_emitter.label(blockLabel(*blocks[b]));
+			else
+				_emitter.localLabel(std::format("L{}", blocks[b]->id()));
 			std::span<IrInstr* const> instrs = blocks[b]->instrs();
 			u32 nextBlockId = (b + 1 < blocks.size()) ? blocks[b + 1]->id() : ~0u;
 
@@ -1483,6 +1564,8 @@ namespace ceresc::codegen
 		_skipInstr.clear();
 		_suppressedConsts.clear();
 		_frameName.clear();
+		_globalBlockLabels = false;
+		_blockLabelPrefix.clear();
 		_slotOffsets.clear();
 		_calleeSavedIntMask = 0;
 		_calleeSavedFloatMask = 0;
@@ -1933,6 +2016,24 @@ namespace ceresc::codegen
 		}
 	}
 
+	void CodeGen::emitJumpTables()
+	{
+		// A second `@rodata` block, after every function's `@text`, so the block labels each entry
+		// names are all defined by now. The assembler keeps a per-section offset, so re-entering
+		// `.rodata` continues where the first block left off rather than overlapping it.
+		for (const JumpTable& table : _jumpTables)
+		{
+			std::string entries;
+			for (usize i = 0; i < table.entries.size(); ++i)
+			{
+				if (i)
+					entries += ", ";
+				entries += table.entries[i];
+			}
+			_emitter.raw(std::format("let {}: u32[{}] = [{}]", table.label, table.entries.size(), entries));
+		}
+	}
+
 	// ---- entry point ------------------------------------------------------------------------------
 
 	void CodeGen::checkSymbolNames(const TranslationUnit& unit, const IrModule& module)
@@ -2048,6 +2149,8 @@ namespace ceresc::codegen
 		_initializerStringNames.clear();
 		_initializerStringOrder.clear();
 		_nextInitializerStringId = 0;
+		_jumpTables.clear();
+		_nextJumpTableId = 0;
 
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the
@@ -2165,6 +2268,16 @@ namespace ceresc::codegen
 				generateFunction(*decl, *function);
 			else
 				_diagnostics.error(DiagId::MissingDeclarationForFunction, {}, "internal error: no declaration found for generated function '{}'", function->name());
+		}
+
+		// Jump tables go in their own `@rodata` block after all the code: their entries name block
+		// labels, which only exist once the function they belong to has been emitted.
+		if (!_jumpTables.empty())
+		{
+			_emitter.blank();
+			_emitter.raw("@rodata");
+			emitJumpTables();
+			_emitter.blank();
 		}
 
 		return _emitter.take();

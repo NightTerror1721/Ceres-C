@@ -24,7 +24,8 @@ namespace
 	// already use, since IrFunction/BasicBlock have no std::formatter either. Asserts the whole
 	// pipeline succeeded (parse + sema) before printing, so a broken fixture fails loudly instead of
 	// silently comparing against "<not-found>".
-	std::string functionIr(std::string_view source, std::string_view functionName = "main")
+	std::string functionIr(std::string_view source, std::string_view functionName = "main",
+		support::OptimizationOptions options = support::OptimizationOptions::none())
 	{
 		support::Arena arena;
 		support::DiagnosticEngine diagnostics;
@@ -41,7 +42,7 @@ namespace
 		bool ok = sema.check(*unit);
 		CHECK(ok);
 
-		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
+		ir::IrBuilder builder(arena, diagnostics, options);
 		ir::IrModule module = builder.build(*unit);
 
 		for (const auto& function : module.functions())
@@ -484,6 +485,76 @@ TEST(ir, switch_case_without_break_falls_through_to_the_next_case_via_an_explici
 		"L5:\n"
 		"  jmp L3\n"
 		"}\n");
+}
+
+// ---- switch: jump table / binary search (options().jumpTables) ---------------------------------
+
+TEST(ir, a_dense_switch_lowers_to_a_jump_table_when_enabled)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.jumpTables = true;
+	std::string text = functionIr(
+		"int main() {\n"
+		"    int x = 2;\n"
+		"    switch (x) {\n"
+		"        case 1: return 10;\n"
+		"        case 2: return 20;\n"
+		"        case 3: return 30;\n"
+		"        case 4: return 40;\n"
+		"        case 5: return 50;\n"
+		"        default: return 0;\n"
+		"    }\n"
+		"}\n", "main", options);
+	// One multi-way terminator over the five case blocks (in value order), `default` for the rest -
+	// and none of the comparison chain's `br.eq` tests.
+	CHECK(text.find("tbl.jmp") != std::string::npos);
+	CHECK(text.find("- 1, [L1, L2, L3, L4, L5], default L6") != std::string::npos);
+	CHECK(text.find("br.eq") == std::string::npos);
+}
+
+TEST(ir, a_sparse_switch_lowers_to_a_balanced_tree_when_enabled)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.jumpTables = true;
+	std::string text = functionIr(
+		"int main() {\n"
+		"    int x = 2;\n"
+		"    switch (x) {\n"
+		"        case 0:   return 1;\n"
+		"        case 100: return 2;\n"
+		"        case 200: return 3;\n"
+		"        case 300: return 4;\n"
+		"        case 400: return 5;\n"
+		"        case 500: return 6;\n"
+		"        case 600: return 7;\n"
+		"        case 700: return 8;\n"
+		"        default:  return 0;\n"
+		"    }\n"
+		"}\n", "main", options);
+	// Too wide for a table, so the dispatch is a tree: ordering tests (`br.lt`) that split the range
+	// and equality tests (`br.eq`) at the leaves - never a table, never the linear chain.
+	CHECK(text.find("tbl.jmp") == std::string::npos);
+	CHECK(text.find("br.lt") != std::string::npos);
+	CHECK(text.find("br.eq") != std::string::npos);
+}
+
+TEST(ir, a_small_switch_keeps_the_comparison_chain_even_with_jump_tables_on)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.jumpTables = true;
+	std::string text = functionIr(
+		"int main() {\n"
+		"    int x = 2;\n"
+		"    switch (x) {\n"
+		"        case 1: return 10;\n"
+		"        case 2: return 20;\n"
+		"        default: return 0;\n"
+		"    }\n"
+		"}\n", "main", options);
+	// Below both thresholds: neither a table nor a tree, just the plain chain.
+	CHECK(text.find("tbl.jmp") == std::string::npos);
+	CHECK(text.find("br.lt") == std::string::npos);
+	CHECK(text.find("br.eq") != std::string::npos);
 }
 
 // ---- goto / label -------------------------------------------------------------------------------

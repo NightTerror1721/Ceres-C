@@ -8,7 +8,7 @@
 #include <variant>
 
 // IrInstr - the three-address-code opcode set: Const, BinOp, UnOp, Cmp, Copy, FrameAddr,
-// GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, Return.
+// GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, TableJump, Return.
 //
 // Deliberately not SSA and with no dominator tree - a BasicBlock (ir_function.h) is a flat, linear
 // list of these, terminated by a jump or a return. There is no setcc-equivalent in the CASM ISA: a
@@ -55,8 +55,8 @@ namespace ceresc::ir
 
 	enum class IrOpcode : u8
 	{
-		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, Return,
-		MachineOp
+		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, TableJump,
+		Return, MachineOp
 	};
 
 	// Binary arithmetic/bitwise ops. Shr and Sar are two distinct opcodes - not one "Shr" opcode
@@ -282,6 +282,27 @@ namespace ceresc::ir
 		BasicBlock* falseTarget = nullptr;
 	};
 
+	// A multi-way branch: the dense counterpart of a chain of CondJumps over one value. The
+	// discriminant is normalized to a zero-based index (`value - low`) and, when it is within
+	// `entryCount` entries, the target is read from a `.rodata` table of absolute block addresses;
+	// anything else goes to `defaultTarget` (the `default:` body, or the switch's exit block when
+	// there is none). IrBuilder only ever emits this for a switch whose case values are dense enough
+	// that a table beats a chain (libs/ir/src/ir_builder.cpp's own heuristic); a sparse one lowers to
+	// a balanced tree of CondJumps instead, and a small one keeps the plain chain.
+	//
+	// `targets` is an Arena-allocated array of `entryCount` BasicBlock* (see
+	// static_assert(TriviallyDestructible<IrInstr>) below - an owning std::vector is not allowed in a
+	// payload). Entry `i` is the block for `low + i`; a value with no matching case - a hole in the
+	// range - points at `defaultTarget` so the bounds check is the only test needed.
+	struct IrTableJumpPayload
+	{
+		IrValue discriminant;
+		BasicBlock* const* targets = nullptr;
+		u32 entryCount = 0;
+		i64 low = 0;
+		BasicBlock* defaultTarget = nullptr;
+	};
+
 	struct IrReturnPayload
 	{
 		bool hasValue = false;
@@ -304,15 +325,15 @@ namespace ceresc::ir
 	using IrInstrPayload = std::variant<
 		IrConstPayload, IrBinOpPayload, IrUnOpPayload, IrCmpPayload, IrCopyPayload,
 		IrFrameAddrPayload, IrGlobalAddrPayload, IrLoadPayload, IrStorePayload, IrParamPayload,
-		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrReturnPayload,
-		IrMachineOpPayload>;
+		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrTableJumpPayload,
+		IrReturnPayload, IrMachineOpPayload>;
 	// Declaration order here must match IrOpcode's own order exactly - opcode() below derives the
 	// opcode from the variant's index() instead of storing a second, redundant tag. The size check
 	// alone only pins the *count*: swapping two payload types (e.g. Load/Store), or adding an
-	// IrOpcode enumerator without a matching payload, would keep the count at 14 while silently
+	// IrOpcode enumerator without a matching payload, would keep the count at 17 while silently
 	// remapping opcode() and every switch in ir_printer.cpp/ir_function.cpp to the wrong payload -
 	// so each alternative's *position* is pinned individually too, not just the total.
-	static_assert(std::variant_size_v<IrInstrPayload> == 16, "IrInstrPayload must have exactly one alternative per IrOpcode");
+	static_assert(std::variant_size_v<IrInstrPayload> == 17, "IrInstrPayload must have exactly one alternative per IrOpcode");
 	template <IrOpcode Op, typename Payload>
 	concept OpcodeMapsToPayload = std::is_same_v<std::variant_alternative_t<static_cast<usize>(Op), IrInstrPayload>, Payload>;
 	static_assert(OpcodeMapsToPayload<IrOpcode::Const, IrConstPayload>);
@@ -329,6 +350,7 @@ namespace ceresc::ir
 	static_assert(OpcodeMapsToPayload<IrOpcode::VaStart, IrVaStartPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Jump, IrJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::CondJump, IrCondJumpPayload>);
+	static_assert(OpcodeMapsToPayload<IrOpcode::TableJump, IrTableJumpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Return, IrReturnPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::MachineOp, IrMachineOpPayload>);
 
@@ -372,7 +394,7 @@ namespace ceresc::ir
 	// nothing else, so it is answered once, here, rather than separately inside every consumer that
 	// needs it: ir_optimizer.cpp (use counting for dead-code elimination, remapping for inlining)
 	// and libs/codegen's value_placement.cpp (liveness) would otherwise each carry their own copy
-	// of the same fourteen-case switch, and a payload gaining a field would have to be remembered in
+	// of the same fifteen-case switch, and a payload gaining a field would have to be remembered in
 	// every one of them.
 
 	// The temporary `instr` defines, or an invalid IrValue for an opcode that defines none
@@ -433,6 +455,9 @@ namespace ceresc::ir
 				fn(p.lhs); fn(p.rhs);
 				break;
 			}
+			// A TableJump reads the value it dispatches on; its table entries are block addresses,
+			// not temporaries, so nothing else is an operand.
+			case IrOpcode::TableJump: fn(instr.as<IrTableJumpPayload>().discriminant); break;
 			case IrOpcode::Return:
 			{
 				const IrReturnPayload& p = instr.as<IrReturnPayload>();

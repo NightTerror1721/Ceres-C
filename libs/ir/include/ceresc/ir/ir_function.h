@@ -53,8 +53,8 @@ namespace ceresc::ir
 		u32 id() const noexcept { return _id; }
 		std::span<IrInstr* const> instrs() const noexcept { return _instrs; }
 
-		// True once this block's last instruction is a Jump/CondJump/Return - a block only ever
-		// falls into the next one through an explicit Jump, never implicitly (see the header
+		// True once this block's last instruction is a Jump/CondJump/TableJump/Return - a block only
+		// ever falls into the next one through an explicit Jump, never implicitly (see the header
 		// comment above), so IrBuilder consults this before appending a fallthrough jump of its own.
 		bool isTerminated() const noexcept;
 
@@ -247,6 +247,15 @@ namespace ceresc::ir
 					if (p.trueTarget == p.falseTarget)
 						return { p.trueTarget };
 					return { p.trueTarget, p.falseTarget };
+				}
+				case IrOpcode::TableJump:
+				{
+					// Every reachable table entry plus the out-of-range default: omitting any of them
+					// would let unreachable-block elimination drop a block the table still jumps to.
+					const IrTableJumpPayload& p = last.as<IrTableJumpPayload>();
+					std::vector<BasicBlock*> targets(p.targets, p.targets + p.entryCount);
+					targets.push_back(p.defaultTarget);
+					return targets;
 				}
 				case IrOpcode::Return: return {};
 				default: break;

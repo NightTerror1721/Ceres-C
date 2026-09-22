@@ -11,6 +11,7 @@ namespace ceresc::ir
 		{
 			case IrOpcode::Jump:
 			case IrOpcode::CondJump:
+			case IrOpcode::TableJump:
 			case IrOpcode::Return:
 				return true;
 			default:

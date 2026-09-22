@@ -108,7 +108,19 @@ Lfalse: %t = const 0
 Lend:
 ```
 
-`switch` lowers the same way: a chain of comparisons in source order, not a jump table.
+`switch` is the one place a dispatch may take one of three shapes, chosen by
+`IrBuilder::emitSwitchDispatch` (see [13-Switch-Jump-Table-Plan.md](13-Switch-Jump-Table-Plan.md)):
+
+- a **jump table** (`tbl.jmp %x - low, [L…], default Ld`) when the case values are dense enough -
+  one `TableJump` whose `.rodata` table holds the case blocks' addresses, dispatched with an
+  indexed load and an indirect jump;
+- a **balanced tree** of `<`/`==` tests when the values are too sparse for a table but numerous
+  enough to beat the chain;
+- the plain **comparison chain** otherwise - and always at `-O0` or under `-fno-jump-tables`.
+
+`TableJump` is the one terminator whose successor set is neither one block nor two: the optimizer's
+CFG walks (`successorsOf`) list every table entry plus `default`, so nothing reachable only through
+the table is collected as dead.
 
 ## Registers and frames
 

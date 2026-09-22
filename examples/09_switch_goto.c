@@ -1,8 +1,9 @@
 // 09 - switch/case/default, fallthrough, and goto with labels.
 //
-// A `switch` lowers to a chain of comparisons, not a jump table: one `cmp` + conditional branch
-// per case, in source order, with `default` as the fallthrough (docs/03-IR-to-CASM.md). That is a
-// deliberate choice - a jump table is a second mechanism to learn, and nothing here needs one yet.
+// A `switch` is dispatched one of three ways, decided by IrBuilder (docs/13-Switch-Jump-Table-Plan.md):
+// a dense case set becomes a jump table in `.rodata` (dayName, countDigits here), a sparse-but-large
+// one a balanced tree of comparisons, and a small one the plain comparison chain. At -O0, or with
+// -fno-jump-tables, every switch keeps the chain. `--emit-ir` shows which shape a given switch took.
 //
 // `case` labels wrap the one statement that follows them, exactly as in real C, so execution runs
 // into the next case unless a `break` stops it.
@@ -10,7 +11,7 @@
 // `goto` is resolved in two passes: a label may be used before the line that declares it, which is
 // why sema registers every label in a function before resolving any jump to one.
 //
-//     ceresc examples/09_switch_goto.c --emit-ir     # the comparison chain, block by block
+//     ceresc examples/09_switch_goto.c --emit-ir     # the dispatch, block by block
 //     ceresc examples/09_switch_goto.c --run
 
 void put(char c)

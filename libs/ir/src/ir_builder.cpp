@@ -1722,6 +1722,90 @@ namespace ceresc::ir
 			emitVoid(node.location(), IrJumpPayload{ _continueTargets.back() });
 	}
 
+	// ---- switch dispatch: jump table / binary search ---------------------------------------------
+	//
+	// A dense case set is worth a table: the dispatch becomes a constant handful of instructions
+	// instead of one comparison per case, at the price of 4 bytes per entry in `.rodata`. A sparse
+	// but large one still beats the chain with a balanced tree of comparisons (log2 N), which needs
+	// no table at all. A small one keeps the plain chain - see docs/13-Switch-Jump-Table-Plan.md.
+	namespace
+	{
+		constexpr usize kSwitchTableMinCases = 5;    // below this the chain is already short enough
+		constexpr usize kSwitchTableMaxEntries = 256; // 4 * 256 = 1 KiB of `.rodata` ceiling
+		constexpr double kSwitchTableMinDensity = 0.5; // how full [low, high] must be to justify holes
+		constexpr usize kSwitchTreeMinCases = 8;     // below this a tree's larger code is not worth it
+	}
+
+	bool IrBuilder::emitSwitchDispatch(support::SourceLocation loc, IrValue condValue, bool isUnsigned,
+		const std::vector<std::pair<i64, BasicBlock*>>& cases, BasicBlock* defaultBlock, BasicBlock& exitBlock)
+	{
+		if (!_options.jumpTables || cases.size() < kSwitchTableMinCases)
+			return false;
+
+		i64 low = cases.front().first;
+		i64 high = cases.front().first;
+		for (const auto& [value, block] : cases)
+		{
+			low = std::min(low, value);
+			high = std::max(high, value);
+		}
+
+		// `high - low + 1` in 64 bits. Case values are C `int`s (32-bit), so this cannot overflow;
+		// a non-positive result would mean it wrapped, which no table can cover.
+		i64 span = high - low + 1;
+		bool tableFits = span > 0 && span <= static_cast<i64>(kSwitchTableMaxEntries) &&
+			static_cast<double>(cases.size()) / static_cast<double>(span) >= kSwitchTableMinDensity;
+
+		if (tableFits)
+		{
+			BasicBlock* fallback = defaultBlock ? defaultBlock : &exitBlock;
+			auto** targets = static_cast<BasicBlock**>(_arena.allocate(static_cast<usize>(span) * sizeof(BasicBlock*)));
+			for (i64 i = 0; i < span; ++i)
+				targets[i] = fallback; // a hole in the range goes to `default`, so one bounds check suffices
+			for (const auto& [value, block] : cases)
+				targets[value - low] = block;
+			emitVoid(loc, IrTableJumpPayload{ condValue, targets, static_cast<u32>(span), low, fallback });
+			return true;
+		}
+
+		if (cases.size() < kSwitchTreeMinCases)
+			return false; // sparse AND small: the chain is the best of the three
+
+		std::vector<std::pair<i64, BasicBlock*>> sorted = cases;
+		std::sort(sorted.begin(), sorted.end(),
+			[](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+		emitSwitchTree(loc, condValue, isUnsigned, sorted, 0, sorted.size(), defaultBlock ? defaultBlock : &exitBlock);
+		return true;
+	}
+
+	void IrBuilder::emitSwitchTree(support::SourceLocation loc, IrValue condValue, bool isUnsigned,
+		const std::vector<std::pair<i64, BasicBlock*>>& cases, usize begin, usize end, BasicBlock* fallback)
+	{
+		if (begin >= end)
+		{
+			emitVoid(loc, IrJumpPayload{ fallback });
+			return;
+		}
+		if (end - begin == 1)
+		{
+			IrValue value = emitConstInt(loc, cases[begin].first);
+			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Eq, isUnsigned, false, condValue, value, cases[begin].second, fallback });
+			return;
+		}
+
+		usize mid = begin + (end - begin) / 2;
+		BasicBlock& lower = _currentFunction->createBlock();
+		BasicBlock& upper = _currentFunction->createBlock();
+		IrValue pivot = emitConstInt(loc, cases[mid].first);
+		// `cond < pivot` -> strictly-lower half; anything else (including `== pivot`) -> the upper
+		// half, which still holds `cases[mid]` and tests it for equality on the way down.
+		emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Lt, isUnsigned, false, condValue, pivot, &lower, &upper });
+		switchToBlock(lower, loc);
+		emitSwitchTree(loc, condValue, isUnsigned, cases, begin, mid, fallback);
+		switchToBlock(upper, loc);
+		emitSwitchTree(loc, condValue, isUnsigned, cases, mid, end, fallback);
+	}
+
 	void IrBuilder::visit(ast::SwitchStmt& node)
 	{
 		support::SourceLocation loc = node.location();
@@ -1733,17 +1817,23 @@ namespace ceresc::ir
 
 		BasicBlock& exitBlock = _currentFunction->createBlock();
 
-		// Dispatch chain: one Cmp+CondJump per case value, in source order, falling through to the
-		// next comparison on a mismatch - a jump table is deliberately not built here, same §0
-		// criterion of not adding a mechanism before it is actually needed.
-		for (const auto& [value, block] : cases)
+		const Type* condType = node.cond()->type();
+		bool isUnsigned = condType && !condType->isSigned();
+
+		if (!emitSwitchDispatch(loc, condValue, isUnsigned, cases, defaultBlock, exitBlock))
 		{
-			IrValue constValue = emitConstInt(loc, value);
-			BasicBlock& nextTest = _currentFunction->createBlock();
-			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Eq, false, false, condValue, constValue, block, &nextTest });
-			_currentBlock = &nextTest;
+			// Dispatch chain: one Cmp+CondJump per case value, in source order, falling through to
+			// the next comparison on a mismatch. This is the -O0 shape (options().jumpTables off)
+			// and the fallback for a switch too small or too sparse for either smarter dispatch.
+			for (const auto& [value, block] : cases)
+			{
+				IrValue constValue = emitConstInt(loc, value);
+				BasicBlock& nextTest = _currentFunction->createBlock();
+				emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Eq, false, false, condValue, constValue, block, &nextTest });
+				_currentBlock = &nextTest;
+			}
+			emitVoid(loc, IrJumpPayload{ defaultBlock ? defaultBlock : &exitBlock });
 		}
-		emitVoid(loc, IrJumpPayload{ defaultBlock ? defaultBlock : &exitBlock });
 
 		_breakTargets.push_back(&exitBlock);
 		// Deliberately not pushed onto _continueTargets: `continue` inside a switch still targets

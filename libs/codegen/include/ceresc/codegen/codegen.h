@@ -184,6 +184,16 @@ namespace ceresc::codegen
 		void reportUnrepresentableInitializer(const ast::VarDecl& decl, const ast::Expr* offender);
 		void generateFunction(const ast::FunctionDecl& decl, const ir::IrFunction& function);
 		void generateStringLiterals(const ir::IrModule& module);
+		// Emits the `.rodata` jump tables a lowered `switch` (ir::IrOpcode::TableJump) asked for, one
+		// `let __ccjt_<func>_<n>: u32[N] = [...]` per table. Emitted as a second `@rodata` block after
+		// all the `@text`, once every block label the entries name has been defined.
+		void emitJumpTables();
+		// The label naming a basic block. `.L<id>` (a CASM local label, scoped to the function's own
+		// global label) for an ordinary function; a file-scope `__ccbb_<func>_<id>` for one that has
+		// a jump table, because a `.rodata` table's initializer cannot name a local `.L` label at all
+		// (the assembler rejects a leading `.` in a constant expression) and the table is emitted
+		// outside the function's local-label scope besides.
+		std::string blockLabel(const ir::BasicBlock& block) const;
 
 		// One IR instruction at `instrs[index]`. Takes the whole block (rather than just the one
 		// instruction) because Call needs to look backward at its own Param instructions to assign
@@ -355,6 +365,19 @@ namespace ceresc::codegen
 		// materializeBoolean()/visit(TernaryExpr&), and such a value is not a constant at all).
 		std::unordered_map<u32, u32> _useCount;
 		std::unordered_map<u32, u32> _defCount;
+		// A lowered `switch` that became a jump table (ir::IrOpcode::TableJump). While generating a
+		// function that has one, every block label is file-scope (`_blockLabelPrefix` + id) so the
+		// `.rodata` table can name it - a table's initializer cannot use a `.L` local label. Each
+		// table is recorded here as its final label text and emitted after all the `@text`.
+		struct JumpTable
+		{
+			std::string label;
+			std::vector<std::string> entries;
+		};
+		bool _globalBlockLabels = false;
+		std::string _blockLabelPrefix;
+		std::vector<JumpTable> _jumpTables;
+		u32 _nextJumpTableId = 0;
 		// Per-block: instructions an earlier peephole already consumed, so generateInstr() emits
 		// nothing for them when the loop reaches them.
 		std::vector<bool> _skipInstr;

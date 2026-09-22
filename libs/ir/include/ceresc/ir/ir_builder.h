@@ -329,6 +329,17 @@ namespace ceresc::ir
 
 		void collectLabelBlocks(ast::Stmt* stmt);
 		void collectSwitchCases(ast::Stmt* stmt, std::vector<std::pair<i64, BasicBlock*>>& cases, BasicBlock*& defaultBlock);
+		// The `switch` dispatch, when options().jumpTables lets it replace the plain comparison
+		// chain: a dense case set becomes one IrTableJumpPayload (a jump table in `.rodata`), a
+		// sparse-but-large one becomes a balanced tree of CondJumps, and a small one returns false so
+		// visit(SwitchStmt&) emits the chain it always did. `isUnsigned` selects the ordering the
+		// tree's `<` tests use (the table's own bounds check is unsigned either way).
+		bool emitSwitchDispatch(support::SourceLocation loc, IrValue condValue, bool isUnsigned,
+			const std::vector<std::pair<i64, BasicBlock*>>& cases, BasicBlock* defaultBlock, BasicBlock& exitBlock);
+		// Recursive half of the binary-search dispatch: emits the tests for cases[begin, end) into
+		// the current block, splitting at the median. `cases` is sorted by value.
+		void emitSwitchTree(support::SourceLocation loc, IrValue condValue, bool isUnsigned,
+			const std::vector<std::pair<i64, BasicBlock*>>& cases, usize begin, usize end, BasicBlock* fallback);
 		// A small compile-time integer constant evaluator - deliberately duplicates
 		// Sema::evalConstantExpr's shape (sema.cpp) rather than reusing it: that method needs a live
 		// Sema instance with an in-progress Scope stack, which does not exist once check() has

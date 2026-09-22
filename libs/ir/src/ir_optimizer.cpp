@@ -636,6 +636,12 @@ namespace ceresc::ir
 					p.rhs = rename(p.rhs);
 					return arena.create<IrInstr>(loc, p);
 				}
+				case IrOpcode::TableJump:
+				{
+					IrTableJumpPayload p = instr.as<IrTableJumpPayload>();
+					p.discriminant = rename(p.discriminant);
+					return arena.create<IrInstr>(loc, p);
+				}
 				case IrOpcode::Return:
 				{
 					IrReturnPayload p = instr.as<IrReturnPayload>();
@@ -1129,6 +1135,32 @@ namespace ceresc::ir
 						IrCondJumpPayload rewritten = p;
 						rewritten.trueTarget = trueTarget;
 						rewritten.falseTarget = falseTarget;
+						replacement = arena.create<IrInstr>(last->location(), rewritten);
+					}
+				}
+				else if (last->opcode() == IrOpcode::TableJump)
+				{
+					// The table's entries deserve the same treatment a branch target gets: a `case`
+					// label whose body is empty is a block that only jumps onward, and threading it
+					// out is what lets several entries collapse onto one real body.
+					const auto& p = last->as<IrTableJumpPayload>();
+					std::vector<BasicBlock*> resolved(p.entryCount);
+					bool anyChanged = false;
+					for (u32 i = 0; i < p.entryCount; ++i)
+					{
+						resolved[i] = resolveJumpTarget(p.targets[i], blockCount);
+						anyChanged = anyChanged || resolved[i] != p.targets[i];
+					}
+					BasicBlock* resolvedDefault = resolveJumpTarget(p.defaultTarget, blockCount);
+					anyChanged = anyChanged || resolvedDefault != p.defaultTarget;
+					if (anyChanged)
+					{
+						auto** targets = static_cast<BasicBlock**>(arena.allocate(p.entryCount * sizeof(BasicBlock*)));
+						for (u32 i = 0; i < p.entryCount; ++i)
+							targets[i] = resolved[i];
+						IrTableJumpPayload rewritten = p;
+						rewritten.targets = targets;
+						rewritten.defaultTarget = resolvedDefault;
 						replacement = arena.create<IrInstr>(last->location(), rewritten);
 					}
 				}
