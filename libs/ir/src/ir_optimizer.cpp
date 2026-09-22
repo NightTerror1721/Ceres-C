@@ -848,6 +848,74 @@ namespace ceresc::ir
 			return changedAtAll;
 		}
 
+		// ---- pass: block layout ------------------------------------------------------------------------
+		//
+		// The back end emits blocks in the order they appear and drops a `jp` whose target is the
+		// next block emitted (codegen's fallthroughBranches). Nothing reordered them, so an if/else
+		// or a loop left jumps that could have been fall-throughs. This walks a trace: from a block,
+		// follow the successor it would rather fall into (a Jump's target, a CondJump's false arm,
+		// which is the arm codegen already falls into) while that successor is unvisited, then start
+		// a new trace at the next unvisited block.
+		//
+		// Only reorders - block ids and every BasicBlock* are untouched. Refuses unless every block
+		// is terminated, so no block's implicit fall-through successor changes.
+		bool layoutBlocks(IrFunction& function, const OptimizationOptions& options)
+		{
+			if (!options.blockLayout)
+				return false;
+
+			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+			if (blocks.size() <= 1)
+				return false;
+			for (const auto& block : blocks)
+				if (!block->isTerminated())
+					return false;
+
+			auto preferred = [](BasicBlock* block) -> BasicBlock*
+			{
+				std::span<IrInstr* const> instrs = block->instrs();
+				const IrInstr& last = *instrs.back();
+				if (last.opcode() == IrOpcode::Jump)
+					return last.as<IrJumpPayload>().target;
+				if (last.opcode() == IrOpcode::CondJump)
+					return last.as<IrCondJumpPayload>().falseTarget;
+				return nullptr; // a Return or a TableJump has no fall-through
+			};
+
+			std::unordered_set<const BasicBlock*> visited;
+			std::vector<BasicBlock*> order;
+			order.reserve(blocks.size());
+
+			auto trace = [&](BasicBlock* start)
+			{
+				BasicBlock* current = start;
+				while (current && !visited.contains(current))
+				{
+					visited.insert(current);
+					order.push_back(current);
+					BasicBlock* next = preferred(current);
+					current = (next && !visited.contains(next)) ? next : nullptr;
+				}
+			};
+
+			trace(blocks.front().get()); // the entry block first
+			for (const auto& block : blocks)
+				if (!visited.contains(block.get()))
+					trace(block.get());
+			if (order.size() != blocks.size())
+				return false;
+
+			for (usize i = 0; i < order.size(); ++i)
+			{
+				if (order[i] != blocks[i].get())
+				{
+					function.reorderBlocks(order);
+					return true;
+				}
+			}
+			return false;
+		}
+
 		// ---- local escape analysis (shared by load forwarding and dead-store elimination) -----------
 
 		// Which locals never have their address escape into anything but a Load/Store through it.
@@ -2070,6 +2138,7 @@ namespace ceresc::ir
 				changed |= eliminateDeadStores(*function, options);
 				changed |= threadJumps(*function, arena, options);
 				changed |= removeUnreachableBlocks(*function, options);
+				changed |= layoutBlocks(*function, options);
 				changed |= eliminateDeadCode(*function, options, pureFunctions);
 				if (!changed)
 					break;

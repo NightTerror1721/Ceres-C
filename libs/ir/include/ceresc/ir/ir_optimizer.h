@@ -26,6 +26,7 @@
 //   branch simplification a CondJump whose two operands are known constants becomes a plain Jump
 //   jump threading        a branch whose target only jumps somewhere else goes straight there
 //   unreachable blocks    a block no path from the entry reaches is dropped
+//   block layout          blocks are reordered so a jump's target is emitted right after it
 //   dead code             a pure instruction whose result nothing reads is dropped
 //
 // optimize() runs the exact sequence. Everything after inlining runs to its kMaxRounds fixpoint;

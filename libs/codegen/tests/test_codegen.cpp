@@ -324,13 +324,13 @@ TEST(codegen, comparison_used_as_a_condition_fuses_into_one_branch_at_O2)
 		"// clamp - test.c:1\n"
 		"global clamp:\n"
 		".L0:\n"
-		"    ifge r0, r1, .L2      // test.c:1\n"
-		".L1:\n"
-		"    li r3, 1              // test.c:1\n"
-		"    mov r0, r3            // test.c:1\n"
-		"    ret                   // test.c:1\n"
+		"    ifls r0, r1, .L1      // test.c:1\n"
 		".L2:\n"
 		"    li r3, 0              // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
+		"    ret                   // test.c:1\n"
+		".L1:\n"
+		"    li r3, 1              // test.c:1\n"
 		"    mov r0, r3            // test.c:1\n"
 		"    ret                   // test.c:1\n");
 }
@@ -552,18 +552,18 @@ TEST(codegen, recursion_at_O2)
 		"    pushm 0x0100          // test.c:1\n"
 		"    mov r8, r0            // test.c:1\n"
 		".L0:\n"
-		"    ifgr r8, 1, .L2       // test.c:1\n"
-		".L1:\n"
-		"    li r12, 1             // test.c:1\n"
-		"    mov r0, r12           // test.c:1\n"
-		"    popm 0x0100           // test.c:1\n"
-		"    ret                   // test.c:1\n"
+		"    ifle r8, 1, .L1       // test.c:1\n"
 		".L2:\n"
 		"    sub r7, r8, 1         // test.c:1\n"
 		"    mov r0, r7            // test.c:1\n"
 		"    call factorial        // test.c:1\n"
 		"    mov r7, r0            // test.c:1\n"
 		"    imul r12, r8, r7      // test.c:1\n"
+		"    mov r0, r12           // test.c:1\n"
+		"    popm 0x0100           // test.c:1\n"
+		"    ret                   // test.c:1\n"
+		".L1:\n"
+		"    li r12, 1             // test.c:1\n"
 		"    mov r0, r12           // test.c:1\n"
 		"    popm 0x0100           // test.c:1\n"
 		"    ret                   // test.c:1\n");
@@ -659,17 +659,17 @@ TEST(codegen, a_loop_at_O2)
 		"    li r3, 0              // test.c:1\n"
 		"    mov r7, r3            // test.c:1\n"
 		".L1:\n"
-		"    ifge r7, r0, .L4      // test.c:1\n"
+		"    ifls r7, r0, .L2      // test.c:1\n"
+		".L4:\n"
+		"    mov r0, r6            // test.c:1\n"
+		"    ret                   // test.c:1\n"
 		".L2:\n"
 		"    add r3, r6, r7        // test.c:1\n"
 		"    mov r6, r3            // test.c:1\n"
 		".L3:\n"
 		"    add r2, r7, 1         // test.c:1\n"
 		"    mov r7, r2            // test.c:1\n"
-		"    jp .L1                // test.c:1\n"
-		".L4:\n"
-		"    mov r0, r6            // test.c:1\n"
-		"    ret                   // test.c:1\n");
+		"    jp .L1                // test.c:1\n");
 }
 
 // ---- one optimization at a time ----------------------------------------------------------------
@@ -712,21 +712,36 @@ TEST(codegen, cmp_branch_fusion_is_what_collapses_the_materialized_comparison)
 
 	std::string fused = atO2(source);
 	CHECK(!contains(fused, ".cmp0_true"));
-	CHECK_EQ(countOf(fused, "ifge "), usize(1)); // exactly one conditional instruction
+	CHECK(contains(fused, "ifls ")); // the comparison folded into the one conditional branch
 
 	// Simplified counterpart: the comparison becomes a real 0/1 and the branch tests that value.
 	std::string separate = generateCasm(source, without(&support::OptimizationOptions::cmpBranchFusion));
 	CHECK(contains(separate, ".cmp0_true"));
-	CHECK(contains(separate, "ifeq r3, 0, .L2")); // ...tested against zero, as its own instruction
+	CHECK(contains(separate, "ifne r3, 0, .L")); // ...tested against zero, as its own instruction
 }
 
-TEST(codegen, a_float_branch_keeps_its_explicit_false_jump)
+TEST(codegen, block_layout_puts_a_branchs_false_arm_next_to_the_test)
 {
-	// IEEE comparisons with NaN are not complements: both a < b and a >= b are false. The true arm
-	// is next here, so an integer-style inverted branch would incorrectly fall through into it.
+	std::string_view source = "int clamp(int a, int b) { if (a < b) return 1; return 0; }";
+
+	// With layout on, the false arm (return 0) is emitted right after the test, so the branch goes
+	// to the true arm (`ifls ... .L1`) and the false arm falls through.
+	std::string withLayout = atO2(source);
+	CHECK(contains(withLayout, "    ifls r0, r1, .L1"));
+
+	// With layout off, the older order keeps the true arm after the test and branches to the false.
+	std::string withoutLayout = generateCasm(source, without(&support::OptimizationOptions::blockLayout));
+	CHECK(contains(withoutLayout, "    ifge r0, r1, .L2"));
+}
+
+TEST(codegen, a_float_branch_branches_to_the_true_arm_rather_than_inverting)
+{
+	// IEEE comparisons with NaN are not complements: both a < b and a >= b are false, so the
+	// compiler must never invert `<` into `>=`. Block layout puts the false arm next, so the branch
+	// goes to the true arm with the float `<` predicate (`ifbl`) and the false arm falls through.
 	std::string text = atO2("int f(float a, float b) { if (a < b) return 1; return 0; }");
 	CHECK(contains(text, "ifbl"));
-	CHECK(contains(text, "    jp .L"));
+	CHECK(!contains(text, "ifae")); // a `<` branch is never turned into an inverted `>=`
 }
 
 TEST(codegen, immediate_operands_keep_a_constant_out_of_a_register)
@@ -1769,6 +1784,6 @@ TEST(codegen, a_dense_switch_becomes_a_jump_table_and_the_flag_turns_it_off)
 	std::string withoutTable = generateCasm(source, without(&support::OptimizationOptions::jumpTables));
 	CHECK(!contains(withoutTable, "__ccjt"));
 	CHECK(!contains(withoutTable, "__ccbb"));
-	CHECK(contains(withoutTable, "ifne r0, 1, .L"));         // the chain is back
-	CHECK(contains(withoutTable, "ifeq r0, 2, .L2"));
+	CHECK(contains(withoutTable, "ifeq r0, 1, .L"));         // the chain is back
+	CHECK(contains(withoutTable, "ifeq r0, 2, .L"));
 }

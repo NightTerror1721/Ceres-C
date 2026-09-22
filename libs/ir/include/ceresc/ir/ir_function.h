@@ -7,6 +7,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 // BasicBlock and IrFunction - a function lowers to a list of basic blocks, each a linear sequence
@@ -222,6 +223,29 @@ namespace ceresc::ir
 				slot.isFloat = isFloat;
 			else
 				slot.isFloat = false;
+		}
+
+		// Reorders the blocks into `order`, which must name every block exactly once. Block ids are
+		// deliberately not changed - only the emission order is - so every BasicBlock* in a
+		// terminator, and every `.L<id>` label, keeps meaning what it did. Used by block layout
+		// (ir_optimizer.h) to put a jump's target right after it, where the back end drops the jump.
+		void reorderBlocks(std::span<BasicBlock* const> order)
+		{
+			std::unordered_map<const BasicBlock*, std::unique_ptr<BasicBlock>> byPointer;
+			byPointer.reserve(_blocks.size());
+			for (auto& block : _blocks)
+				byPointer.emplace(block.get(), std::move(block));
+
+			std::vector<std::unique_ptr<BasicBlock>> reordered;
+			reordered.reserve(order.size());
+			for (BasicBlock* block : order)
+			{
+				auto found = byPointer.find(block);
+				if (found != byPointer.end())
+					reordered.push_back(std::move(found->second));
+			}
+			if (reordered.size() == byPointer.size())
+				_blocks = std::move(reordered);
 		}
 
 		// Drops every block whose index in blocks() has `keep[i] == false` - unreachable-block

@@ -59,6 +59,7 @@ namespace ceresc::support
 		bool jumpTables = true;					// a dense switch becomes a jump table, a sparse one a binary search
 		bool strengthReduction = true;			// *2^k -> shl, /2^k -> shr/sar, %2^k -> and/bias
 		bool commonSubexpressionElimination = true; // reuse a pure expression already computed in the same block
+		bool blockLayout = true;				// order blocks so a jump to the next one is a fall-through
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
 		bool framelessLeaf = true;				// no enter/leave at all when nothing needs the frame
@@ -103,6 +104,7 @@ namespace ceresc::support
 			{ "jump-tables",        &OptimizationOptions::jumpTables,               "lower a dense switch to a jump table, a sparse one to a binary search" },
 			{ "strength-reduction", &OptimizationOptions::strengthReduction,        "turn *2^k, /2^k and %2^k into shifts and masks" },
 			{ "cse",                &OptimizationOptions::commonSubexpressionElimination, "reuse a pure expression already computed in the same basic block" },
+			{ "block-layout",       &OptimizationOptions::blockLayout,              "order blocks so a jump to the next one becomes a fall-through" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },

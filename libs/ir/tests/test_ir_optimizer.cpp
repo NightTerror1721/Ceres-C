@@ -223,6 +223,10 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	// -Og drops the transforms that obscure the code, and nothing else.
 	CHECK(o1.localSlotReuse && !og.localSlotReuse);
 	CHECK(!og.inlining && og.constantFolding && og.jumpTables);
+
+	// Block layout is an ordinary O1 optimization, so it is off at O0 by construction.
+	CHECK(o1.blockLayout);
+	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).blockLayout);
 }
 
 // ---- common subexpression elimination ------------------------------------------------------------
