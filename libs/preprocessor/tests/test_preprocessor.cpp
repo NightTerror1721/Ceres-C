@@ -142,6 +142,31 @@ TEST(preprocessor, __has_include_reports_whether_a_target_can_be_included)
 	CHECK(!contains(result.text, "int angledAbsent;"));
 }
 
+TEST(preprocessor, include_next_searches_after_the_directory_that_holds_the_current_file)
+{
+	// Two include roots each hold a `dup.h`; the first one pulls in the second by name.
+	TempDirectory dir;
+	dir.write("first/dup.h", "#include_next <dup.h>\nint fromFirst;\n");
+	dir.write("second/dup.h", "int fromSecond;\n");
+	std::string path = dir.write("main.c", "#include <dup.h>\nint main(void) { return 0; }\n");
+
+	Result result = expand(path, { (dir.path() / "first").string(), (dir.path() / "second").string() });
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int fromFirst;"));
+	CHECK(contains(result.text, "int fromSecond;"));
+}
+
+TEST(preprocessor, include_next_from_a_file_not_on_the_search_path_starts_at_the_front)
+{
+	TempDirectory dir;
+	dir.write("root/a.h", "int fromA;\n");
+	std::string path = dir.write("main.c", "#include_next <a.h>\nint main(void) { return 0; }\n");
+
+	Result result = expand(path, { (dir.path() / "root").string() });
+	CHECK(result.ok);
+	CHECK(contains(result.text, "int fromA;"));
+}
+
 TEST(preprocessor, a_malformed_has_include_reports_one_diagnostic_and_is_not_rescanned)
 {
 	TempDirectory dir;
@@ -343,14 +368,16 @@ TEST(preprocessor, directive_comments_are_not_part_of_operands_or_macro_bodies)
 	CHECK(contains(result.text, "int a = 1, b = 2;"));
 }
 
-TEST(preprocessor, an_unknown_directive_prefix_is_not_misclassified)
+TEST(preprocessor, include_next_is_its_own_directive_not_an_include_of_a_leading_underscore_name)
 {
+	// Without a search path there is nothing for `#include_next` to find, and the diagnostic names
+	// the target - not `_next <thing.h>`, which is what reading it as `#include` would give.
 	TempDirectory dir;
 	std::string path = dir.write("main.c", "#include_next <thing.h>\n");
 	Result result = expand(path);
 	CHECK(!result.ok);
 	CHECK(!result.diagnostics.empty());
-	CHECK(contains(result.diagnostics.at(0), "include_next"));
+	CHECK(contains(result.diagnostics.at(0), "thing.h"));
 }
 
 TEST(preprocessor, a_macro_may_expand_into_another_one)

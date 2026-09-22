@@ -283,16 +283,60 @@ namespace ceresc::preprocessor
 		}
 		_pragmaOnce.clear(); PreprocessedSource result; std::vector<std::string> stack; result.ok = expandFile(path, result, stack); return result;
 	}
-	std::string Preprocessor::resolveInclude(std::string_view target, bool angled, const std::string& includingFile) const
+	std::string Preprocessor::resolveInclude(std::string_view target, bool angled, const std::string& includingFile, i32* outDirectoryIndex) const
 	{
+		if (outDirectoryIndex)
+			*outDirectoryIndex = -1;
 		std::error_code error;
 		// generic_string() rather than string(): the resolved path becomes the header's NAME in the
 		// SourceManager, which is what a diagnostic about it prints and what __FILE__ expands to -
 		// and a path joined natively on Windows mixes both separators in one name.
 		if (!angled) { fs::path relative = fs::path(includingFile).parent_path() / std::string(target); if (fs::is_regular_file(relative, error)) return relative.generic_string(); }
-		for (const std::string& directory : _includeDirectories) { fs::path candidate = fs::path(directory) / std::string(target); if (fs::is_regular_file(candidate, error)) return candidate.generic_string(); }
+		for (usize i = 0; i < _includeDirectories.size(); ++i)
+		{
+			fs::path candidate = fs::path(_includeDirectories[i]) / std::string(target);
+			if (fs::is_regular_file(candidate, error))
+			{
+				if (outDirectoryIndex)
+					*outDirectoryIndex = static_cast<i32>(i);
+				return candidate.generic_string();
+			}
+		}
 		if (!angled && fs::is_regular_file(fs::path(std::string(target)), error))
 			return std::string(target);
+		return {};
+	}
+
+	std::string Preprocessor::resolveIncludeNext(std::string_view target, const std::string& currentFile, i32* outDirectoryIndex) const
+	{
+		if (outDirectoryIndex)
+			*outDirectoryIndex = -1;
+		std::error_code error;
+
+		// Which include directory (if any) holds the file being expanded - the search resumes after
+		// it. The file itself was found by resolveInclude(), which canonicalizes the same way.
+		fs::path currentCanonical = fs::weakly_canonical(currentFile, error);
+		i32 currentIndex = -1;
+		for (usize i = 0; i < _includeDirectories.size(); ++i)
+		{
+			fs::path candidate = fs::weakly_canonical(fs::path(_includeDirectories[i]) / std::string(target), error);
+			if (candidate == currentCanonical)
+			{
+				currentIndex = static_cast<i32>(i);
+				break;
+			}
+		}
+
+		for (usize i = static_cast<usize>(currentIndex + 1); i < _includeDirectories.size(); ++i)
+		{
+			fs::path candidate = fs::path(_includeDirectories[i]) / std::string(target);
+			if (fs::is_regular_file(candidate, error))
+			{
+				if (outDirectoryIndex)
+					*outDirectoryIndex = static_cast<i32>(i);
+				return candidate.generic_string();
+			}
+		}
 		return {};
 	}
 	bool Preprocessor::evaluateIfExpression(std::string_view expression, support::SourceLocation location,
@@ -626,6 +670,7 @@ namespace ceresc::preprocessor
 				if (isDirective(directive, "endif")) { if (conditionals.empty()) { _diagnostics.error(DiagId::EndifWithoutIf, here, "#endif without a matching #if"); ok = false; } else conditionals.pop_back(); blank(); continue; }
 				if (!active()) { blank(); continue; }
 				if (isDirective(directive, "include")) { std::string_view target = trim(directive.substr(7)); bool angled = !target.empty() && target.front() == '<'; char close = angled ? '>' : '"'; if (target.size() < 2 || (target.front() != '<' && target.front() != '"') || target.back() != close) { _diagnostics.error(DiagId::IncludeExpectsTarget, here, "#include expects \"file.h\" or <file.h>"); ok = false; blank(); continue; } std::string resolved = resolveInclude(target.substr(1, target.size()-2), angled, path); if (resolved.empty()) { _diagnostics.error(DiagId::IncludeNotFound, here, "cannot find include file '{}'", target); ok = false; blank(); } else ok = expandFile(resolved, out, includeStack) && ok; continue; }
+				if (isDirective(directive, "include_next")) { std::string_view target = trim(directive.substr(12)); bool angled = !target.empty() && target.front() == '<'; char close = angled ? '>' : '"'; if (target.size() < 2 || (target.front() != '<' && target.front() != '"') || target.back() != close) { _diagnostics.error(DiagId::IncludeExpectsTarget, here, "#include_next expects \"file.h\" or <file.h>"); ok = false; blank(); continue; } std::string resolved = resolveIncludeNext(target.substr(1, target.size()-2), path); if (resolved.empty()) { _diagnostics.error(DiagId::IncludeNotFound, here, "cannot find include file '{}' after this one", target); ok = false; blank(); } else ok = expandFile(resolved, out, includeStack) && ok; continue; }
 				if (isDirective(directive, "define")) { std::string_view rest = trim(directive.substr(6)); usize end = 0; while (end < rest.size() && isIdentifierChar(rest[end])) ++end; if (!end || !isIdentifierStart(rest[0])) { _diagnostics.error(DiagId::DefineExpectsName, here, "#define expects a name"); ok = false; blank(); continue; } Macro macro; std::string name(rest.substr(0, end)); if (end < rest.size() && rest[end] == '(') { macro.functionLike = true; usize p = end + 1; while (p < rest.size() && rest[p] != ')') { while (p < rest.size() && (rest[p] == ' ' || rest[p] == '\t' || rest[p] == ',')) ++p; if (rest.substr(p).starts_with("...")) { macro.variadic = true; p += 3; break; } usize s = p; while (p < rest.size() && isIdentifierChar(rest[p])) ++p; if (s == p || !isIdentifierStart(rest[s])) { _diagnostics.error(DiagId::InvalidMacroParameterList, here, "invalid macro parameter list"); ok = false; break; } macro.parameters.emplace_back(rest.substr(s, p-s)); } if (p >= rest.size() || rest[p] != ')') { _diagnostics.error(DiagId::UnterminatedMacroParameterList, here, "unterminated macro parameter list"); ok = false; } else end = p + 1; } macro.replacement = std::string(withoutDirectiveComment(trim(rest.substr(end)))); _macros[std::move(name)] = std::move(macro); blank(); continue; }
 				if (isDirective(directive, "undef")) { std::string_view name = trim(directive.substr(5)); if (name.empty() || !isIdentifierStart(name.front()) || std::any_of(name.begin()+1, name.end(), [](char c){ return !isIdentifierChar(c); })) { _diagnostics.error(DiagId::UndefExpectsName, here, "#undef expects a name"); ok = false; } else _macros.erase(std::string(name)); blank(); continue; }
 				if (isDirective(directive, "error") || isDirective(directive, "warning"))

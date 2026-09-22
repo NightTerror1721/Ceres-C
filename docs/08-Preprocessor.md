@@ -9,6 +9,7 @@ into one buffer.
 | --- | --- |
 | `#include "file.h"` | Next to the including file first, then the search path. |
 | `#include <file.h>` | The search path only (`-I`). |
+| `#include_next "file.h"` / `#include_next <file.h>` | Like `#include`, but searches the search path AFTER the directory that contained the current file - a header's way of reaching the same-named header further along. Falls back to searching from the first directory. |
 | `#define NAME text` | An object-like macro: every later `NAME` identifier becomes `text`. |
 | `#define F(a, b) text` | A function-like macro. Arguments are substituted as whole identifiers. |
 | `#define F(a, ...) text` | A variadic macro; `__VA_ARGS__` is the comma-separated remaining arguments. |

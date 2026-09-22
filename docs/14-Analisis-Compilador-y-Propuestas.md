@@ -1078,7 +1078,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | # | Item | Depende de | Estado |
 | --- | --- | --- | --- |
 | 1 | **F14a** — `__builtin_stack_pointer()` (estado de máquina) | — | pendiente |
-| 2 | **F12** — preprocesador: `#line`, `#include_next`, `_Pragma` | — | pendiente |
+| 2 | **F12** — `#include_next` (hecho); `#line` y `_Pragma` siguen pendientes | — | parcial |
 | 3 | **O9** — layout de bloques para fall-through | — | pendiente |
 | 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) recomendado | pendiente |
 | 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | verificar el ensamblador | pendiente |
