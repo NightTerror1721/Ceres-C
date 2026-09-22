@@ -1077,24 +1077,36 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 
 | # | Item | Depende de | Estado |
 | --- | --- | --- | --- |
-| 1 | **F14a** — `__builtin_stack_pointer()` (estado de máquina) | — | pendiente |
+| 1 | **F14a** — `__builtin_stack_pointer()` (estado de máquina) | — | **hecho** |
 | 2 | **F12** — `#include_next` (hecho); `#line` y `_Pragma` siguen pendientes | — | parcial |
-| 3 | **O9** — layout de bloques para fall-through | — | hecho |
-| 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) recomendado | pendiente |
-| 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | verificar el ensamblador | pendiente |
-| 6 | **O7** — llamada de cola + `BL`/`BLR` | — | pendiente |
+| 3 | **O9** — layout de bloques para fall-through | — | **hecho** |
+| 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) | **aplazado** (subsumido por copy propagation + DCE; el coalescing real pertenece a O4) |
+| 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | ensamblador | **bloqueado** (CASM no expone `LDRP`/`STRP`) |
+| 6 | **O7** — llamada de cola + `BL`/`BLR` | — | pendiente (ABI de prólogo/epílogo) |
 | 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | pendiente |
-| 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` expuestos; falta el reconocimiento de patrones `min`/`max`/`abs` | — | parcial |
+| 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; falta el reconocimiento de patrones `min`/`max`/`abs` | — | parcial |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
-| 10 | **O11** — SCCP (propagación de constantes condicional) | — | pendiente |
+| 10 | **O11** — **hecho** el plegado de autocomparación (6 predicados); falta el lattice condicional completo | — | parcial |
 | 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — optimizaciones de bucle (LICM, IV-SR) | detección de bucles | pendiente |
-| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 (detección de bucles) | pendiente |
+| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | pendiente |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
+
+### Revisiones de este backlog
+
+- **Batch 1** (`#include_next`, `__builtin_stack_pointer`, layout de bloques): un hallazgo alto (el
+  layout podía empeorar el `if (cond) { body }` común) y varios medios, todos corregidos — ver el
+  commit de correcciones.
+- **Batch 2** (plegado de autocomparación, builtins `imin`/`imax`/`umin`/`umax`): una rama muerta
+  retirada y dos huecos de test cubiertos (la tabla de verdad completa y el caso `float`).
+
+Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
+son proyectos de varios días (análisis de bucles/dominancia para O3/O15/O11, reasignación de registros
+para O4/O5, ABI ancha para F3, formato de depuración para F8, serialización de IR para F13).
 
 ---
 
