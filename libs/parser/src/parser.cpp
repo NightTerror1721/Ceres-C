@@ -39,6 +39,9 @@ namespace ceresc::parser
 		if (name == "__builtin_sti")  return ast::MachineOp::Sti;
 		if (name == "__builtin_cli")  return ast::MachineOp::Cli;
 		if (name == "__builtin_halt") return ast::MachineOp::Halt;
+		// `unreachable` is a promise that the point is never reached; lowering it to `trap` is the
+		// safe reading of that promise (a machine that does get there raises interrupt 1).
+		if (name == "__builtin_trap" || name == "__builtin_unreachable") return ast::MachineOp::Trap;
 		return std::nullopt;
 	}
 

@@ -489,7 +489,8 @@ namespace ceresc::ast
 	{
 		Sti,  // set the Interrupt flag - user interrupts 16-63 are masked until it is set
 		Cli,  // clear it again, for a critical section a handler must not preempt
-		Halt  // stop fetching until an interrupt arrives; the dispatcher clears the Halting flag
+		Halt, // stop fetching until an interrupt arrives; the dispatcher clears the Halting flag
+		Trap  // raise interrupt 1; also where `__builtin_unreachable()` lands
 	};
 
 	constexpr std::string_view machineOpName(MachineOp op) noexcept
@@ -499,6 +500,7 @@ namespace ceresc::ast
 			case MachineOp::Sti:  return "__builtin_sti";
 			case MachineOp::Cli:  return "__builtin_cli";
 			case MachineOp::Halt: return "__builtin_halt";
+			case MachineOp::Trap: return "__builtin_trap";
 		}
 		return "";
 	}
@@ -511,6 +513,7 @@ namespace ceresc::ast
 			case MachineOp::Sti:  return "sti";
 			case MachineOp::Cli:  return "cli";
 			case MachineOp::Halt: return "halt";
+			case MachineOp::Trap: return "trap";
 		}
 		return "";
 	}
@@ -551,7 +554,11 @@ namespace ceresc::ast
 	{
 		Clz, Ctz, Popcount, Bswap, Abs, Rotl, Rotr, MulhUnsigned, MulhSigned,
 		Fabs, Fmod, Sqrt, Floor, Ceil, Trunc, Rint, Fmin, Fmax, Copysign, Rcp, Rsqrt,
-		Fclass, FloatBits, FloatFromBits
+		Fclass, FloatBits, FloatFromBits,
+		// Compiler builtins that are not a machine instruction: `expect` is a branch hint that
+		// evaluates to its first operand, and `constant_p` is a compile-time question answered by
+		// the constant evaluator - both lower away in IrBuilder rather than reaching codegen.
+		Expect, ConstantP
 	};
 
 	constexpr std::string_view builtinName(Builtin builtin) noexcept
@@ -582,6 +589,8 @@ namespace ceresc::ast
 			case Builtin::Fclass:        return "__builtin_fclass";
 			case Builtin::FloatBits:     return "__builtin_float_bits";
 			case Builtin::FloatFromBits: return "__builtin_float_from_bits";
+			case Builtin::Expect:        return "__builtin_expect";
+			case Builtin::ConstantP:     return "__builtin_constant_p";
 		}
 		return "";
 	}
@@ -592,7 +601,7 @@ namespace ceresc::ast
 			Builtin::Rotl, Builtin::Rotr, Builtin::MulhUnsigned, Builtin::MulhSigned, Builtin::Fabs,
 			Builtin::Fmod, Builtin::Sqrt, Builtin::Floor, Builtin::Ceil, Builtin::Trunc, Builtin::Rint,
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
-			Builtin::FloatBits, Builtin::FloatFromBits })
+			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP })
 			if (name == builtinName(builtin))
 				return builtin;
 		return std::nullopt;
@@ -605,6 +614,7 @@ namespace ceresc::ast
 			case Builtin::Rotl: case Builtin::Rotr:
 			case Builtin::MulhUnsigned: case Builtin::MulhSigned:
 			case Builtin::Fmod: case Builtin::Fmin: case Builtin::Fmax: case Builtin::Copysign:
+			case Builtin::Expect:
 				return 2;
 			default:
 				return 1;

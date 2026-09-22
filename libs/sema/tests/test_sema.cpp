@@ -2097,6 +2097,15 @@ TEST(sema, the_machine_builtins_type_their_result_and_their_arguments)
 	CHECK(!checkSource("float f(int x) { return __builtin_sqrt(x); }").ok);
 }
 
+TEST(sema, the_compiler_builtins_type_their_result)
+{
+	CHECK(checkSource("int f(void) { return __builtin_constant_p(1 + 2); }").ok);
+	// `expect` has the first operand's own type - here a float.
+	CHECK(checkSource("float f(float x) { return __builtin_expect(x, 1.0f); }").ok);
+	CHECK(checkSource("void f(void) { __builtin_trap(); }").ok);
+	CHECK(checkSource("void f(void) { __builtin_unreachable(); }").ok);
+}
+
 TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
 {
 	CHECK(checkSource("int f(void) { __asm__(\"nop\"); return 1; }").ok);

@@ -1441,6 +1441,15 @@ namespace ceresc::sema
 					requireInteger(argument ? argument->type() : nullptr);
 				result = &Type::UInt;
 				break;
+			case Builtin::Expect:
+				// Its value is the first operand's; the second is a hint. No bank is required.
+				result = (!node.args().empty() && node.args()[0]) ? decayArray(node.args()[0]->type()) : &Type::Int;
+				if (!result)
+					result = &Type::Int;
+				break;
+			case Builtin::ConstantP:
+				result = &Type::Int; // a compile-time 1 or 0; the operand is not evaluated
+				break;
 			default: // every float operation
 				for (ast::Expr* argument : node.args())
 					requireFloat(argument ? argument->type() : nullptr);

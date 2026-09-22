@@ -143,6 +143,14 @@ each one takes. Each lowers to exactly one Ceres instruction.
 | `__builtin_fclass(f)` | `fclass` | `int` classification bitmask |
 | `__builtin_float_bits(f)` / `__builtin_float_from_bits(u)` | `mff` / `mtf` | raw bit reinterpretation |
 
+A few compiler builtins are not a machine instruction of their own.
+`__builtin_trap()` and `__builtin_unreachable()` both lower to the machine's `trap` (a point
+promised never to be reached is read as a trap, which is the safe thing to do if it is).
+`__builtin_expect(x, hint)` evaluates to `x` and emits nothing extra for the hint.
+`__builtin_constant_p(e)` is `1` when `e` folds to a compile-time constant and `0` otherwise, and
+does not evaluate `e` at all. `__builtin_offsetof` is not a builtin here - `<stddef.h>` provides it
+as a macro.
+
 `__builtin_rint` rounds ties to even, which is C's `rint`/`nearbyint`. `__builtin_abs` of
 `INT_MIN` sets the machine's Overflow flag rather than producing a value, exactly as the instruction
 does. The integer builtins take an integer and the float builtins a float, with no conversion applied

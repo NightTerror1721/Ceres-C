@@ -1314,6 +1314,15 @@ TEST(parser, the_one_instruction_builtins_are_recognized_by_name_in_call_positio
 	CHECK_EQ(printExpr("__builtin_clz + 1"), "(+ __builtin_clz 1)");
 }
 
+TEST(parser, trap_unreachable_expect_and_constant_p_are_recognized)
+{
+	// `unreachable` shares Trap's node: a point promised not to be reached is lowered to one.
+	CHECK_EQ(printExpr("__builtin_trap()"), "(__builtin_trap)");
+	CHECK_EQ(printExpr("__builtin_unreachable()"), "(__builtin_trap)");
+	CHECK_EQ(printExpr("__builtin_expect(x, 1)"), "(__builtin_expect x 1)");
+	CHECK_EQ(printExpr("__builtin_constant_p(1 + 2)"), "(__builtin_constant_p (+ 1 2))");
+}
+
 // ---- declarators -------------------------------------------------------------------------------
 
 TEST(parser, a_declarator_binds_suffixes_tighter_than_the_leading_star)

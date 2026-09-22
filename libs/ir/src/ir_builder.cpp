@@ -1450,12 +1450,30 @@ namespace ceresc::ir
 		// is already held sign- or zero-extended to a word (ir_instr.h's own invariant), which is
 		// exactly the integer promotion the machine instruction would assume.
 		support::SourceLocation loc = node.location();
+		std::span<ast::Expr* const> args = node.args();
+
+		// The two compiler builtins that are not a machine instruction lower away here:
+		// `__builtin_expect(a, hint)` yields `a` (the hint is a branch-prediction promise with no
+		// code of its own), and `__builtin_constant_p(e)` is answered at compile time by the
+		// constant evaluator and does not evaluate `e` at all.
+		if (node.builtin() == ast::Builtin::Expect)
+		{
+			IrValue value = args.empty() ? IrValue{} : lowerExpr(args[0]);
+			if (args.size() > 1)
+				lowerExpr(args[1]); // evaluated for its side effects, if any - its value is ignored
+			_lastValue = value;
+			return;
+		}
+		if (node.builtin() == ast::Builtin::ConstantP)
+		{
+			bool isConstant = !args.empty() && foldConstant(args[0]).has_value();
+			_lastValue = emitConstInt(loc, isConstant ? 1 : 0);
+			return;
+		}
 
 		IrBuiltinPayload payload;
 		payload.builtin = node.builtin();
 		payload.result = _currentFunction->newTemp();
-
-		std::span<ast::Expr* const> args = node.args();
 		if (!args.empty())
 			payload.a = lowerExpr(args[0]);
 		if (args.size() > 1)

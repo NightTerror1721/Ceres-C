@@ -1137,7 +1137,15 @@ namespace ceresc::codegen
 					case Builtin::Fclass:       mnemonic = "fclass"; break;
 					case Builtin::FloatBits:    mnemonic = "mff"; break;
 					case Builtin::FloatFromBits: mnemonic = "mtf"; break;
+					// Neither is a machine instruction: IrBuilder lowers `expect` to its operand and
+					// `constant_p` to a constant, so neither reaches here. Listed so the switch stays
+					// exhaustive over the machine builtins above, with the guard below as a backstop.
+					case Builtin::Expect:
+					case Builtin::ConstantP:
+						break;
 				}
+				if (mnemonic.empty())
+					break;
 
 				bool resultFloat = ast::builtinResultIsFloat(p.builtin);
 				bool sourceFloat = ast::builtinSourceIsFloat(p.builtin);

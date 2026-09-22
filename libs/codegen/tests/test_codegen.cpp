@@ -1400,6 +1400,21 @@ TEST(codegen, the_machine_builtins_emit_their_one_instruction)
 	CHECK(contains(casm, "\n    sti"));
 }
 
+TEST(codegen, trap_emits_the_trap_instruction)
+{
+	std::string casm = atO2("void f(void) { __builtin_trap(); }");
+	CHECK(contains(casm, "\n    trap"));
+}
+
+TEST(codegen, expect_lowers_to_its_operand_and_constant_p_to_a_constant)
+{
+	// Neither is a machine instruction: a discarded `constant_p` leaves no call at all, and
+	// `expect` is a plain copy of its operand.
+	std::string casm = atO2("int f(int x) { return __builtin_expect(x, 1) + __builtin_constant_p(3 * 4); }");
+	CHECK(!contains(casm, "call"));
+	CHECK(contains(casm, "add")); // x + 1 (constant_p(12) folded to 1)
+}
+
 TEST(codegen, a_machine_builtin_does_not_cost_a_function_its_register_window)
 {
 	// It is not a Call and clobbers nothing, so ValuePlacement must not treat it as one - a leaf
