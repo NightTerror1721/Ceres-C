@@ -137,7 +137,10 @@ each one takes. Each lowers to exactly one Ceres instruction.
 | `__builtin_bswap32(u)` | `bswap` | `unsigned int` |
 | `__builtin_rotl32(u, n)`, `__builtin_rotr32(u, n)` | `rol`, `ror` | `unsigned int` |
 | `__builtin_mulhu(a, b)`, `__builtin_mulhs(a, b)` | `mulh`, `imulh` | high 32 bits of the product |
+| `__builtin_imin(a, b)`, `__builtin_imax(a, b)` | `imin`, `imax` | signed integer minimum / maximum |
+| `__builtin_umin(a, b)`, `__builtin_umax(a, b)` | `min`, `max` | unsigned integer minimum / maximum |
 | `__builtin_abs(i)` | `abs` | `int` |
+| `__builtin_stack_pointer()` | `mov rd, sp` | `unsigned int`, the current stack pointer |
 | `__builtin_fabs`, `__builtin_sqrt`, `__builtin_floor`, `__builtin_ceil`, `__builtin_trunc`, `__builtin_rint`, `__builtin_frcp`, `__builtin_frsqrt` | one float instruction each | `float` |
 | `__builtin_fmod`, `__builtin_fmin`, `__builtin_fmax`, `__builtin_copysign` | one float instruction each | `float` |
 | `__builtin_fclass(f)` | `fclass` | `int` classification bitmask |

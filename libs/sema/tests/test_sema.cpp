@@ -2105,6 +2105,11 @@ TEST(sema, the_compiler_builtins_type_their_result)
 	CHECK(checkSource("void f(void) { __builtin_trap(); }").ok);
 	CHECK(checkSource("void f(void) { __builtin_unreachable(); }").ok);
 	CHECK(checkSource("unsigned int f(void) { return __builtin_stack_pointer(); }").ok);
+	CHECK(checkSource("int f(int a, int b) { return __builtin_imin(a, b); }").ok);
+	CHECK(checkSource("unsigned int f(unsigned a, unsigned b) { return __builtin_umax(a, b); }").ok);
+
+	// The integer min/max builtins take integers, not floats.
+	CHECK(!checkSource("float f(float a, float b) { return __builtin_imin(a, b); }").ok);
 }
 
 TEST(sema, overflow_builtins_check_their_operands)

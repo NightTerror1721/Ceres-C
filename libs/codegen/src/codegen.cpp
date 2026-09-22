@@ -1147,6 +1147,10 @@ namespace ceresc::codegen
 					case Builtin::Fclass:       mnemonic = "fclass"; break;
 					case Builtin::FloatBits:    mnemonic = "mff"; break;
 					case Builtin::FloatFromBits: mnemonic = "mtf"; break;
+					case Builtin::MinSigned:     mnemonic = "imin"; break;
+					case Builtin::MaxSigned:     mnemonic = "imax"; break;
+					case Builtin::MinUnsigned:   mnemonic = "min"; break;
+					case Builtin::MaxUnsigned:   mnemonic = "max"; break;
 					// Not machine instructions: IrBuilder lowers `expect` to its operand,
 					// `constant_p` to a constant, and the overflow builtins to arithmetic plus a
 					// comparison, so none of these reaches here. Listed so the switch stays

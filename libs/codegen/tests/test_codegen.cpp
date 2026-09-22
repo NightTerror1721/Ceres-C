@@ -1422,6 +1422,17 @@ TEST(codegen, trap_emits_the_trap_instruction)
 	CHECK(contains(casm, "\n    trap"));
 }
 
+TEST(codegen, integer_min_and_max_emit_their_instructions)
+{
+	std::string signedCasm = atO2("int f(int a, int b) { return __builtin_imin(a, b) + __builtin_imax(a, b); }");
+	CHECK(contains(signedCasm, "    imin "));
+	CHECK(contains(signedCasm, "    imax "));
+
+	std::string unsignedCasm = atO2("unsigned f(unsigned a, unsigned b) { return __builtin_umin(a, b) + __builtin_umax(a, b); }");
+	CHECK(contains(unsignedCasm, "    min "));
+	CHECK(contains(unsignedCasm, "    max "));
+}
+
 TEST(codegen, stack_pointer_reads_sp)
 {
 	CHECK_EQ(atO2("unsigned int f(void) { return __builtin_stack_pointer(); }"),

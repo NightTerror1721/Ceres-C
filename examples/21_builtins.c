@@ -86,6 +86,8 @@ int main(void)
     line("fabs(-3)        = ", (int)__builtin_fabs(-3.0f));       // 3
     line("fmin(2,5)       = ", (int)__builtin_fmin(2.0f, 5.0f));  // 2
     line("fmax(2,5)       = ", (int)__builtin_fmax(2.0f, 5.0f));  // 5
+    line("imin(-3,5)      = ", __builtin_imin(-3, 5));            // -3
+    line("imax(-3,5)      = ", __builtin_imax(-3, 5));            // 5
 
     // The raw bit moves: 1.0f is 0x3F800000, and 0x40000000 is 2.0f.
     hexline("bits(1.0)       = ", __builtin_float_bits(1.0f));    // 0x3f800000

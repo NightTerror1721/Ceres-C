@@ -1084,7 +1084,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | verificar el ensamblador | pendiente |
 | 6 | **O7** — llamada de cola + `BL`/`BLR` | — | pendiente |
 | 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | pendiente |
-| 8 | **O12** — selección de patrones (`min`/`max`/`abs`/`clz`) | — | pendiente |
+| 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` expuestos; falta el reconocimiento de patrones `min`/`max`/`abs` | — | parcial |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
 | 10 | **O11** — SCCP (propagación de constantes condicional) | — | pendiente |
 | 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |

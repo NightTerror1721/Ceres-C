@@ -564,7 +564,10 @@ namespace ceresc::ast
 		AddOverflow, SubOverflow, MulOverflow,
 		// The stack pointer, which has no C expression - one instruction (`mov rd, sp`). Used by
 		// the STDLIB's heap to find the current stack top.
-		StackPointer
+		StackPointer,
+		// Integer minimum and maximum, signed and unsigned (`IMIN`/`IMAX`, `MIN`/`MAX`). The float
+		// pair already exists as `Fmin`/`Fmax`.
+		MinSigned, MaxSigned, MinUnsigned, MaxUnsigned
 	};
 
 	constexpr std::string_view builtinName(Builtin builtin) noexcept
@@ -601,6 +604,10 @@ namespace ceresc::ast
 			case Builtin::SubOverflow:   return "__builtin_sub_overflow";
 			case Builtin::MulOverflow:   return "__builtin_mul_overflow";
 			case Builtin::StackPointer:  return "__builtin_stack_pointer";
+			case Builtin::MinSigned:     return "__builtin_imin";
+			case Builtin::MaxSigned:     return "__builtin_imax";
+			case Builtin::MinUnsigned:   return "__builtin_umin";
+			case Builtin::MaxUnsigned:   return "__builtin_umax";
 		}
 		return "";
 	}
@@ -612,7 +619,8 @@ namespace ceresc::ast
 			Builtin::Fmod, Builtin::Sqrt, Builtin::Floor, Builtin::Ceil, Builtin::Trunc, Builtin::Rint,
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
 			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP,
-			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer })
+			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer,
+			Builtin::MinSigned, Builtin::MaxSigned, Builtin::MinUnsigned, Builtin::MaxUnsigned })
 			if (name == builtinName(builtin))
 				return builtin;
 		return std::nullopt;
@@ -626,6 +634,7 @@ namespace ceresc::ast
 			case Builtin::MulhUnsigned: case Builtin::MulhSigned:
 			case Builtin::Fmod: case Builtin::Fmin: case Builtin::Fmax: case Builtin::Copysign:
 			case Builtin::Expect:
+			case Builtin::MinSigned: case Builtin::MaxSigned: case Builtin::MinUnsigned: case Builtin::MaxUnsigned:
 				return 2;
 			case Builtin::AddOverflow: case Builtin::SubOverflow: case Builtin::MulOverflow:
 				return 3;

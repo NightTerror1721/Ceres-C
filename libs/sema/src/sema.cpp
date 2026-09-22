@@ -1478,6 +1478,18 @@ namespace ceresc::sema
 			case Builtin::StackPointer:
 				result = &Type::UInt; // the stack pointer, read with no argument and no code around it
 				break;
+			case Builtin::MinSigned:
+			case Builtin::MaxSigned:
+				for (ast::Expr* argument : node.args())
+					requireInteger(argument ? argument->type() : nullptr);
+				result = &Type::Int;
+				break;
+			case Builtin::MinUnsigned:
+			case Builtin::MaxUnsigned:
+				for (ast::Expr* argument : node.args())
+					requireInteger(argument ? argument->type() : nullptr);
+				result = &Type::UInt;
+				break;
 			default: // every float operation
 				for (ast::Expr* argument : node.args())
 					requireFloat(argument ? argument->type() : nullptr);
