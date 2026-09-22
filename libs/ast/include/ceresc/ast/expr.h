@@ -561,7 +561,10 @@ namespace ceresc::ast
 		Expect, ConstantP,
 		// `__builtin_add_overflow(a, b, &r)` and its siblings: store `a op b` into `*r` and return
 		// whether the operation overflowed. Three operands, and they too expand in IrBuilder.
-		AddOverflow, SubOverflow, MulOverflow
+		AddOverflow, SubOverflow, MulOverflow,
+		// The stack pointer, which has no C expression - one instruction (`mov rd, sp`). Used by
+		// the STDLIB's heap to find the current stack top.
+		StackPointer
 	};
 
 	constexpr std::string_view builtinName(Builtin builtin) noexcept
@@ -597,6 +600,7 @@ namespace ceresc::ast
 			case Builtin::AddOverflow:   return "__builtin_add_overflow";
 			case Builtin::SubOverflow:   return "__builtin_sub_overflow";
 			case Builtin::MulOverflow:   return "__builtin_mul_overflow";
+			case Builtin::StackPointer:  return "__builtin_stack_pointer";
 		}
 		return "";
 	}
@@ -608,7 +612,7 @@ namespace ceresc::ast
 			Builtin::Fmod, Builtin::Sqrt, Builtin::Floor, Builtin::Ceil, Builtin::Trunc, Builtin::Rint,
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
 			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP,
-			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow })
+			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer })
 			if (name == builtinName(builtin))
 				return builtin;
 		return std::nullopt;
@@ -625,6 +629,8 @@ namespace ceresc::ast
 				return 2;
 			case Builtin::AddOverflow: case Builtin::SubOverflow: case Builtin::MulOverflow:
 				return 3;
+			case Builtin::StackPointer:
+				return 0;
 			default:
 				return 1;
 		}

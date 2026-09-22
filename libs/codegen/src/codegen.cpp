@@ -1108,6 +1108,16 @@ namespace ceresc::codegen
 				// among them; see ast::Builtin's note), so aliasing dest with an operand is safe.
 				const auto& p = instr.as<IrBuiltinPayload>();
 				using ast::Builtin;
+
+				// The stack pointer has no operand: it is `mov rd, sp` and nothing else.
+				if (p.builtin == Builtin::StackPointer)
+				{
+					std::string dest = defineInto(p.result, kScratchA, false);
+					_emitter.instr(std::format("mov {}, sp", dest), comment);
+					storeResult(p.result, dest, loc);
+					break;
+				}
+
 				std::string_view mnemonic;
 				switch (p.builtin)
 				{
@@ -1146,6 +1156,7 @@ namespace ceresc::codegen
 					case Builtin::AddOverflow:
 					case Builtin::SubOverflow:
 					case Builtin::MulOverflow:
+					case Builtin::StackPointer: // handled above, before this switch
 						break;
 				}
 				if (mnemonic.empty())

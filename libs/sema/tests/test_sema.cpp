@@ -2104,6 +2104,7 @@ TEST(sema, the_compiler_builtins_type_their_result)
 	CHECK(checkSource("float f(float x) { return __builtin_expect(x, 1.0f); }").ok);
 	CHECK(checkSource("void f(void) { __builtin_trap(); }").ok);
 	CHECK(checkSource("void f(void) { __builtin_unreachable(); }").ok);
+	CHECK(checkSource("unsigned int f(void) { return __builtin_stack_pointer(); }").ok);
 }
 
 TEST(sema, overflow_builtins_check_their_operands)

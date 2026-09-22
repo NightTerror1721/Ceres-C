@@ -1406,6 +1406,12 @@ TEST(codegen, trap_emits_the_trap_instruction)
 	CHECK(contains(casm, "\n    trap"));
 }
 
+TEST(codegen, stack_pointer_reads_sp)
+{
+	std::string casm = atO2("unsigned int f(void) { return __builtin_stack_pointer(); }");
+	CHECK(contains(casm, ", sp"));
+}
+
 TEST(codegen, expect_lowers_to_its_operand_and_constant_p_to_a_constant)
 {
 	// Neither is a machine instruction, and `constant_p` does not even evaluate its operand: the

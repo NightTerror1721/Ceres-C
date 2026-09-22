@@ -1475,6 +1475,9 @@ namespace ceresc::sema
 				result = &Type::Bool;
 				break;
 			}
+			case Builtin::StackPointer:
+				result = &Type::UInt; // the stack pointer, read with no argument and no code around it
+				break;
 			default: // every float operation
 				for (ast::Expr* argument : node.args())
 					requireFloat(argument ? argument->type() : nullptr);
