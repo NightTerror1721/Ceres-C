@@ -114,7 +114,7 @@ namespace ceresc::support
 			{ "min-max",            &OptimizationOptions::minMaxIdioms,             "recognize `a < b ? a : b` as min/max and `x < 0 ? -x : x` as abs" },
 			{ "sccp",               &OptimizationOptions::conditionalConstants,     "propagate constants along taken branches and resolve a constant switch" },
 			{ "loop-invariant",     &OptimizationOptions::loopInvariantMotion,      "hoist a loop-invariant computation into the loop's preheader" },
-			{ "induction-vars",     &OptimizationOptions::inductionStrengthReduction, "replace `base + i*C` in a loop with a pointer advanced by C per iteration" },
+			{ "induction-vars",     &OptimizationOptions::inductionStrengthReduction, "replace `base + i*C` in a loop with a pointer advanced by the counter's step times C" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },

@@ -1145,9 +1145,24 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   necesita, y una constante que alimenta una rama nunca se mueve. Se añadieron tests para el caso de
   la constante literal, la exclusión de `FloatToInt` y el bucle con llamada.
 
+- **Batch 6** (`O3` parte 2, IV-SR): 5 ficheros, 7 hallazgos, todos corregidos. **Uno alto y real**:
+  `decomposeScaled` aceptaba la carga del contador a cualquiera de los dos lados de un `<<`, pero el
+  desplazamiento no es conmutativo; `p[1 << i]` (elemento de un byte, `d = base + (1 << i)`) se
+  reescribía como si fuera `i * 2`, o sea un puntero que avanza `step * 2` — una miscompilación
+  silenciosa. Ahora la carga solo se acepta a la derecha de un `mul` (conmutativo); a la izquierda
+  del `shl` va el contador y a la derecha la constante. Se añadió el test de regresión. Uno medio:
+  `p.step * p.scale` podía desbordar un producto i64 con signo (UB en el propio compilador); ahora el
+  delta se calcula en aritmética u64 módulo 2^32 —el ancho del puntero— y se extiende con signo para
+  que un `-4` se lea como tal. Uno de rendimiento: el pase no ayuda si `-fno-dce` deja la
+  multiplicación muerta en su sitio, así que ahora exige `deadCodeElimination` y lo documenta. Y
+  cuatro bajos: la descripción del flag decía "advanced by C" en vez de por el paso por C; faltaban
+  tests del paso negativo, del caso escala 1 (`char[]`, sin multiplicación) y del apagado en `-Og` /
+  encendido en `-Os`, los tres añadidos.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
-son proyectos de varios días (análisis de bucles/dominancia para O15, reasignación de registros
-para O4/O5, ABI ancha para F3, formato de depuración para F8, serialización de IR para F13).
+son proyectos de varios días (reconocimiento de idiomas de bucle para O15, que ya cuenta con el
+análisis de bucles; reasignación de registros para O4/O5; ABI ancha para F3; formato de depuración
+para F8; serialización de IR para F13).
 
 **O3 se partió igual que F6.** El LICM ya está: detección de bucles naturales (aristas de retroceso
 sobre un árbol de dominancia) y elevación de cargas/cálculos invariantes al preheader. Un bucle que

@@ -2619,7 +2619,10 @@ namespace ceresc::ir
 
 		bool strengthReduceInductionVariables(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
 		{
-			if (!options.inductionStrengthReduction)
+			// The advance only pays off once dead-code elimination drops the address computation it
+			// replaces; without DCE the old `counter*C` would stay and the pass would add a
+			// load/advance/store to the loop for nothing.
+			if (!options.inductionStrengthReduction || !options.deadCodeElimination)
 				return false;
 
 			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
@@ -2742,8 +2745,8 @@ namespace ceresc::ir
 				IrValue amount{};
 				if (localOfLoad(p.lhs, found))
 					amount = p.rhs;
-				else if (localOfLoad(p.rhs, found))
-					amount = p.lhs;
+				else if (p.op == IrBinOp::Mul && localOfLoad(p.rhs, found))
+					amount = p.lhs; // only a multiply is commutative: `C << counter` is not `counter << C`
 				else
 					return false;
 				i64 amountValue = 0;
@@ -2998,7 +3001,12 @@ namespace ceresc::ir
 			const Plan& p = *plan;
 			const support::SourceLocation addressLoc = blocks[p.dBlock]->instrs()[p.dIndex]->location();
 			const support::SourceLocation latchLoc = p.store->location();
-			const i64 delta = p.step * p.scale;
+			// Pointer arithmetic wraps at 32 bits on this machine, and `step * scale` can overflow a
+			// signed 64-bit product; the low word is the exact delta the repeated addition needs.
+			// Sign-extending it keeps a decreasing counter's `-4` readable in the IR rather than a
+			// ten-digit unsigned constant.
+			const i64 delta = static_cast<i64>(static_cast<i32>(
+				static_cast<u32>(static_cast<u64>(p.step) * static_cast<u64>(p.scale))));
 
 			u32 pointerSlot = function.newLocalSlot(4, false, false, true, false);
 			IrValue addressP = function.newTemp();

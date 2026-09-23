@@ -249,6 +249,11 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	// Loop-invariant motion is an ordinary O1 optimization as well.
 	CHECK(o1.loopInvariantMotion);
 	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).loopInvariantMotion);
+
+	// Induction-variable strength reduction is on at O1 and -Os, but -Og turns it off: a hidden
+	// pointer slot is exactly the kind of rewriting that makes the code harder to follow.
+	CHECK(o1.inductionStrengthReduction && os.inductionStrengthReduction && !og.inductionStrengthReduction);
+	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).inductionStrengthReduction);
 }
 
 // ---- self-comparison folding ---------------------------------------------------------------------
@@ -503,6 +508,28 @@ TEST(ir_optimizer, induction_strength_reduction_scales_the_step_by_the_element_s
 	CHECK(contains(optimizedIr(source, loopAndInduction(), "f"), "const 8"));
 }
 
+TEST(ir_optimizer, induction_strength_reduction_handles_a_decreasing_counter)
+{
+	// `i = i - 1` over 4-byte elements makes the step negative, so the pointer must advance by -4,
+	// not +4.
+	std::string_view source =
+		"int f(int* arr, int from) { int s = 0; for (int i = from; i > 0; i = i - 1) { s = s + arr[i]; } return s; }";
+	CHECK(contains(optimizedIr(source, loopAndInduction(), "f"), "const -4"));
+}
+
+TEST(ir_optimizer, induction_strength_reduction_walks_a_byte_array_with_no_scale)
+{
+	// A one-byte element makes the address `base + i` with no multiply (ir_builder's lowerAddress),
+	// so the scaled operand IS the counter load and no scale instruction is emitted. The pointer
+	// still advances by the step and the function is one local wider.
+	std::string_view source =
+		"int f(char* s, int n) { int total = 0; for (int i = 0; i < n; i = i + 1) { total = total + s[i]; } return total; }";
+	std::string after = optimizedIr(source, loopAndInduction(), "f");
+	CHECK(contains(after, "locals=5")); // params(2) + total + i + the pointer
+	CHECK(countOf(after, "shl") == 0);
+	CHECK(countOf(after, "mul") == 0);
+}
+
 TEST(ir_optimizer, induction_strength_reduction_advances_a_global_array_walk)
 {
 	// A global array's address is loop invariant with no LICM help, so this is the pass on its own:
@@ -521,6 +548,19 @@ TEST(ir_optimizer, induction_strength_reduction_leaves_a_loop_that_calls_alone)
 	// base is a global here, so invariance is not what makes the pass decline - the call is.
 	std::string_view source =
 		"int g(int); int data[8]; int f(int n) { int s = 0; for (int i = 0; i < n; i = i + 1) { s = s + data[i] + g(i); } return s; }";
+	support::OptimizationOptions without = loopAndInduction();
+	without.inductionStrengthReduction = false;
+	CHECK_EQ(optimizedIr(source, loopAndInduction(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, induction_strength_reduction_does_not_mistake_a_shift_for_a_multiply)
+{
+	// `p[1 << i]` is `1 << counter`, not `counter << 1`: the counter is the shift AMOUNT, so the
+	// address is exponential in it and cannot become an advancing pointer. A multiply is
+	// commutative, a shift is not - reading the counter from either side of a `<<` was a real
+	// miscompile before this was pinned.
+	std::string_view source =
+		"int f(char* p, int n) { int total = 0; for (int i = 0; i < n; i = i + 1) { total = total + p[1 << i]; } return total; }";
 	support::OptimizationOptions without = loopAndInduction();
 	without.inductionStrengthReduction = false;
 	CHECK_EQ(optimizedIr(source, loopAndInduction(), "f"), optimizedIr(source, without, "f"));
