@@ -1043,6 +1043,8 @@ namespace ceresc::codegen
 				const auto& p = instr.as<IrCallPayload>();
 				if (p.callee == "__cc_memset")
 					_usesMemset = true; // the routine is emitted at the end of @text, not linked in
+				if (p.callee == "__cc_memcpy")
+					_usesMemcpy = true;
 				if (!p.inlineAsm.empty())
 				{
 					// The author's own text, a line at a time: a line ending in ':' is a label and stands at the left
@@ -2186,43 +2188,89 @@ namespace ceresc::codegen
 
 	void CodeGen::emitLoopIdiomRoutines()
 	{
-		if (!_usesMemset)
-			return;
-
-		// The byte-fill loop's word-at-a-time routine (ir_optimizer.cpp's lowerFillIdioms). A leaf
+		// The byte-fill loop's word-at-a-time routine (ir_optimizer.cpp's lowerLoopIdioms). A leaf
 		// with no frame: it uses r0-r7 only and returns nothing, so it is just `ret`. The counter is
 		// signed, so a non-positive `n` fills nothing - exactly what the `for (i = 0; i < n; i++)`
 		// it replaces did. File-level (no `global`), so each unit carries its own copy and two units
 		// that both use the idiom never collide at link time.
-		_emitter.raw("// emitted because a byte-fill loop was recognized (docs/14 O15)");
-		_emitter.label("__cc_memset");
-		_emitter.instr("ifle r2, 0, .ccm_done");   // a signed count <= 0 fills nothing
-		_emitter.instr("and  r1, r1, 255");        // keep only the low byte of the fill value
-		_emitter.instr("la   r5, 0x01010101");
-		_emitter.instr("mul  r5, r1, r5");         // replicate it into all four bytes
-		_emitter.instr("and  r6, r0, 3");
-		_emitter.instr("ifeq r6, 0, .ccm_words");  // already aligned: straight to words
-		_emitter.localLabel("ccm_align");
-		_emitter.instr("ifeq r2, 0, .ccm_done");
-		_emitter.instr("strb [r0], r1");
-		_emitter.instr("add  r0, r0, 1");
-		_emitter.instr("sub  r2, r2, 1");
-		_emitter.instr("and  r6, r0, 3");
-		_emitter.instr("ifne r6, 0, .ccm_align"); // bytes to the edge, then fall into the word loop
-		_emitter.localLabel("ccm_words");
-		_emitter.instr("ifbl r2, 4, .ccm_tail");
-		_emitter.instr("str  [r0], r5");
-		_emitter.instr("add  r0, r0, 4");
-		_emitter.instr("sub  r2, r2, 4");
-		_emitter.instr("jp   .ccm_words");
-		_emitter.localLabel("ccm_tail");
-		_emitter.instr("ifeq r2, 0, .ccm_done");
-		_emitter.instr("strb [r0], r1");
-		_emitter.instr("add  r0, r0, 1");
-		_emitter.instr("sub  r2, r2, 1");
-		_emitter.instr("jp   .ccm_tail");
-		_emitter.localLabel("ccm_done");
-		_emitter.instr("ret");
+		if (_usesMemset)
+		{
+			_emitter.raw("// emitted because a byte-fill loop was recognized (docs/14 O15)");
+			_emitter.label("__cc_memset");
+			_emitter.instr("ifle r2, 0, .ccm_done");   // a signed count <= 0 fills nothing
+			_emitter.instr("and  r1, r1, 255");        // keep only the low byte of the fill value
+			_emitter.instr("la   r5, 0x01010101");
+			_emitter.instr("mul  r5, r1, r5");         // replicate it into all four bytes
+			_emitter.instr("and  r6, r0, 3");
+			_emitter.instr("ifeq r6, 0, .ccm_words");  // already aligned: straight to words
+			_emitter.localLabel("ccm_align");
+			_emitter.instr("ifeq r2, 0, .ccm_done");
+			_emitter.instr("strb [r0], r1");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("and  r6, r0, 3");
+			_emitter.instr("ifne r6, 0, .ccm_align"); // bytes to the edge, then fall into the word loop
+			_emitter.localLabel("ccm_words");
+			_emitter.instr("ifbl r2, 4, .ccm_tail");
+			_emitter.instr("str  [r0], r5");
+			_emitter.instr("add  r0, r0, 4");
+			_emitter.instr("sub  r2, r2, 4");
+			_emitter.instr("jp   .ccm_words");
+			_emitter.localLabel("ccm_tail");
+			_emitter.instr("ifeq r2, 0, .ccm_done");
+			_emitter.instr("strb [r0], r1");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("jp   .ccm_tail");
+			_emitter.localLabel("ccm_done");
+			_emitter.instr("ret");
+		}
+
+		// The byte-copy loop's word-at-a-time routine. The C loop it replaces is a FORWARD byte
+		// copy, well defined even when the ranges overlap (with `d > s` it repeats bytes), so this
+		// is not `memcpy`: it copies words only where that is provably the same - `d <= s` (a
+		// forward copy cannot clobber a byte it has not read) or the ranges disjoint - and falls
+		// back to a faithful forward byte copy for the `d > s` overlap. A signed count <= 0 copies
+		// nothing.
+		if (_usesMemcpy)
+		{
+			_emitter.raw("// emitted because a byte-copy loop was recognized (docs/14 O15)");
+			_emitter.label("__cc_memcpy");
+			_emitter.instr("ifle r2, 0, .ccm2_done");  // a signed count <= 0 copies nothing
+			_emitter.instr("ifbe r0, r1, .ccm2_fast"); // d <= s: a forward copy is always safe
+			_emitter.instr("add  r5, r1, r2");
+			_emitter.instr("ifae r0, r5, .ccm2_fast"); // d >= s + n: the ranges are disjoint
+			_emitter.localLabel("ccm2_slow");          // d > s and overlapping: faithful byte copy
+			_emitter.instr("ifeq r2, 0, .ccm2_done");
+			_emitter.instr("ldrb r5, [r1]");
+			_emitter.instr("strb [r0], r5");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("add  r1, r1, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("jp   .ccm2_slow");
+			_emitter.localLabel("ccm2_fast");
+			_emitter.instr("or   r5, r0, r1");
+			_emitter.instr("and  r5, r5, 3");
+			_emitter.instr("ifne r5, 0, .ccm2_tail");  // either pointer unaligned: bytes only
+			_emitter.localLabel("ccm2_words");
+			_emitter.instr("ifbl r2, 4, .ccm2_tail");
+			_emitter.instr("ldr  r5, [r1]");
+			_emitter.instr("str  [r0], r5");
+			_emitter.instr("add  r0, r0, 4");
+			_emitter.instr("add  r1, r1, 4");
+			_emitter.instr("sub  r2, r2, 4");
+			_emitter.instr("jp   .ccm2_words");
+			_emitter.localLabel("ccm2_tail");
+			_emitter.instr("ifeq r2, 0, .ccm2_done");
+			_emitter.instr("ldrb r5, [r1]");
+			_emitter.instr("strb [r0], r5");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("add  r1, r1, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("jp   .ccm2_tail");
+			_emitter.localLabel("ccm2_done");
+			_emitter.instr("ret");
+		}
 	}
 
 	void CodeGen::emitJumpTables()
@@ -2361,6 +2409,7 @@ namespace ceresc::codegen
 		_jumpTables.clear();
 		_nextJumpTableId = 0;
 		_usesMemset = false;
+		_usesMemcpy = false;
 
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the

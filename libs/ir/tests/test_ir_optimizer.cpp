@@ -712,6 +712,37 @@ TEST(ir_optimizer, loop_idioms_accept_a_constant_count)
 	CHECK(contains(optimizedIr(source, fillIdiomsClean(), "f"), "call __cc_memset"));
 }
 
+TEST(ir_optimizer, loop_idioms_turn_a_byte_copy_loop_into_a_call_to_the_emitted_routine)
+{
+	std::string_view source = "void f(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+
+	CHECK(contains(optimizedIr(source, without, "f"), "store.byte")); // the loop is there
+	std::string after = optimizedIr(source, fillIdiomsClean(), "f");
+	CHECK(contains(after, "call __cc_memcpy"));                        // ...and is a copy
+	CHECK(!contains(after, "store.byte"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_copy_with_a_shifted_source_alone)
+{
+	// `d[i] = s[i + 1]` reads a different element each iteration: the source index is not the
+	// counter, so it is neither a copy nor a fill.
+	std::string_view source =
+		"void f(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i + 1]; } }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_word_copy_alone)
+{
+	std::string_view source = "void f(int* d, int* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
 // ---- block layout --------------------------------------------------------------------------------
 
 TEST(ir_optimizer, block_layout_emits_a_branch_false_arm_before_its_true_arm)

@@ -2003,3 +2003,18 @@ TEST(codegen, the_emitted_routine_is_not_present_when_no_loop_asks_for_it)
 {
 	CHECK(!contains(atO2("int f(int a) { return a + 1; }"), "__cc_memset"));
 }
+
+TEST(codegen, a_recognized_byte_copy_loop_emits_the_overlap_safe_word_routine)
+{
+	std::string_view source = "void f(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }";
+	std::string text = atO2(source);
+	CHECK(contains(text, "call __cc_memcpy"));
+	CHECK(contains(text, "__cc_memcpy:"));
+	CHECK(!contains(text, "global __cc_memcpy:"));
+	CHECK(contains(text, "ldr  r5, [r1]"));   // words are copied...
+	CHECK(contains(text, "ccm2_slow"));       // ...except where overlap makes a byte copy necessary
+	CHECK(contains(text, "ifbe r0, r1"));     // d <= s: forward is safe
+	CHECK(contains(text, "ifae r0, r5"));     // d >= s + n: disjoint
+
+	CHECK(!contains(atO2Without(source, &support::OptimizationOptions::loopIdioms), "__cc_memcpy"));
+}

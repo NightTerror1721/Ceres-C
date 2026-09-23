@@ -414,11 +414,12 @@ namespace ceresc::codegen
 		// The unit declares `void exit(int)`, so `main` ends by calling it with its own status.
 		bool _mainCallsExit = false;
 
-		// Set while generating a call to a loop-idiom routine (ir_optimizer.cpp's lowerFillIdioms),
-		// so generate() emits that routine's body once at the end of `@text`. The routine is not in
-		// the library and not in the AST - the compiler carries its own copy, and only when a call
-		// site asked for it.
+		// Set while generating a call to a loop-idiom routine (ir_optimizer.cpp's lowerLoopIdioms),
+		// so generate() emits that routine's body once at the end of `@text`. The routines are not
+		// in the library and not in the AST - the compiler carries its own copies, and only when a
+		// call site asked for one.
 		bool _usesMemset = false;
+		bool _usesMemcpy = false;
 		// Emits every loop-idiom routine a call site asked for, at the end of `@text`.
 		void emitLoopIdiomRoutines();
 

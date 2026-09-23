@@ -64,7 +64,7 @@ namespace ceresc::support
 		bool conditionalConstants = true;		// branch-aware constant propagation: resolve a branch/switch on a known constant
 		bool loopInvariantMotion = true;		// hoist a loop-invariant computation into the loop's preheader
 		bool inductionStrengthReduction = true;	// replace `base + i*C` in a loop with a pointer advanced by k*C
-		bool loopIdioms = true;					// turn a byte fill loop into a call to a word-at-a-time routine
+		bool loopIdioms = true;					// turn a byte fill/copy loop into a call to a word-at-a-time routine
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
 		bool framelessLeaf = true;				// no enter/leave at all when nothing needs the frame
@@ -116,7 +116,7 @@ namespace ceresc::support
 			{ "sccp",               &OptimizationOptions::conditionalConstants,     "propagate constants along taken branches and resolve a constant switch" },
 			{ "loop-invariant",     &OptimizationOptions::loopInvariantMotion,      "hoist a loop-invariant computation into the loop's preheader" },
 			{ "induction-vars",     &OptimizationOptions::inductionStrengthReduction, "replace `base + i*C` in a loop with a pointer advanced by the counter's step times C" },
-			{ "loop-idioms",        &OptimizationOptions::loopIdioms,               "lower a byte fill loop to a word-at-a-time routine the back end emits" },
+			{ "loop-idioms",        &OptimizationOptions::loopIdioms,               "lower a byte fill/copy loop to a word-at-a-time routine the back end emits" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },

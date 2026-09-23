@@ -1097,7 +1097,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
-| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | parcial (relleno hecho; copia y búsqueda pendientes) |
+| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | parcial (relleno y copia hechos; búsqueda pendiente) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
@@ -1221,10 +1221,18 @@ de llamadas, de comparación sin signo ni de contadores que no empiecen en 0) y 
 para elevar `c`, que llega estrechado; los cinco casos negativos están cubiertos por tests.
 `examples/32_loop_fill.c` fija la salida a mano a los tres niveles, incluido el caso `n = 0`.
 
-Queda la mitad grande de O15: los idiomas de **copia** (`d[i] = s[i]`) y de **búsqueda**
-(`while (*s) s++;`, `strcmp`, `memchr`), que necesitan la misma infraestructura de rutina emitida
-pero una rutina más compleja (copia con origen y destino desalineados, y la prueba palabra a palabra
-`(w - 0x01010101) & ~w & 0x80808080`).
+**La copia también está** (`lowerLoopIdioms`, el mismo pase y flag). `for (i = 0; i < n; i++) d[i] =
+s[i];` se baja a `__cc_memcpy`, con la sutileza de que el bucle C es una **copia hacia delante por
+bytes, bien definida aunque los rangos se solapen** (con `d > s` repite bytes, que es justo lo que
+`memcpy`/`memmove` no reproducen). La rutina emitida copia palabras solo donde es demostrablemente
+equivalente —`d <= s`, o rangos disjuntos— y cae a una copia hacia delante por bytes fiel en el
+solape con `d > s`; un contador con signo ≤ 0 no copia nada. `examples/33_loop_copy.c` fija a mano
+los tres casos (disjunto, solape `d > s`, solape `d < s`) a los tres niveles.
+
+Queda la **búsqueda** (`while (*s) s++;`/`strlen`, `strcmp`, `memchr`, `strchr`), que necesita la
+misma infraestructura de rutina emitida pero un reconocimiento distinto: esos bucles tienen varias
+salidas (encontrado/no encontrado) y su resultado es el contador o un puntero leído tras el bucle, y
+la comparación usa la prueba palabra a palabra `(w - 0x01010101) & ~w & 0x80808080`.
 
 **F6 se partió en dos.** El *flexible array member* es autocontenido (parser, layout, `sizeof`,
 acceso) y ya está hecho. `alloca`/VLA no lo son: el compilador direcciona todo el frame como

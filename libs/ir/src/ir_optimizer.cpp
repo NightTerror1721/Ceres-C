@@ -3174,31 +3174,39 @@ namespace ceresc::ir
 			return true;
 		}
 
-		// ---- pass: loop idiom recognition (byte fill) ---------------------------------------------------
+		// ---- pass: loop idiom recognition (byte fill and byte copy) -------------------------------------
 		//
-		// `for (i = 0; i < n; i++) p[i] = c;` writes one byte at a time, and on this machine a byte
-		// store costs the same as a word store - so the loop is four times the work it needs to be.
-		// The STDLIB's hand-written routines measure ~3x faster than their C versions for exactly
-		// this reason (docs/14 O15). This pass recognizes the canonical fill loop and replaces it
-		// with a call to a private routine the back end emits, `__cc_memset`, which fills
-		// word-at-a-time once the destination is aligned.
+		// `for (i = 0; i < n; i++) p[i] = c;` and `for (i = 0; i < n; i++) d[i] = s[i];` move one
+		// byte at a time, and on this machine a byte access costs the same as a word access - so the
+		// loop is four times the work it needs to be. The STDLIB's hand-written routines measure ~3x
+		// faster than their C versions for exactly this reason (docs/14 O15). This pass recognizes
+		// the canonical fill and copy loops and replaces each with a call to a private routine the
+		// back end emits - `__cc_memset` and `__cc_memcpy` - which work word-at-a-time once the
+		// pointers are aligned.
 		//
-		// The routine is EMITTED by libs/codegen, never linked from the library, so a program that
-		// uses the idiom always has it and a program that does not pays nothing. It is a file-level
-		// (private) label, so two units that both use the idiom each get their own copy and the
-		// linker never sees a duplicate.
+		// The routines are EMITTED by libs/codegen, never linked from the library, so a program that
+		// uses an idiom always has its routine and a program that does not pays nothing. They are
+		// file-level (private) labels, so two units that both use an idiom each get their own copy
+		// and the linker never sees a duplicate.
+		//
+		// A copy is subtle where a fill is not: the C loop is a FORWARD byte copy, well defined even
+		// when `d` and `s` overlap (with `d > s` it repeats bytes), which `memcpy`/`memmove` would
+		// not reproduce. The emitted `__cc_memcpy` therefore copies words only when that is provably
+		// equivalent - `d <= s`, or the ranges disjoint - and falls back to a faithful forward byte
+		// copy otherwise.
 		//
 		// Recognition is deliberately narrow, because everything accepted here is replaced wholesale:
 		//   - the loop has a preheader and a unique latch, and the only edge leaving it is the
 		//     header's `counter < n` (signed) false edge - no `break`, no `return`;
 		//   - the counter is a non-escaping word local, initialized to 0 before the loop and
 		//     incremented by exactly 1 in the latch, and nothing reads its slot after the loop;
-		//   - the loop's only side effect is a single non-volatile byte store through
-		//     `base + counter`, with `base`, `n` and the stored value all loop invariant.
+		//   - the loop's only side effect is a single non-volatile byte store through `base +
+		//     counter`, run on every iteration; its value is either loop invariant (a fill) or a
+		//     non-volatile byte read of `srcBase + counter` (a copy).
 		// Anything else falls through to the ordinary pipeline (and the loop may still be improved by
 		// induction-variable strength reduction).
 
-		bool lowerFillIdioms(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		bool lowerLoopIdioms(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
 		{
 			if (!options.loopIdioms)
 				return false;
@@ -3500,7 +3508,9 @@ namespace ceresc::ir
 						continue;
 				}
 
-				// It is a byte store through `base + counter`.
+				// It is a byte store through `base + counter`. Its value is either loop invariant -
+				// a FILL, `p[i] = c` - or a non-volatile byte read of `srcBase + counter`, a COPY,
+				// `d[i] = s[i]`.
 				const IrStorePayload& fill = fillStore->as<IrStorePayload>();
 				if (fill.isFloat || fill.isVolatile || fill.size != IrMemSize::Byte)
 					continue;
@@ -3520,10 +3530,46 @@ namespace ceresc::ir
 					base = add.lhs;
 				else
 					continue;
-				// A value that is itself a read of the counter is not loop invariant - `p[i] = i`
-				// is not a fill.
-				if (isLoadOfLocal(base, counterLocal) || isLoadOfLocal(fill.value, counterLocal)
-					|| isLoadOfLocal(boundValue, counterLocal))
+				if (isLoadOfLocal(base, counterLocal) || isLoadOfLocal(boundValue, counterLocal))
+					continue;
+
+				// A COPY needs the stored value to be a byte read of `srcBase + counter` through the
+				// same counter; anything else is a FILL, and its value must be loop invariant (which
+				// materialize() below decides).
+				bool isCopy = false;
+				IrValue copyBase{};
+				{
+					IrValue stored = fill.value;
+					if (stored.isValid() && stored.id < tempCount && defCount[stored.id] == 1)
+					{
+						const IrInstr* valueDef = definer[stored.id];
+						if (valueDef && valueDef->opcode() == IrOpcode::Load)
+						{
+							const IrLoadPayload& source = valueDef->as<IrLoadPayload>();
+							if (!source.isFloat && !source.isVolatile && source.size == IrMemSize::Byte
+								&& source.address.isValid() && source.address.id < tempCount && defCount[source.address.id] == 1)
+							{
+								const IrInstr* sourceAddrDef = definer[source.address.id];
+								if (sourceAddrDef && sourceAddrDef->opcode() == IrOpcode::BinOp)
+								{
+									const IrBinOpPayload& sourceAdd = sourceAddrDef->as<IrBinOpPayload>();
+									if (!sourceAdd.isFloat && sourceAdd.op == IrBinOp::Add)
+									{
+										if (isLoadOfLocal(sourceAdd.lhs, counterLocal))
+											copyBase = sourceAdd.rhs;
+										else if (isLoadOfLocal(sourceAdd.rhs, counterLocal))
+											copyBase = sourceAdd.lhs;
+										if (copyBase.isValid())
+											isCopy = true;
+									}
+								}
+							}
+						}
+					}
+				}
+				// Neither a fill value nor a copy source may itself be a read of the counter
+				// (`p[i] = i`, `d[i] = s[i + 1]` are not the idioms).
+				if (isCopy ? isLoadOfLocal(copyBase, counterLocal) : isLoadOfLocal(fill.value, counterLocal))
 					continue;
 
 				// Nothing the loop defines may be read after it.
@@ -3611,22 +3657,22 @@ namespace ceresc::ir
 				};
 
 				IrValue destination = materialize(base);
-				IrValue fillValue = materialize(fill.value);
+				IrValue second = isCopy ? materialize(copyBase) : materialize(fill.value);
 				IrValue count = materialize(boundValue);
-				if (!destination.isValid() || !fillValue.isValid() || !count.isValid())
+				if (!destination.isValid() || !second.isValid() || !count.isValid())
 					continue;
 
 				IrParamPayload first;
 				first.value = destination;
 				injected.push_back(arena.create<IrInstr>(loc, first));
-				IrParamPayload second;
-				second.value = fillValue;
-				injected.push_back(arena.create<IrInstr>(loc, second));
+				IrParamPayload secondParam;
+				secondParam.value = second;
+				injected.push_back(arena.create<IrInstr>(loc, secondParam));
 				IrParamPayload third;
 				third.value = count;
 				injected.push_back(arena.create<IrInstr>(loc, third));
 				IrCallPayload call;
-				call.callee = "__cc_memset";
+				call.callee = isCopy ? "__cc_memcpy" : "__cc_memset";
 				call.argCount = 3;
 				call.hasResult = false;
 				injected.push_back(arena.create<IrInstr>(loc, call));
@@ -4285,7 +4331,7 @@ namespace ceresc::ir
 				changed |= threadJumps(*function, arena, options);
 				changed |= removeUnreachableBlocks(*function, options);
 				changed |= hoistLoopInvariants(*function, options);
-				changed |= lowerFillIdioms(*function, arena, options);
+				changed |= lowerLoopIdioms(*function, arena, options);
 				changed |= strengthReduceInductionVariables(*function, arena, options);
 				changed |= layoutBlocks(*function, options);
 				changed |= eliminateDeadCode(*function, options, pureFunctions);
