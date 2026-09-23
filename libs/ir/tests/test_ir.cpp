@@ -166,21 +166,28 @@ TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
 
 TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
 {
-	// Shifts and float conversions are F3.3 and must be refused rather than miscompiled.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; return (int)(a << 1); }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; double d = (double)a; return (int)d; }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = (long long)1.5; return (int)a; }"), "not supported in generated code"));
-	// A float source reaching a wide store through an initializer or assignment (not a cast) is the
-	// same conversion and must be refused at the store, its one chokepoint.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1.5; return (int)a; }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; a = 2.5f; return (int)a; }"), "not supported in generated code"));
-	// A wide operand in a float expression means converting the whole value to float (F3.3), not
-	// truncating it to the low word.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; float f = a + 1.5f; return (int)f; }"), "not supported in generated code"));
-
-	// The 64-bit calling convention is F3.4.
+	// The 64-bit calling convention is F3.4 and must be refused rather than half-implemented.
 	CHECK(containsMessage(loweringDiagnostics("long long f() { return 0; } int main() { return 0; }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int f(long long v) { return 0; } int main() { return 0; }"), "not supported in generated code"));
+
+	// A wide discriminant (F9) and a wide builtin operand (there is no 64-bit machine builtin) too.
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; switch (a) { case 1: return 0; } return 1; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; return __builtin_clz(a); }"), "not supported in generated code"));
+}
+
+TEST(ir, the_64_bit_shifts_and_conversions_lower)
+{
+	// F3.3: shifts and the float conversions of a 64-bit value all lower now.
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; return (int)(a << 1); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 4; return (int)(a >> 1); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; double d = (double)a; return (int)d; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = (long long)1.5; return (int)a; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; float f = a + 1.5f; return (int)f; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; return a < 1.5f; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; bool b = a; return b; }"), "not supported in generated code"));
+
+	// A shift by 32 branches on the count, so the fully-optimized pipeline sees real control flow.
+	CHECK(functionIr("int main() { long long a = 1; return (int)(a << 40); }").find("shl") != std::string::npos);
 }
 
 TEST(ir, the_64_bit_mul_div_mod_lower_to_the_symbol_and_the_emitted_routine)

@@ -45,6 +45,11 @@ TEST(diagnostic_id, only_a_warning_can_be_named_by_a_number)
 	CHECK(*warningWithNumber(3001) == DiagnosticId::ConstWithoutInitializer);
 	CHECK(!warningWithNumber(3023).has_value());              // E3023 is an error
 	CHECK(!warningWithNumber(9999).has_value());              // and this is nothing at all
+
+	// The 64-bit out-of-range literal warning is controllable like any other.
+	CHECK(warningWithNumber(15).has_value());
+	CHECK(*warningWithNumber(15) == DiagnosticId::IntegerLiteralOutOfRange);
+	CHECK_EQ(diagnosticCode(DiagnosticId::IntegerLiteralOutOfRange), "W0015");
 }
 
 TEST(diagnostic_policy, a_change_governs_the_lines_after_it_and_not_the_ones_before)

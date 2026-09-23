@@ -1,6 +1,7 @@
 #include <ceresc/lexer/lexer.h>
 
 #include <charconv>
+#include <limits>
 #include <string>
 
 namespace ceresc::lexer
@@ -94,7 +95,21 @@ namespace ceresc::lexer
 		TokenValue::IntegralValue value = 0;
 		auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
 		if (result.ec == std::errc::result_out_of_range)
+		{
+			// The literal does not fit a 64-bit value at all. Report it once and keep the digits that
+			// did fit (from_chars leaves `value` untouched on overflow, so this is 0) rather than
+			// silently wrapping to a different number.
 			_diagnostics.error(DiagId::IntegerLiteralTooLarge, loc, "integer literal is too large to represent");
+		}
+		else if (isLongLong && !isUnsigned && value > static_cast<u64>((std::numeric_limits<i64>::max)()))
+		{
+			// In range for u64 but out of range for a signed `long long`. C gives an out-of-range
+			// decimal literal no type; a warning and a 64-bit reinterpretation is the useful answer,
+			// and it is what lets `0xFFFFFFFFFFFFFFFFLL` mean -1 in a mask or an unsigned context.
+			_diagnostics.warning(DiagId::IntegerLiteralOutOfRange, loc,
+				"integer literal {} is too large for a signed 'long long'; it is treated as its 64-bit bit pattern",
+				digits);
+		}
 
 		return Token::makeLiteralInt(lexeme, value, loc, isUnsigned, isLongLong);
 	}

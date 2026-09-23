@@ -308,6 +308,42 @@ TEST(lexer, a_single_l_suffix_is_not_consumed)
 	CHECK_EQ(identifier.lexeme(), std::string_view("l"));
 }
 
+TEST(lexer, a_negative_decimal_signed_ll_literal_warns_but_keeps_its_bits)
+{
+	// 2^63 does not fit a signed `long long`. C gives such a literal no type; this compiler keeps
+	// its 64-bit bit pattern and warns (W0015), so `0x8000000000000000LL` in a mask still works.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("9223372036854775807LL 9223372036854775808LL 18446744073709551615LL", testSourceId(), diagnostics, pool);
+
+	Token max = lexer.next();
+	CHECK(max.isLiteralInt());
+	CHECK(max.isLongLong());
+	CHECK_EQ(max.integralValue(), u64(0x7FFFFFFFFFFFFFFF));
+
+	Token over = lexer.next();
+	CHECK(over.isLiteralInt());
+	CHECK_EQ(over.integralValue(), u64(0x8000000000000000));
+
+	Token way = lexer.next();
+	CHECK_EQ(way.integralValue(), u64(0xFFFFFFFFFFFFFFFF));
+
+	CHECK_EQ(diagnostics.diagnostics().size(), std::size_t(2)); // the two out-of-range ones
+	for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+		CHECK_EQ(static_cast<u16>(diagnostic.id), static_cast<u16>(support::DiagnosticId::IntegerLiteralOutOfRange));
+}
+
+TEST(lexer, an_unsigned_ll_literal_of_the_full_range_does_not_warn)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("18446744073709551615ULL 0xFFFFFFFFFFFFFFFFULL", testSourceId(), diagnostics, pool);
+
+	CHECK_EQ(lexer.next().integralValue(), u64(0xFFFFFFFFFFFFFFFF));
+	CHECK_EQ(lexer.next().integralValue(), u64(0xFFFFFFFFFFFFFFFF));
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
 // ---- char literals ---------------------------------------------------------------------------
 
 TEST(lexer, simple_char_literal)

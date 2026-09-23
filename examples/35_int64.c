@@ -10,8 +10,9 @@
 // takes a POINTER to the value rather than the value itself, because a 64-bit value cannot yet cross
 // a function boundary (the wide calling convention is a later phase).
 //
-// Shifts and the float conversions are the next phase and are refused with E5002 rather than
-// silently truncated; every line here is add/sub/mul/div/mod/bitwise/compare.
+// Shifts, and the conversions between a 64-bit integer and a `float`, are exercised below too:
+// a shift by 32 or more crosses the word boundary, and a float conversion goes sixteen bits at a
+// time (a value that does not fit 32 bits keeps its high half through the float and back).
 //
 //     ceresc examples/35_int64.c --run
 
@@ -116,6 +117,31 @@ int main(void)
     put64("-a / 5", &negatedQuotient);
     put64("-a % 5", &negatedRemainder);
     put64("(unsigned)a / 3", &unsignedQuotient);
+
+    // Shifts. A shift by 32 or more is the interesting side: the low word comes from the high one
+    // (or is zeroed on a left shift), and an arithmetic right shift fills with the sign.
+    long long leftSmall = a << 4;
+    long long leftLarge = a << 40;
+    long long rightLogical = (unsigned long long)a >> 36;
+    long long rightArithmetic = a >> 36;
+    long long negativeRight = (-1) >> 1;         // arithmetic: stays -1
+    put64("a << 4", &leftSmall);
+    put64("a << 40", &leftLarge);
+    put64("(unsigned)a >> 36", &rightLogical);
+    put64("a >> 36", &rightArithmetic);
+    put64("-1 >> 1", &negativeRight);
+
+    // float <-> 64-bit. A value with a non-zero high half survives the round trip through a float
+    // (f32 holds 24 significant bits, so 0x100000002 rounds to 0x100000000 - the high word is what
+    // is checked). The exact cases below are small enough to be represented precisely.
+    float fromWide = (float)0x0000000100000002LL; // 4294967298 -> 4294967296.0f (rounds)
+    long long backToWide = (long long)4294967296.0f;
+    long long negativeToWide = (long long)(-1.0f);
+    putstr("(float)0x100000002 == 4294967296.0f: ");
+    put(fromWide == 4294967296.0f ? '1' : '0');
+    put('\n');
+    put64("(long long)4294967296.0f", &backToWide);
+    put64("(long long)-1.0f", &negativeToWide);
 
     // The high word carries the comparison: signed and unsigned disagree on `-1`.
     putstr("a < a + b: ");

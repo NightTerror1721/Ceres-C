@@ -1102,7 +1102,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
-| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2 hechas** (tipo, layout, literales, representación, aritmética y mul/div/mod); F3.3–F3.5 pendientes |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2/F3.3 hechas** (tipo, representación, aritmética, mul/div/mod, shifts y conversiones); F3.4–F3.5 pendientes |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
 
@@ -1294,6 +1294,23 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   de signo del cociente, máscara `pushm`/`popm` como literal repetido (ahora `kDiv64SaveMask`),
   `emitEmittedRoutines` renombrado a `emitCarriedRoutines`, y un comentario del e2e con la fase
   equivocada (`F3.2-F3.4` → `F3.3-F3.4`).
+
+- **F3.3** (desplazamientos y conversiones con `float`): los shifts (`<<`, `>>`, aritmético y lógico)
+  se bajan a un **árbol de tres ramas** sobre el contador (0, 1..31, 32..63), porque un shift de 64
+  bits son dos de 32 y la ISA enmascara el contador a 5 bits; se materializa la dirección del resultado
+  y las constantes antes de ramificar para que dominen todas las ramas. Las conversiones
+  `int`↔`long long` ya estaban; `long long`↔`float` se hacen **de dieciséis bits en dieciséis** (Horner
+  para ir a `float`, descomposición con escalas 2^48/2^32/2^16 para volver), igual que el
+  `ns64_to_float` de la STDLIB. La conversión `long long`→`float` queda a menos de 1 ULP del redondeo
+  correcto (el f32 de la máquina no siempre puede más con una fuente de 64 bits); `float`→`long long`
+  es exacta en rango. La comparación de un ancho contra un `float` convierte el ancho entero vía
+  `toFloatIfNeeded`. Un literal decimal `LL` fuera del rango de `long long` (p. ej.
+  `18446744073709551615LL`) ahora **avisa** (`W0015`) y conserva su patrón de 64 bits (antes no avisaba
+  y quedaba en 0), y un `ULL` de todo el rango no avisa. Se validaron 384 casos de shift y ~90 de
+  conversión contra una referencia de Python a los tres niveles (banco de pruebas, fuera del repo).
+  Queda fuera de F3 solo la ABI ancha (F3.4: parámetro, retorno y argumento de 64 bits) y la STDLIB
+  (F3.5); un discriminante de `switch` ancho (F9) y un operando ancho de un builtin de una instrucción
+  siguen rechazados con E5002.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para

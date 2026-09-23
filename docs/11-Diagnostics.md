@@ -100,6 +100,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `W1004` | A `#pragma` this compiler does not know, ignored. |
 | `W1005` | A `#pragma warning(...)` this compiler could not read, ignored. |
 | `W1006` | A number in a `#pragma warning(...)` that does not name a warning. |
+| `W0015` | A decimal integer literal with an `ll`/`LL` suffix whose value fits a u64 but not a signed `long long`; it keeps its 64-bit bit pattern (so `18446744073709551615LL` reads as `-1`). An `ULL` literal of the full range does not warn. |
 | `W2001` | `double`/`long double` capped to `float` — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 | `W2002` | An `__attribute__` that is ignored: one this compiler does nothing with, or `aligned` above 4 — see [02-Grammar.md](02-Grammar.md). |
 | `W3001` | A `const` variable with no initializer, which can therefore only ever be zero. |

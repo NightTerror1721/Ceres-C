@@ -372,6 +372,20 @@ namespace ceresc::ir
 		// A 0/1 word for `lhsAddr op rhsAddr`, comparing the high words first (signed or unsigned as
 		// `isUnsigned` says) and the low words unsigned - the low half never carries the sign.
 		IrValue lowerWideCompare(support::SourceLocation loc, ast::BinaryOp op, IrValue lhsAddr, IrValue rhsAddr, bool isUnsigned);
+		// `value << amount`, `value >> amount` (logical) or `>>` (arithmetic) for a wide value and a
+		// shift count 0..63. The count is branched on (0, 1..31, 32..63) because a 64-bit shift is
+		// two 32-bit shifts whose direction changes at 32, and the ISA masks a count to 5 bits.
+		IrValue lowerWideShift(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* resultType,
+			IrValue value, IrValue amount, bool valueVolatile);
+		// `-value` on a wide value (two's complement on the pair), as the address of a fresh temp.
+		IrValue lowerWideNegate(support::SourceLocation loc, IrValue address, bool isVolatile);
+		// A non-negative wide magnitude as an `f32`, sixteen bits at a time (Horner, as the STDLIB's
+		// ns64_to_float does): within one ULP of a correctly-rounded conversion, which the machine's
+		// f32-only float cannot always promise anyway. ConvertForStore applies the sign.
+		IrValue lowerWideMagnitudeToFloat(support::SourceLocation loc, IrValue address, bool isVolatile);
+		// A non-negative `f32` < 2^64 as a wide integer, sixteen bits at a time - exact, because each
+		// step's quotient fits 16 bits and `iitof` of it is exact. ConvertForStore applies the sign.
+		IrValue lowerFloatMagnitudeToWide(support::SourceLocation loc, IrValue value);
 		// The low word of a wide value for a context that needs a scalar (an array index, a pointer
 		// offset, a shift amount) - C converts each of those to `int`, so this is that truncation.
 		// A scalar passes through unchanged.

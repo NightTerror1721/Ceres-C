@@ -403,10 +403,10 @@ struct Padded { char tag; int value; char flag; };
 
 `long long` and `unsigned long long` are real 8-byte types: `sizeof`, struct layout and an `ll`/`LL`
 literal suffix all see the full width, and a value lowers as an addressed pair of words, so
-addition, subtraction, multiplication, division, remainder, the bitwise operators, comparisons and
-assignment compute on all 64 bits. Shifts and the float conversions, and passing a 64-bit value
-across a function boundary, are not implemented yet — a program that uses one of those is refused
-with `E5002` rather than silently truncated. See [06-Known-Limitations.md](06-Known-Limitations.md).
+arithmetic, shifts, the bitwise operators, comparisons, assignment and the `float` conversions
+(`float`↔`long long`) all compute on the full 64 bits. Passing a 64-bit value across a function
+boundary is not implemented yet — a program that does so is refused with `E5002` rather than
+silently truncated. See [06-Known-Limitations.md](06-Known-Limitations.md).
 
 ## Errors
 

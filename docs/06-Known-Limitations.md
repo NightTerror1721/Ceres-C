@@ -85,23 +85,31 @@ end handles it with no new IR opcode. That covers:
   (`MULH`), and a division or remainder calls the compiler's own `__cc_div64` — a restoring
   shift-subtract loop the back end emits once, at the end of `@text`, only when a site asks for it.
   The quotient and the remainder share the call, signed and unsigned both;
+- **`<<`, `>>`** by 0..63, including the crossing at 32 (the low word comes from the high one, or is
+  zeroed on a left shift) and an arithmetic fill for a signed `>>`;
 - **comparisons** (`==`, `!=`, `<`, `<=`, `>`, `>=`), signed or unsigned, comparing the high words
-  first and the low words unsigned;
-- `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition, and an `int`↔`long long`
-  conversion (sign/zero extension, and truncation to the low word).
+  first and the low words unsigned, and against a `float` operand via a whole-value float conversion;
+- **`int`↔`long long`** (sign/zero extension, truncation to the low word) and **`float`↔`long long`**:
+  a conversion goes sixteen bits at a time (as the STDLIB's `ns64_to_float` does), so a value that
+  does not fit 32 bits keeps its high half. `long long`→`float` is within one ULP of correctly
+  rounded (the machine's f32 cannot always do better with a 64-bit source); `float`→`long long` is
+  exact for every value in range;
+- `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition.
 
 What is **not** implemented yet, and is refused with `E5002` rather than silently truncated:
 
-- **shifts by 0..63** and the **`float`↔`long long`** conversions (F3.3);
 - **passing or returning a 64-bit value** across a function boundary (F3.4 — the two-register
   calling convention). A wide *local* is fine; a wide parameter, return or call argument is not.
 
 ```c
 long long  a = 0x0000000100000002LL;  /* fine */
-a + 1;  a * 2;  a / 3;  a % 3;  a < b;  /* fine: 64-bit arithmetic and comparisons */
-a << 1;  (double)a;                  /* error[E5002]: not lowered yet */
+a + 1;  a * 2;  a / 3;  a << 40;  (float)a;  (long long)1.5f;  /* fine */
 long long  f(long long v);           /* error[E5002]: no 64-bit calling convention yet */
 ```
+
+A decimal literal with an `ll`/`LL` suffix whose value does not fit a signed `long long` (e.g.
+`18446744073709551615LL`) is out of range in C; here it warns (`W0015`) and keeps its 64-bit bit
+pattern, so it reads as `-1`. An `ULL` literal of the full range does not warn.
 
 A zero **divisor** in a 64-bit `/` or `%` is undefined in C, and the emitted routine stores zero
 rather than looping — the 32-bit instructions trap instead (see the division-by-zero note below).

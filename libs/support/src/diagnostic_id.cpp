@@ -27,6 +27,7 @@ namespace ceresc::support
 			case DiagnosticId::UnknownPragma:
 			case DiagnosticId::InvalidWarningPragma:
 			case DiagnosticId::UncontrollableDiagnostic:
+			case DiagnosticId::IntegerLiteralOutOfRange:
 			case DiagnosticId::CappedTypeWidth:
 			case DiagnosticId::AttributeIgnored:
 			case DiagnosticId::NoReturnFunctionReturns:
