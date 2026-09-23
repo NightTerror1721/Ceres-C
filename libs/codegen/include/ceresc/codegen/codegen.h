@@ -273,6 +273,20 @@ namespace ceresc::codegen
 		// that Cmp's payload.
 		bool findFusableCmp(std::span<ir::IrInstr* const> instrs, usize index, const ir::IrCmpPayload*& cmpOut) const;
 
+		// True when `instrs[index]` is a Call that is immediately followed by a Return of exactly
+		// its result - the shape a tail call collapses (`return f(args)`). The returned payload is
+		// that Return. The condition is deliberately conservative:
+		//   - a direct call to a named function (an indirect target or inline asm is left alone);
+		//   - every argument fits in an argument register, so no outgoing stack word has to be
+		//     written into the caller's frame after `leave` would have destroyed it;
+		//   - the call's result is read only by the Return, and the two agree on the bank;
+		//   - not `main` (its Return is the shutdown sequence, not a `ret`) and not an interrupt
+		//     handler (its Return is an `iret`).
+		// The caller emits the argument moves, then the ordinary epilogue with a `jp` in place of
+		// `ret`, and marks the Return consumed. The `jp` needs no return address of its own: the
+		// caller's own return address is already where the callee's `ret` will pop it.
+		const ir::IrReturnPayload* findTailCall(std::span<ir::IrInstr* const> instrs, usize index) const;
+
 		// ---- address folding (Fase 7) -----------------------------------------------------------
 
 		// One absorbed address computation: the base register's value plus either another register's

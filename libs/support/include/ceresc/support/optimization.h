@@ -60,6 +60,7 @@ namespace ceresc::support
 		bool strengthReduction = true;			// *2^k -> shl, /2^k -> shr/sar, %2^k -> and/bias
 		bool commonSubexpressionElimination = true; // reuse a pure expression already computed in the same block
 		bool blockLayout = true;				// order blocks so a jump to the next one is a fall-through
+		bool tailCalls = true;					// `return f(args)` restores the frame and jumps instead of call+ret
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
 		bool framelessLeaf = true;				// no enter/leave at all when nothing needs the frame
@@ -105,6 +106,7 @@ namespace ceresc::support
 			{ "strength-reduction", &OptimizationOptions::strengthReduction,        "turn *2^k, /2^k and %2^k into shifts and masks" },
 			{ "cse",                &OptimizationOptions::commonSubexpressionElimination, "reuse a pure expression already computed in the same basic block" },
 			{ "block-layout",       &OptimizationOptions::blockLayout,              "order blocks so a jump to the next one becomes a fall-through" },
+			{ "tail-calls",         &OptimizationOptions::tailCalls,                "turn `return f(args)` into a frame-restoring jump to f" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },
@@ -143,9 +145,11 @@ namespace ceresc::support
 			case OptimizationLevel::Og:
 				// For debugging: everything O1 does except the transforms that make the generated
 				// code harder to follow. Reusing one frame slot for locals in disjoint scopes is
-				// the one that makes a slot's identity change across scopes.
+				// the one that makes a slot's identity change across scopes, and a tail call erases
+				// a frame from the call stack the debugger would otherwise show.
 				options.inlining = false;
 				options.localSlotReuse = false;
+				options.tailCalls = false;
 				break;
 		}
 		return options;

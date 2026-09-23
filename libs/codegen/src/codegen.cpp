@@ -593,6 +593,60 @@ namespace ceresc::codegen
 		return true;
 	}
 
+	const IrReturnPayload* CodeGen::findTailCall(std::span<IrInstr* const> instrs, usize index) const
+	{
+		if (!_options.tailCalls || _generatingMain || _generatingInterrupt)
+			return nullptr;
+		if (index + 1 >= instrs.size() || instrs[index]->opcode() != IrOpcode::Call)
+			return nullptr;
+
+		const IrInstr& next = *instrs[index + 1];
+		if (next.opcode() != IrOpcode::Return)
+			return nullptr;
+
+		const auto& call = instrs[index]->as<IrCallPayload>();
+		if (call.isIndirect() || !call.inlineAsm.empty())
+			return nullptr;
+
+		const auto& ret = next.as<IrReturnPayload>();
+		if (call.hasResult != ret.hasValue)
+			return nullptr;
+		if (call.hasResult)
+		{
+			if (!(call.result == ret.value) || call.isFloat != ret.isFloat)
+				return nullptr;
+			// The result has to be private to this Return: a second reader would need the value
+			// after the jump, which a tail call cannot provide. One definition too, since this IR
+			// reuses temporary ids (see the header's note on that).
+			auto uses = _useCount.find(call.result.id);
+			auto defs = _defCount.find(call.result.id);
+			if (uses == _useCount.end() || uses->second != 1)
+				return nullptr;
+			if (defs == _defCount.end() || defs->second != 1)
+				return nullptr;
+		}
+
+		// Every argument must fit in an argument register: an outgoing stack word lives in the
+		// caller's frame, which `leave` would have destroyed by the time the callee reads it.
+		if (call.argCount > index)
+			return nullptr;
+		std::vector<bool> argIsFloat(call.argCount);
+		for (u32 k = 0; k < call.argCount; ++k)
+		{
+			const IrInstr& paramInstr = *instrs[index - call.argCount + k];
+			if (paramInstr.opcode() != IrOpcode::Param)
+				return nullptr;
+			argIsFloat[k] = paramInstr.as<IrParamPayload>().isFloat;
+		}
+		std::vector<ArgSlot> slots = assignArgSlots(argIsFloat,
+			fixedArgCountOf(instrs.subspan(index - call.argCount, call.argCount)));
+		for (const ArgSlot& slot : slots)
+			if (slot.kind == ArgSlotKind::Stack)
+				return nullptr;
+
+		return &ret;
+	}
+
 	// ---- address folding --------------------------------------------------------------------
 
 	bool CodeGen::livesInSlot(IrValue value) const
@@ -1060,6 +1114,23 @@ namespace ceresc::codegen
 							break;
 						}
 					}
+				}
+
+				if (findTailCall(instrs, index) != nullptr)
+				{
+					// `return f(args)`: the arguments are in place, so restore the caller's frame
+					// and callee-saved registers exactly as the epilogue would, then jump. The
+					// callee's own `ret` pops the return address OUR caller pushed, so no new frame
+					// is opened and the call costs no push/pop pair. The result needs no move: it is
+					// already in r0/f0, which is where our caller reads it.
+					if (_hasFrame)
+						_emitter.instr("leave", comment);
+					if (_calleeSavedFloatMask)
+						_emitter.instr(std::format("fpopm 0x{:04X}", _calleeSavedFloatMask), comment);
+					if (_calleeSavedIntMask)
+						_emitter.instr(std::format("popm 0x{:04X}", _calleeSavedIntMask), comment);
+					_emitter.instr(std::format("jp {}", casmName(p.callee)), comment);
+					break;
 				}
 
 				if (p.isIndirect())
@@ -1647,6 +1718,9 @@ namespace ceresc::codegen
 				FoldedAddress folded;
 				if (findFoldableAddress(instrs, i, folded))
 					_skipInstr[i - 1] = true; // the `add` disappears into the access's own operand
+				// The Return a tail call folds into the Call before it is emitted by that Call.
+				if (findTailCall(instrs, i) != nullptr)
+					_skipInstr[i + 1] = true;
 			}
 
 			for (usize i = 0; i < instrs.size(); ++i)

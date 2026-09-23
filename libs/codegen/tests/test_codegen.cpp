@@ -1806,3 +1806,64 @@ TEST(codegen, a_dense_switch_becomes_a_jump_table_and_the_flag_turns_it_off)
 	CHECK(contains(withoutTable, "ifeq r0, 1, .L"));         // the chain is back
 	CHECK(contains(withoutTable, "ifeq r0, 2, .L"));
 }
+
+// ---- tail calls -------------------------------------------------------------------------------
+
+TEST(codegen, a_return_of_a_call_restores_the_frame_and_jumps)
+{
+	// `return g(x)` needs no return address of its own: the caller's is already where g's `ret`
+	// pops it, so the epilogue is a `jp` instead of a `call` plus a `ret`.
+	std::string text = atO2("int g(int x); int f(int x) { return g(x); }");
+	CHECK(contains(text, "jp g"));
+	CHECK(!contains(text, "call g"));
+	CHECK(!contains(text, "ret"));
+}
+
+TEST(codegen, the_flag_turns_tail_calls_off)
+{
+	std::string text = generateCasm("int g(int x); int f(int x) { return g(x); }",
+		without(&support::OptimizationOptions::tailCalls));
+	CHECK(contains(text, "call g"));
+	CHECK(contains(text, "ret"));
+}
+
+TEST(codegen, a_tail_recursive_call_jumps_to_itself)
+{
+	std::string text = atO2("int sum(int n, int acc) { if (n == 0) return acc; return sum(n - 1, acc + n); }");
+	CHECK(contains(text, "jp sum"));
+	CHECK(!contains(text, "call sum"));
+}
+
+TEST(codegen, a_call_whose_result_is_used_is_not_a_tail_call)
+{
+	std::string text = atO2("int g(int x); int f(int x) { return g(x) + 1; }");
+	CHECK(contains(text, "call g"));
+}
+
+TEST(codegen, a_call_with_a_stack_argument_is_not_a_tail_call)
+{
+	// The fifth argument would live in the outgoing area of a frame `leave` has already destroyed.
+	std::string text = atO2("int g(int a, int b, int c, int d, int e); int f(int a) { return g(a, 2, 3, 4, 5); }");
+	CHECK(contains(text, "call g"));
+	CHECK(!contains(text, "jp g"));
+}
+
+TEST(codegen, main_never_tail_calls_its_return_is_the_shutdown_sequence)
+{
+	std::string text = atO2("int g(void); int main(void) { return g(); }");
+	CHECK(contains(text, "call g"));
+	CHECK(contains(text, "halt"));
+	CHECK(!contains(text, "jp g"));
+}
+
+TEST(codegen, a_tail_call_restores_the_callee_saved_registers_before_the_jump)
+{
+	// `f` keeps `n` in a callee-saved register (r8) and tail-calls g with it: the popm has to come
+	// after the argument move and before the jump, so the caller finds r8 as it left it.
+	std::string text = atO2("int g(int x); int f(int n) { while (n > 0) n = n - 1; return g(n); }");
+	CHECK(contains(text, "pushm"));
+	CHECK(contains(text, "popm"));
+	size_t popm = text.find("popm");
+	size_t jump = text.find("jp g");
+	CHECK(popm != std::string::npos && jump != std::string::npos && popm < jump);
+}

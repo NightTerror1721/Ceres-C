@@ -1034,7 +1034,8 @@ de extremo a extremo la forma que los dos fallos altos podían romper.
 | **F9** — rangos en `case` (`case lo ... hi:`) | **hecha** | `Add GNU case ranges` |
 | **F10** — builtins del compilador (`__builtin_trap`/`unreachable`/`expect`/`constant_p`) | **hecha** | `Add __builtin_trap/unreachable/expect/constant_p` |
 | **F2** — aritmética marcada (`__builtin_add/sub/mul_overflow`) | **hecha** | `Add __builtin_add/sub/mul_overflow` |
-| **F3**, **F6**, **F7**, **F12**, **F14**, **O7** | **aplazadas, con motivo** | — |
+| **O7** — llamada de cola (`return f(args)` → epílogo + `jp`) | **hecha** | `Turn a returned call into a tail call` |
+| **F3**, **F6**, **F7**, **F12**, **F14** | **aplazadas, con motivo** | — |
 
 **Por qué se aplazan.** Igual que en la Ola B, cada una es un proyecto en sí:
 
@@ -1044,9 +1045,7 @@ de extremo a extremo la forma que los dos fallos altos podían romper.
 - **F12 (preprocesador)**: `#line` rompe la premisa de que las ubicaciones vienen del `LineMap`;
   `#include_next` necesita recordar de qué directorio vino cada fichero; `_Pragma` es un operador de
   macro.
-- **F14 (`__asm__` con operandos/clobbers)** y **O7 (llamada de cola + `BL`/`BLR`)**: el primero
-  cambia el contrato de ensamble en línea; el segundo obliga a preservar epílogo y callee-saved antes
-  de saltar, y a una segunda convención de llamada.
+- **F14 (`__asm__` con operandos/clobbers)**: cambia el contrato de ensamble en línea.
 
 ### Pasada de revisión sobre la Ola C
 
@@ -1082,7 +1081,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 3 | **O9** — layout de bloques para fall-through | — | **hecho** |
 | 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) | **aplazado** (subsumido por copy propagation + DCE; el coalescing real pertenece a O4) |
 | 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | ensamblador | **bloqueado** (CASM no expone `LDRP`/`STRP`) |
-| 6 | **O7** — llamada de cola + `BL`/`BLR` | — | pendiente (ABI de prólogo/epílogo) |
+| 6 | **O7** — llamada de cola + `BL`/`BLR` | — | **hecho** (solo `jp`; `BL`/`BLR` cambian el epílogo por sitio de llamada y se descartan) |
 | 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | pendiente |
 | 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; falta el reconocimiento de patrones `min`/`max`/`abs` | — | parcial |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
