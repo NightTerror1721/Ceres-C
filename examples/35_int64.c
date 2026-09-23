@@ -6,17 +6,17 @@
 // and comparisons compute on all 64 bits, and a value that does not fit 32 bits keeps its high half
 // through a variable, a struct field, an array element and a global.
 //
-// The two halves are read back through a union because this target is little-endian; the helper
-// takes a POINTER to the value rather than the value itself, because a 64-bit value cannot yet cross
-// a function boundary (the wide calling convention is a later phase).
+// The two halves are read back through a union because this target is little-endian; `put64` takes a
+// POINTER to the value, while `putvalue` below takes the 64-bit value itself by value.
 //
 // Shifts, and the conversions between a 64-bit integer and a `float`, are exercised below too:
 // a shift by 32 or more crosses the word boundary, and a float conversion goes sixteen bits at a
 // time (a value that does not fit 32 bits keeps its high half through the float and back).
 //
-// A 64-bit value now crosses a function boundary by value: an argument travels in two consecutive
-// parameter registers (or two outgoing stack words, once the four are spent) and a result comes back
-// in ret0/ret1. `widen`, `add3` and `sum6` below exercise the register and stack paths both ways.
+// A 64-bit value crosses a function boundary by value: an argument travels in two consecutive
+// parameter registers (or two outgoing stack words, once fewer than two remain in the bank) and a
+// result comes back in ret0/ret1. `widen`, `add3` and `sum6` below exercise the register and stack
+// paths both ways.
 //
 //     ceresc examples/35_int64.c --run
 
@@ -44,9 +44,8 @@ void putint(int value)
     put('0' + value % 10);
 }
 
-// One 64-bit value, printed as its two 32-bit words. The parameter is a pointer because the 64-bit
-// calling convention is a later phase, so the value is reached by pointer and never passed by value.
-// Reading the inactive
+// One 64-bit value, printed as its two 32-bit words. The parameter is a pointer so the value is
+// reached by address; `putvalue` below takes the same value by value. Reading the inactive
 // union member is the little-endian assumption the whole lowering makes (low word first), so this
 // only prints `halves[0]` as the low word because Ceres stores the low word at offset 0.
 void put64(char* label, long long* value)
@@ -245,8 +244,8 @@ int main(void)
 }
 
 // A 64-bit parameter arrives in two consecutive argument registers (r0/r1 for the first), and a
-// 64-bit result goes back in ret0/ret1. `widen` adds a constant whose low word is zero, so the
-// addition itself has to carry into the high word.
+// 64-bit result goes back in ret0/ret1. `widen` adds a constant whose low word is zero, so only the
+// high word changes - there is no carry out of the low word.
 long long widen(long long value)
 {
     return value + 0x0000000100000000LL;
@@ -259,7 +258,8 @@ long long add3(long long a, long long b, long long c)
     return a + b + c;
 }
 
-// Six wide parameters: every argument is on the outgoing stack, read back two words apiece.
+// Six wide parameters: the first two take r0-r3, the remaining four go to the outgoing stack as two
+// words apiece.
 long long sum6(long long a, long long b, long long c, long long d, long long e, long long f)
 {
     return a + b + c + d + e + f;

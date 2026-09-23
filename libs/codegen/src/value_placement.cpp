@@ -197,7 +197,10 @@ namespace ceresc::codegen
 		{
 			paramIsFloat[i] = localSlots[i].isFloat;
 			// A 64-bit parameter has an 8-byte slot (F3.4): the only 8-byte local there is, since a
-			// wide value is an addressed pair and never register-placed.
+			// wide value is an addressed pair and never register-placed. This has to agree with the
+			// CALLER's IrParamPayload::isWide, which IrBuilder derives from the SAME declared parameter
+			// type (a wide argument passed to a narrow parameter is truncated, not marked wide) - so
+			// both ends of a call number their slots identically.
 			paramIsWide[i] = localSlots[i].sizeInBytes == 8 && !localSlots[i].isFloat;
 		}
 		_paramArrival = assignArgSlots(paramIsFloat, paramIsWide);

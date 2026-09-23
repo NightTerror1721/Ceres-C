@@ -244,8 +244,9 @@ namespace ceresc::ir
 		bool hasResult = false;
 		bool isFloat = false; // meaningful only when hasResult: the result comes back in f0/ret0 (§10)
 		// F3.4: a 64-bit result comes back in TWO registers/words (ret0 low, ret1 high). When
-		// hasWideResult is set, `result` holds the low word and `resultHigh` the high one; both are
-		// result temporaries, so `resultOf()`/`forEachOperand()` treat them as defined, not read.
+		// hasWideResult is set, `result` holds the low word (which `resultOf()` names) and
+		// `resultHigh` the high one; codegen stores both into the caller's temp. The inliner refuses
+		// a body containing such a Call rather than remap the second result (ir_optimizer.cpp).
 		IrValue resultHigh;
 		bool hasWideResult = false;
 		// Exactly one of these two says where to jump. A name is the ordinary case and becomes
@@ -450,15 +451,9 @@ namespace ceresc::ir
 	}
 
 	// F3.4: the SECOND result a Call defines, when it returns a 64-bit value (the high word in ret1).
-	// An invalid IrValue for every other instruction - the caller that wants it (codegen storing the
-	// pair into the caller's temp) is the only place that knows a wide result is in play.
-	inline IrValue secondResultOf(const IrInstr& instr) noexcept
-	{
-		if (instr.opcode() != IrOpcode::Call)
-			return IrValue{};
-		const IrCallPayload& payload = instr.as<IrCallPayload>();
-		return payload.hasWideResult ? payload.resultHigh : IrValue{};
-	}
+	// `resultOf()` names only the first (the low word); a consumer that needs the pair reads
+	// IrCallPayload::resultHigh directly (codegen.cpp stores it into the caller's temp) - there is no
+	// separate accessor, because the only reader knows a wide result is in play.
 
 	// Calls `fn(IrValue)` once per temporary `instr` READS, in operand order.
 	template <typename F>

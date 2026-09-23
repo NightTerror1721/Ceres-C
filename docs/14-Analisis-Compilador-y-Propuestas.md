@@ -1359,6 +1359,33 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   pasados y devueltos por valor; y se validó con bancos aleatorios de Python (20 casos de ABI mixta,
   7 de suma de 1..7 anchos, 60 de formas int/float/ancho aleatorias) a los tres niveles.
 
+- **Revisión de `ocr` sobre F3.4** (`cdcde68..23a8b29`): 14 ficheros, 14 hallazgos (3 fallaron al
+  ejecutarse), **dos altos y dos medios, todos reales, corregidos**:
+  (1) *alto* — un argumento ancho pasado a un parámetro **estrecho** (`int f(int); long long x; f(x);`)
+  se marcaba `wide` por el tipo del argumento y se convertía a su propio tipo ancho (no-op), así que
+  la pareja se pasaba a un callee de una palabra y `f` leía la palabra baja de la *dirección*; ahora
+  `isWide` lo decide el tipo del parámetro declarado (o, si el callee es desconocido, el del
+  argumento), y la conversión usa siempre `paramType`, que trunca el ancho a su palabra baja.
+  (2) *alto* — el guardián de inlining solo miraba la firma de la función, así que una función
+  estrecha que **contiene una llamada ancha** (`int h(void){ long long v = id(1); ... }`) se cortaba
+  con el splice, que remapea `p.result` pero no `p.resultHigh`: la palabra alta quedaba indefinida;
+  ahora `isInlinable` rechaza cualquier cuerpo con un `Call.hasWideResult`.
+  (3) *medio* — el callee derivaba la bandera `wide` del tamaño del slot mientras el llamador la
+  derivaba de `isWide`; ambos lados coinciden ahora porque el builder la deriva del mismo tipo de
+  parámetro (arreglo de (1)).
+  (4) *medio* — `slotAddressOffset()` era código muerto y su forma `[sp + Frame.slotN + 4]` no
+  ensamblaría (el prólogo ancho usa `la at, Frame.slotN` + `[at + 4]`); eliminado, `slotAddress()`
+  vuelve a su forma original.
+  Bajos corregidos: `secondResultOf()` era código muerto (retirado, con el comentario del campo
+  corregido); un `return` de un lvalue `volatile long long` perdía el cualificador (dos cargas no
+  volátiles donde esas son las únicas lecturas del objeto), ahora lo propaga; el comentario del
+  diagnóstico `E5002` enumera también el guardián float→64 bits; y las notas de `examples/35_int64.c`
+  (que decían que un ancho no cruza una frontera, que `widen` acarrea, que `sum6` va todo a pila y
+  «una vez gastados los cuatro») se reescribieron para reflejar la convención real. Se añadió un test
+  e2e de la ABI ancha a los tres niveles (que ejercita las ramas de *alias*/rotación del resultado y
+  del retorno, alcanzables solo con asignación de registros), y se corrigió el mojibake (`Â§`→`§`,
+  `Ã±`→`ñ`) que una edición anterior había introducido en `ir_builder.cpp` y `test_codegen.cpp`.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;

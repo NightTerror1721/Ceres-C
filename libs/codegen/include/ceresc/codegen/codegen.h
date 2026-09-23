@@ -220,9 +220,6 @@ namespace ceresc::codegen
 		// address in `at` (r13, the assembler temporary, which nothing here allocates) and names `[at + 0]`.
 		// So it must be called while building the instruction that uses it, and not twice for one use.
 		std::string slotAddress(u32 slotIndex);
-		// slotAddress() with a byte offset folded into the displacement - the high word of an 8-byte
-		// slot (F3.4) lives at offset 4 of the same field.
-		std::string slotAddressOffset(u32 slotIndex, u32 byteOffset);
 
 		// ---- operand access, placement-aware ----------------------------------------------------
 		//

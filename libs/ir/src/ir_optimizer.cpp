@@ -4437,7 +4437,9 @@ namespace ceresc::ir
 				return false;
 			// F3.4: a 64-bit parameter or return travels as a two-word pair whose shape the splice
 			// does not model - it turns a Return into ONE copy, and a wide Call defines two result
-			// temps. Refuse rather than miscompile.
+			// temps (`result` and `resultHigh`), of which remapInstr() only rewrites the first. A
+			// function that CONTAINS a wide Call is refused for the same reason, so the two-result
+			// shape never reaches the splice from either end.
 			if (function.returnType() && function.returnType()->isWideInteger())
 				return false;
 			{
@@ -4446,6 +4448,10 @@ namespace ceresc::ir
 					if (slots[i].sizeInBytes == 8 && !slots[i].isFloat)
 						return false;
 			}
+			for (const auto& block : function.blocks())
+				for (const IrInstr* instr : block->instrs())
+					if (instr->opcode() == IrOpcode::Call && instr->as<IrCallPayload>().hasWideResult)
+						return false;
 			// The last block has to end in a terminator: an unterminated one falls through to whatever
 			// block is emitted next, and a splice moves the body somewhere else entirely.
 			std::span<IrInstr* const> lastInstrs = function.blocks().back()->instrs();

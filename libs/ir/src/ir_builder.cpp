@@ -40,8 +40,8 @@ namespace ceresc::ir
 		}
 
 		// A pointer operand always compares unsigned (addresses have no sign); otherwise unsigned
-		// if either side's own resolved type is unsigned - matches Â§10's "ifbl/ifbe/ifab/ifae
-		// (unsigned, punteros, tamaÃ±os)" note. Bool/Float report isSigned()==false too (type.cpp) -
+		// if either side's own resolved type is unsigned - matches §10's "ifbl/ifbe/ifab/ifae
+		// (unsigned, punteros, tamaños)" note. Bool/Float report isSigned()==false too (type.cpp) -
 		// a float comparison being marked "unsigned" here is a known v1 simplification: codegen does
 		// not exist yet (Fase 6), and this phase's own exit criterion only checks control-flow
 		// shape, not signed/unsigned dispatch - see the header comment on IrBuilder's contract.
@@ -50,7 +50,7 @@ namespace ceresc::ir
 			// A float operand always reads through the unsigned branch family after FCMP, regardless
 			// of Type::isSigned() - a hardware quirk of the ISA, not a signedness question: FCMP
 			// clears Overflow and puts `fs < ft` directly in Carry (05-Instruction-Set.md), which is
-			// exactly what the unsigned comparison jumps read (Â§10).
+			// exactly what the unsigned comparison jumps read (§10).
 			if ((lhs && (lhs->isPointer() || lhs->isArray() || lhs->isFloat())) ||
 				(rhs && (rhs->isPointer() || rhs->isArray() || rhs->isFloat())))
 				return true;
@@ -406,7 +406,7 @@ namespace ceresc::ir
 		// append onto a block that already ended with its own terminator (see BasicBlock::
 		// isTerminated()'s own header comment), lazily start a fresh, unreachable block right here,
 		// the one place every instruction-emitting helper in this file ultimately goes through. No
-		// reachability analysis prunes that block afterward (Fase 9's job, Â§13) - it simply never
+		// reachability analysis prunes that block afterward (Fase 9's job, §13) - it simply never
 		// gets jumped into, and the common case (nothing dead follows) never pays for it at all.
 		if (_currentBlock->isTerminated())
 			_currentBlock = &_currentFunction->createBlock();
@@ -1778,10 +1778,14 @@ namespace ceresc::ir
 			const Type* argType = arg->type();
 			const Type* paramType = argIndex < params.size() ? params[argIndex].type : nullptr;
 			++argIndex;
-			// F3.4: a 64-bit argument travels as its two words. A wide parameter converts the
-			// argument to 64 bits (materializing a scalar or float source into a pair); a wide
-			// argument reaches the Params as the address of its pair, and codegen reads the two words.
-			bool wideArg = (paramType && paramType->isWideInteger()) || (argType && argType->isWideInteger());
+			// F3.4: whether the argument travels as a two-word pair is the CALLEE's parameter's to
+			// decide: a wide parameter takes two words (materializing a scalar or float source into a
+			// pair, and truncating a wide argument to the pair's address), while a NARROW parameter
+			// takes one word whatever the argument is - `int f(int); long long x; f(x);` truncates x
+			// to its low word, and only a wide one marks the Param wide. When the callee is unknown
+			// (an indirect call through a function pointer), the argument's own type is all there is,
+			// so a wide argument is passed as its pair.
+			bool wideArg = paramType ? paramType->isWideInteger() : (argType && argType->isWideInteger());
 			if (isIndirectStruct(argType))
 			{
 				// By value, without a by-value register class: copy the argument into a slot of the
@@ -1810,9 +1814,7 @@ namespace ceresc::ir
 			// keeps it in the register it arrived in) is narrowed nowhere else. `char f(char c)`
 			// called with 300 has to see 44.
 			IrValue value = lowerExpr(arg);
-			if (wideArg)
-				value = convertForStore(loc, value, argType, paramType && paramType->isWideInteger() ? paramType : argType);
-			else if (paramType)
+			if (paramType)
 				value = convertForStore(loc, value, argType, paramType);
 			argValues.push_back(value);
 			argIsFloat.push_back(argType && argType->isFloat());
@@ -2705,10 +2707,13 @@ namespace ceresc::ir
 		if (returnType && returnType->isWideInteger())
 		{
 			// F3.4: a 64-bit return goes back in two words (ret0 low, ret1 high). The value is the
-			// address of the pair, so load its two words into an IrWideReturnPayload.
+			// address of the pair, so load its two words into an IrWideReturnPayload. A `volatile`
+			// returned lvalue has no other reader, so these two loads are the only reads of it and
+			// must stay observable - the source's qualifier governs them, as every other wide path.
 			IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), returnType);
-			IrValue low = loadWideWord(loc, value, false, false);
-			IrValue high = loadWideWord(loc, value, true, false);
+			bool sourceVolatile = node.value()->type() && node.value()->type()->isVolatile();
+			IrValue low = loadWideWord(loc, value, false, sourceVolatile);
+			IrValue high = loadWideWord(loc, value, true, sourceVolatile);
 			emitVoid(loc, IrReturnPayload{ true, false, low, high, true });
 			return;
 		}
@@ -3019,7 +3024,7 @@ namespace ceresc::ir
 		{
 			// File scope - nothing to lower here: codegen (Fase 6/7) reads the AST's VarDecl
 			// directly to emit .data/.bss, since no IR instruction models a global's static initial
-			// value (Â§9's opcode table has none) - see IrModule's own header comment.
+			// value (§9's opcode table has none) - see IrModule's own header comment.
 			LocalSymbol symbol;
 			symbol.kind = LocalSymbolKind::Global;
 			declareSymbol(node.name(), symbol);

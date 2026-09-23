@@ -262,9 +262,10 @@ namespace ceresc::support
 
 		// ---- 5xxx  ir -------------------------------------------------------------------------
 		CompoundAssignToStruct = 5001,
-		// F3: `long long`/`unsigned long long` lower to an 8-byte (lo, hi) pair now (F3.1b–F3.4), but
-		// a 64-bit `switch` discriminant (F9) and a 64-bit operand to a one-instruction machine
-		// builtin still have no representation; IrBuilder refuses those rather than truncate them.
+		// F3: `long long`/`unsigned long long` lower to an 8-byte (lo, hi) pair now (F3.1b–F3.4).
+		// A few 64-bit operations still have no representation — a 64-bit `switch` discriminant (F9),
+		// a 64-bit operand to a one-instruction machine builtin, and the defensive float-to-64-bit
+		// guard in emitWideStore — and IrBuilder refuses those rather than truncate them.
 		WideIntegerNotSupported = 5002
 	};
 

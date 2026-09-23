@@ -1191,6 +1191,31 @@ TEST(e2e, aggregate_globals_live_in_data_and_bss_and_keep_their_values)
 		"ok5");
 }
 
+TEST(e2e, a_64_bit_value_crosses_a_call_by_value_at_every_level)
+{
+	// F3.4: a wide parameter arrives in two consecutive argument registers and a wide result comes
+	// back in ret0/ret1. The value is chosen so a dropped high word changes the answer (bug 0), and
+	// the whole thing runs at O0/O1/O2 - the register-placed shapes at O1/O2 are what exercise the
+	// aliasing/rotation handling in the result and return moves.
+	runsTheSameAtEveryLevel("wide_abi",
+		"long long widen(long long v) { return v + 0x0000000100000000LL; }"
+		"long long add3(long long a, long long b, long long c) { return a + b + c; }"
+		"long long sum6(long long a, long long b, long long c, long long d, long long e, long long f)"
+		"    { return a + b + c + d + e + f; }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    long long a = 0x0000000100000002LL;"
+		"    long long w = widen(a);"                                   // 0x0000000200000002
+		"    long long r = w >> 32;"                                    // high word 2
+		"    long long t = add3(1LL, 2LL, 3LL);"                        // 6
+		"    long long s = sum6(1LL, 2LL, 3LL, 4LL, 5LL, 6LL);"         // 21
+		"    long long m = (long long)(unsigned int)add3(a, 2LL, 3LL);"  // 0x100000007 -> low word 7
+		"    *term = 48 + (int)(r == 2) + (int)(t == 6) + (int)(s == 21) + (int)(m == 7);"
+		"    return 0;"
+		"}",
+		"4");
+}
+
 TEST(e2e, a_struct_wider_than_a_word_survives_a_round_trip_through_a_call_by_value)
 {
 	// The hidden-destination-pointer return and the caller-made-copy argument, both at once: `build`

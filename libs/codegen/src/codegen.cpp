@@ -330,22 +330,16 @@ namespace ceresc::codegen
 		}
 	}
 
-	std::string CodeGen::slotAddress(u32 slotIndex)	{
-		return slotAddressOffset(slotIndex, 0);
-	}
-
-	std::string CodeGen::slotAddressOffset(u32 slotIndex, u32 byteOffset)
+	std::string CodeGen::slotAddress(u32 slotIndex)
 	{
 		// A load or store displacement is a signed 16-bit field. A function with thousands of locals
 		// (every -O0 local has its own slot) has slots beyond 32 KiB; those are reached through a
 		// register instead of failing to assemble.
 		constexpr u32 kMaxDisplacement = 32767 - 3;
-		if (byteOffset == 0 && (slotIndex >= _slotOffsets.size() || _slotOffsets[slotIndex] <= kMaxDisplacement))
+		if (slotIndex >= _slotOffsets.size() || _slotOffsets[slotIndex] <= kMaxDisplacement)
 			return std::format("[sp + {}.{}]", _frameName, slotFieldName(slotIndex));
-		if (byteOffset != 0 && slotIndex < _slotOffsets.size() && _slotOffsets[slotIndex] + byteOffset <= kMaxDisplacement)
-			return std::format("[sp + {}.{} + {}]", _frameName, slotFieldName(slotIndex), byteOffset);
 
-		_emitter.instr(std::format("la at, {}", _slotOffsets[slotIndex] + byteOffset), "far frame slot");
+		_emitter.instr(std::format("la at, {}", _slotOffsets[slotIndex]), "far frame slot");
 		_emitter.instr("add at, at, sp", "far frame slot");
 		return "[at + 0]";
 	}
