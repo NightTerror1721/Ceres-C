@@ -1766,7 +1766,7 @@ namespace ceresc::codegen
 			dimensions.push_back(element->arraySize());
 			element = element->arrayElementType();
 		}
-		if (!element || element->isAggregate() || dimensions.empty())
+		if (!element || element->isAggregate() || element->isWideInteger() || dimensions.empty())
 			return {}; // not this shape - the caller falls back to a flat word array
 
 		std::string name = fieldTypeName(element->sizeInBytes(), element->isFloat());
@@ -2138,6 +2138,31 @@ namespace ceresc::codegen
 		if (type->isArray() || type->isAggregate())
 		{
 			generateAggregateGlobal(decl, symbolName, exported);
+			return;
+		}
+
+		// A 64-bit scalar is two words, little-endian (`u32[2] = [lo, hi]`), which a single CASM
+		// integer literal could not spell. A wide ARRAY or struct goes through the flat-word path
+		// above, which already writes the bytes correctly.
+		if (type->isWideInteger())
+		{
+			std::string let = exported ? "global let" : "let";
+			std::string name{ symbolName };
+			std::string comment = std::format("{} ({} bytes)", AstPrinter::typeName(type), type->sizeInBytes());
+			if (!decl.initializer())
+			{
+				_emitter.raw(std::format("{} {}: u32[2]   // {}", let, name, comment));
+				return;
+			}
+			std::optional<i64> value = foldGlobalInt(decl.initializer());
+			if (!value)
+			{
+				reportUnrepresentableInitializer(decl, decl.initializer());
+				return;
+			}
+			u64 bits = static_cast<u64>(*value);
+			_emitter.raw(std::format("{} {}: u32[2] = [0x{:08X}, 0x{:08X}]   // {}",
+				let, name, static_cast<u32>(bits), static_cast<u32>(bits >> 32), comment));
 			return;
 		}
 

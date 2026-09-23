@@ -145,21 +145,49 @@ TEST(ir, arithmetic_expression_respects_precedence_via_temporaries)
 		"}\n");
 }
 
-TEST(ir, a_64_bit_value_is_refused_rather_than_truncated)
+TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
 {
-	// F3.1a: `long long` is a real 8-byte type, but the IR has no 64-bit value - legalizing one to
-	// a (lo, hi) pair is F3.1b. Until then IrBuilder reports E5002 instead of silently lowering only
-	// the low 32 bits, at every place a wide value can enter the IR.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long x = 5; return 0; }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { return 5ll; }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { unsigned long long x; return (int)x; }"), "not supported in generated code"));
+	// F3.1b: a wide value is the address of its two words, so a local, an assignment, a comparison
+	// and the add/sub/bitwise operators all lower with no diagnostic. Values are checked end to end
+	// by examples/35_int64.c; this pins the shape.
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long x = 5; return (int)x; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return (int)(a + b); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return a < b; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; a += 2; return (int)a; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return (int)(a - b + (a & b) + (a | b) + (a ^ b)); }"), "not supported in generated code"));
+
+	// A wide local's initializer writes both halves, and the high word is the sign extension.
+	std::string text = functionIr("int main() { long long x = 5; return (int)x; }");
+	CHECK(text.find("store.word") != std::string::npos);
+	CHECK(text.find("sar") != std::string::npos);
+}
+
+TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
+{
+	// Each is F3.2/F3.3/F3.4 and must be refused rather than miscompiled.
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2, b = 3; return (int)(a * b); }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2, b = 3; return (int)(a / b); }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2, b = 3; return (int)(a % b); }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; return (int)(a << 1); }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; double d = (double)a; return (int)d; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = (long long)1.5; return (int)a; }"), "not supported in generated code"));
+
+	// The 64-bit calling convention is F3.4.
 	CHECK(containsMessage(loweringDiagnostics("long long f() { return 0; } int main() { return 0; }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int f(long long v) { return 0; } int main() { return 0; }"), "not supported in generated code"));
+}
 
-	// The compile-time uses need no lowering, so they stay legal: `sizeof`/`alignof` never lower
-	// their operand, and a struct with a wide field is only a layout.
-	CHECK(!containsMessage(loweringDiagnostics("int main() { return sizeof(long long); }"), "not supported in generated code"));
-	CHECK(!containsMessage(loweringDiagnostics("struct S { long long w; }; int main() { return sizeof(struct S); }"), "not supported in generated code"));
+TEST(ir, a_64_bit_value_works_in_a_ternary_and_as_an_index)
+{
+	// A wide ternary copies the chosen arm's two words; a wide index is truncated to a word, which
+	// is the `int` C converts a subscript to. Both must lower with no diagnostic.
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; long long t = a < b ? a : b; return (int)t; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; int arr[2]; arr[a] = 3; return arr[0]; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; int arr[2]; long long* p = (long long*)arr; long long* q = p + a; return (int)q; }"), "not supported in generated code"));
+
+	// A wide discriminant (F9) and a wide builtin operand (F3.3) have no lowering yet.
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; switch (a) { case 1: return 0; } return 1; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; return __builtin_clz(a); }"), "not supported in generated code"));
 }
 
 TEST(ir, a_signed_min_or_max_ternary_lowers_to_one_builtin_when_enabled)

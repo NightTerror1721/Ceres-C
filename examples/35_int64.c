@@ -1,0 +1,123 @@
+// 35 - real 64-bit integers.
+//
+// `long long` and `unsigned long long` are 8-byte types, not spellings of the 32-bit ones:
+// `sizeof`, struct layout and the `ll`/`LL` literal suffix all see the full width. Their values
+// lower as an addressed pair of words (low at +0, high at +4), so addition, subtraction, the
+// bitwise operators and comparisons compute on all 64 bits, and a value that does not fit 32 bits
+// keeps its high half through a variable, a struct field and an array element.
+//
+// The two halves are read back through a union so the program can print them without a 64-bit
+// division to decimalize the whole value - and because a 64-bit value cannot yet cross a function
+// boundary, the helper takes a POINTER to it rather than the value itself.
+//
+// Multiplication, division, remainder, shifts and the float conversions are the next phases and
+// are refused with E5002 rather than silently truncated; every line here is add/sub/bitwise/compare.
+//
+//     ceresc examples/35_int64.c --run
+
+void put(char c)
+{
+    char* terminal = (char*)0xFF000004;
+    *terminal = c;
+}
+
+void putstr(char* text)
+{
+    for (int i = 0; text[i] != 0; i++)
+        put(text[i]);
+}
+
+void putint(int value)
+{
+    if (value < 0)
+    {
+        put('-');
+        value = -value;
+    }
+    if (value >= 10)
+        putint(value / 10);
+    put('0' + value % 10);
+}
+
+// One 64-bit value, printed as its two 32-bit words. The parameter is a pointer because the 64-bit
+// calling convention is a later phase; the value itself is only ever a local.
+void put64(char* label, long long* value)
+{
+    union
+    {
+        long long whole;
+        int halves[2];
+    } split;
+    split.whole = *value;
+
+    putstr(label);
+    putstr(" low=");
+    putint(split.halves[0]);
+    putstr(" high=");
+    putint(split.halves[1]);
+    put('\n');
+}
+
+int main(void)
+{
+    // hi = 1, lo = 2: a value that does not fit 32 bits.
+    long long a = 0x0000000100000002LL;
+    long long b = 1;
+
+    put64("a", &a);
+    put64("b", &b);
+
+    long long sum = a + b;
+    long long difference = a - b;
+    long long negated = -a;
+    long long anded = a & b;
+    long long ored = a | b;
+    long long inverted = ~a;
+    put64("a + b", &sum);
+    put64("a - b", &difference);
+    put64("-a", &negated);
+    put64("a & b", &anded);
+    put64("a | b", &ored);
+    put64("~a", &inverted);
+
+    // The carry and borrow that cross the word boundary: a low word of zero is exactly where a
+    // negation has to carry into the high word, and `b - a` borrows out of it.
+    long long power = 0x0000000100000000LL; // lo = 0, hi = 1
+    long long negatedPower = -power;
+    long long borrowed = b - a;
+    put64("0x100000000", &power);
+    put64("-0x100000000", &negatedPower);
+    put64("b - a", &borrowed);
+
+    // The high word carries the comparison: signed and unsigned disagree on `-1`.
+    putstr("a < a + b: ");
+    put(a < a + b ? '1' : '0');
+    put('\n');
+    putstr("a == 0x100000002: ");
+    put(a == 0x0000000100000002LL ? '1' : '0');
+    put('\n');
+    putstr("(unsigned)(-1) > 1: ");
+    put((unsigned long long)(-1) > 1ULL ? '1' : '0');
+    put('\n');
+    putstr("(long long)(-1) < 1: ");
+    put((long long)(-1) < 1LL ? '1' : '0');
+    put('\n');
+
+    // The high half survives a struct field and an array element too.
+    struct Pair
+    {
+        int tag;
+        long long value;
+    };
+    struct Pair pair;
+    pair.value = a + b;
+    put64("pair.value", &pair.value);
+
+    long long table[3];
+    table[0] = a;
+    table[1] = b;
+    table[2] = table[0] + table[1];
+    put64("table[2]", &table[2]);
+
+    return 0;
+}

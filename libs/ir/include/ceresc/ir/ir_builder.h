@@ -185,10 +185,11 @@ namespace ceresc::ir
 		BasicBlock* _currentBlock = nullptr;
 		IrValue _lastValue{}; // set by every visit(SomeExpr&), read back by lowerExpr() - same idiom as Sema::_lastExprType
 
-		// F3.1a: a 64-bit integer type is real (8 bytes, align 8), but the IR has no 64-bit value -
-		// legalizing one to a (lo, hi) pair is F3.1b. Until then any attempt to lower a wide value
-		// is reported once, as E5002, instead of being silently truncated to 32 bits. Cleared by
-		// build(); see rejectWideInteger().
+		// F3.1b: 64-bit integers are lowered as an 8-byte addressed value (see the wide-integer
+		// helpers below), but a few operations still have no representation (mul/div/mod and shifts,
+		// float conversions, the 64-bit calling convention). The first of those to reach lowering is
+		// reported once, as E5002, instead of being miscompiled. Cleared by build(); see
+		// rejectWideFeature().
 		bool _reportedWideInteger = false;
 
 		std::vector<std::unordered_map<std::string_view, LocalSymbol>> _scopes; // function-local block scopes; empty at file scope
@@ -238,9 +239,9 @@ namespace ceresc::ir
 		void declareSymbol(std::string_view name, const LocalSymbol& symbol);
 		LocalSymbol* lookupSymbol(std::string_view name) noexcept;
 
-		// Reports E5002 the first time a 64-bit integer value would be lowered (F3.1a - see
-		// _reportedWideInteger). A no-op for every other type, so callers can pass any type freely.
-		void rejectWideInteger(support::SourceLocation loc, const ast::Type* type);
+		// Reports E5002 the first time a 64-bit operation this phase does not implement would be
+		// lowered (F3.1b). A no-op for a supported one; see _reportedWideInteger.
+		void rejectWideFeature(support::SourceLocation loc, std::string_view what);
 
 		IrValue lowerExpr(ast::Expr* expr);
 		void lowerStmt(ast::Stmt* stmt);
@@ -344,6 +345,37 @@ namespace ceresc::ir
 		// newLocalSlotFor(): a compiler temp belongs to no lexical scope, so it must not be handed
 		// to the scope-based slot-reuse pool that a declared local's slot goes through.
 		u32 newStructTempSlot(u32 sizeInBytes);
+
+		// ---- 64-bit integers (F3.1b) ----------------------------------------------------------
+		//
+		// A wide value lowers to the ADDRESS of its 8-byte storage, exactly like a struct or an
+		// array (see the memory-valued convention in the header comment): the low word at +0 and the
+		// high word at +4, little-endian, so the whole back end already understands it with no new
+		// IR opcode. `long long` and `unsigned long long` differ only in how a scalar is extended
+		// into the high word and how a comparison orders the two words.
+		//
+		// A wide operation materializes its operands (a scalar operand is extended into a fresh
+		// temp) and writes the two result words into another temp whose address is the result.
+
+		// The address of an 8-byte storage holding `value` as a 64-bit integer: `value` itself when
+		// `fromType` is already wide, otherwise a fresh temp filled with the extended word.
+		IrValue materializeWide(support::SourceLocation loc, IrValue value, const ast::Type* fromType);
+		// Writes `value` (converted to a 64-bit integer) into the wide object at `destAddr`.
+		void emitWideStore(support::SourceLocation loc, IrValue destAddr, IrValue value, const ast::Type* fromType, bool isVolatile);
+		// One word of a wide value: the low word (`high` false) or the high word (`high` true).
+		IrValue loadWideWord(support::SourceLocation loc, IrValue wideAddr, bool high, bool isVolatile);
+		// A fresh 8-byte temp whose low/high words are the two given values.
+		IrValue makeWideValue(support::SourceLocation loc, IrValue low, IrValue high);
+		// add/sub/and/or/xor on two wide operands; a wide mul/div/mod/shift is refused (F3.2/F3.3).
+		IrValue lowerWideArithmetic(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* resultType,
+			const ast::Type* lhsType, const ast::Type* rhsType, IrValue lhsVal, IrValue rhsVal);
+		// A 0/1 word for `lhsAddr op rhsAddr`, comparing the high words first (signed or unsigned as
+		// `isUnsigned` says) and the low words unsigned - the low half never carries the sign.
+		IrValue lowerWideCompare(support::SourceLocation loc, ast::BinaryOp op, IrValue lhsAddr, IrValue rhsAddr, bool isUnsigned);
+		// The low word of a wide value for a context that needs a scalar (an array index, a pointer
+		// offset, a shift amount) - C converts each of those to `int`, so this is that truncation.
+		// A scalar passes through unchanged.
+		IrValue toWord(support::SourceLocation loc, IrValue value, const ast::Type* type);
 
 		void collectLabelBlocks(ast::Stmt* stmt);
 		void collectSwitchCases(ast::Stmt* stmt, std::vector<std::pair<i64, BasicBlock*>>& cases, BasicBlock*& defaultBlock);

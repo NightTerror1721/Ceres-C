@@ -1102,7 +1102,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
-| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a hecha** (tipo, parser, layout, literales); F3.1b–F3.5 pendientes |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b hechas** (tipo, layout, literales, representación y aritmética básica); F3.2–F3.5 pendientes |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
 
@@ -1222,6 +1222,24 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   programa que usa `long long` como valor no compila en vez de computar solo sus 32 bits bajos. Es un
   guardián temporal: F3.1b lo retira al llegar la representación. `tests/e2e` cubría el capado de
   `long long` y ahora cubre solo el de `double`/`long double`.
+
+- **F3.1b** (representación y aritmética básica de los enteros de 64 bits): se eligió la opción **(B)**
+  del briefing —un valor de 64 bits baja a la **dirección** de sus 8 bytes, palabra baja en +0 y alta
+  en +4, exactamente como un struct o un array— porque reutiliza la maquinaria de memoria compuesta
+  (`emitMemoryCopy`, la convención "un agregado es su dirección") y no añade ningún opcode al IR: todo
+  consumidor o copia los bytes o carga las dos palabras. Cubre load/store/copia/asignación (variable,
+  campo, elemento, global), `+`/`-` con el acarreo/préstamo a través de `Cmp` (no hay `ADDC` en el IR),
+  `&`/`|`/`^`/`~`/`-` unarios, comparaciones (alta primero, baja sin signo), `++`/`--`, un `?:` ancho,
+  la condición ancha de `if`/`while` y la conversión `int`↔`long long`. La representación se apoya en
+  `materializeWide`/`emitWideStore`/`loadWideWord`/`makeWideValue`/`lowerWideArithmetic`/
+  `lowerWideCompare`/`toWord`. Siguen **rechazadas con E5002** (y documentadas) la multiplicación,
+  división y módulo (F3.2), los desplazamientos y las conversiones `float`↔`long long` (F3.3), y todo
+  valor de 64 bits que cruce una frontera de función (F3.4: parámetro, retorno o argumento). También se
+  rechazan, por caer en la misma frontera, un discriminante de `switch` ancho (F9) y un operando ancho
+  de un builtin de una instrucción (F3.3). Un índice de array, un desplazamiento de puntero o un
+  contador de shift anchos se truncan a palabra (lo que C convierte a `int`). `examples/35_int64.c`
+  fija a mano, a los tres niveles, el acarreo/préstamo (incluido `-0x100000000`), el signo compartido
+  de las comparaciones, un campo de struct, un array y una variable global.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para

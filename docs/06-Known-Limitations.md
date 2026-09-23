@@ -67,25 +67,37 @@ terminal device's output register at `0xFF000004`; `examples/08_strings.c` write
 routines it needs, and `examples/interop/io.c` wraps them into something reusable. CeresASM's own
 `stdlib/` currently only has `call.casm`, so there is nothing to link against yet either.
 
-### No 64-bit register, so no lowered 64-bit values
+### No 64-bit register, so a 64-bit value is a pair of words
 
 Ceres has no 64-bit integer register and no f64 register — not in the ISA, not in the VM.
 
-The two C types that name a wide **integer** are nevertheless real types, not spellings: `long long`
-and `unsigned long long` are 8 bytes with alignment 8, so `sizeof(long long)` is 8, a struct field
-of one is laid out for a real 64-bit object, and an `ll`/`LL` literal suffix gives a literal the
-64-bit type. What is missing is the **lowering**: the IR is 32 bits wide, so a 64-bit value has to
-be legalized to a `(lo, hi)` pair at every operation, load/store and call — front-end and back-end
-work that is still to come (F3.1b–F3.4 in [14-Analisis-Compilador-y-Propuestas.md](14-Analisis-Compilador-y-Propuestas.md)).
-Until then a program that uses a 64-bit value at run time is refused with `E5002`, rather than
-silently computing only its low 32 bits. The compile-time uses — `sizeof`, `alignof`, a struct
-field, a `typedef`, a `_Static_assert` — all work.
+The two C types that name a wide **integer** are real types, not spellings: `long long` and
+`unsigned long long` are 8 bytes with alignment 8, so `sizeof(long long)` is 8, a struct field of
+one is laid out for a real 64-bit object, and an `ll`/`LL` literal suffix gives a literal the 64-bit
+type. A value is lowered as an **addressed pair of 32-bit words** — the low word at offset 0, the
+high word at offset 4, little-endian — exactly the way a struct is represented, so the whole back
+end handles it with no new IR opcode. That covers:
+
+- **load/store/copy/assignment**, through a variable, a struct field, an array element or a global;
+- **`+`, `-`**, with the carry/borrow crossing the word boundary (`Cmp` supplies the flag — there is
+  no `ADDC` in the IR), and the bitwise **`&`, `|`, `^`, `~`** and unary **`-`**;
+- **comparisons** (`==`, `!=`, `<`, `<=`, `>`, `>=`), signed or unsigned, comparing the high words
+  first and the low words unsigned;
+- `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition, and an `int`↔`long long`
+  conversion (sign/zero extension, and truncation to the low word).
+
+What is **not** implemented yet, and is refused with `E5002` rather than silently truncated:
+
+- **multiplication, division and remainder** (F3.2 — `MULH`/`IMULH` and an emitted `__cc_div64`);
+- **shifts by 0..63** and the **`float`↔`long long`** conversions (F3.3);
+- **passing or returning a 64-bit value** across a function boundary (F3.4 — the two-register
+  calling convention). A wide *local* is fine; a wide parameter, return or call argument is not.
 
 ```c
-long long  a;              /* fine: a type and an object of it */
-sizeof(long long);         /* 8 */
-struct S { long long w; }; /* field offset/alignment are 8 */
-long long  b = 5;          /* error[E5002]: cannot lower a 64-bit value yet */
+long long  a = 0x0000000100000002LL;  /* fine */
+a + 1;  a < b;  a & 0xFF;            /* fine: 64-bit arithmetic and comparisons */
+a * 2;  a / 2;  a << 1;              /* error[E5002]: not lowered yet */
+long long  f(long long v);           /* error[E5002]: no 64-bit calling convention yet */
 ```
 
 The two types that name a wide **float** are still capped, because there is no f64 register to give

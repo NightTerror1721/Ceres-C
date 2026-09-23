@@ -365,22 +365,19 @@ namespace ceresc::ir
 
 	// ---- dispatch helpers -------------------------------------------------------------------------
 
-	void IrBuilder::rejectWideInteger(support::SourceLocation loc, const Type* type)
+	void IrBuilder::rejectWideFeature(support::SourceLocation loc, std::string_view what)
 	{
-		if (!type || !type->isWideInteger() || _reportedWideInteger)
+		if (_reportedWideInteger)
 			return;
 		_reportedWideInteger = true;
 		_diagnostics.error(DiagId::WideIntegerNotSupported, loc,
-			"'{}' is not supported in generated code yet: this compiler cannot lower a 64-bit value, "
-			"so it is refused rather than silently truncated to 32 bits",
-			type->isULongLong() ? "unsigned long long" : "long long");
+			"{} is not supported in generated code yet", what);
 	}
 
 	IrValue IrBuilder::lowerExpr(Expr* expr)
 	{
 		if (!expr)
 			return IrValue{};
-		rejectWideInteger(expr->location(), expr->type());
 		expr->accept(*this);
 		return _lastValue;
 	}
@@ -658,6 +655,189 @@ namespace ceresc::ir
 		return _currentFunction->newLocalSlot(sizeInBytes, false);
 	}
 
+	// ---- 64-bit integers (F3.1b) -----------------------------------------------------------------
+	//
+	// A wide value IS the address of its 8-byte storage (see ir_builder.h): low word at +0, high
+	// word at +4. Everything below works on that one convention, so no consumer can see a wide
+	// value as a scalar by accident - the only thing an address can be is copied or have its two
+	// words loaded.
+
+	IrValue IrBuilder::loadWideWord(support::SourceLocation loc, IrValue wideAddr, bool high, bool isVolatile)
+	{
+		IrValue addr = high ? offsetAddress(loc, wideAddr, 4) : wideAddr;
+		return emitLoad(loc, addr, IrMemSize::Word, false, false, isVolatile);
+	}
+
+	IrValue IrBuilder::makeWideValue(support::SourceLocation loc, IrValue low, IrValue high)
+	{
+		IrValue addr = emitFrameAddr(loc, newStructTempSlot(8));
+		emitStore(loc, addr, IrMemSize::Word, low);
+		emitStore(loc, offsetAddress(loc, addr, 4), IrMemSize::Word, high);
+		return addr;
+	}
+
+	void IrBuilder::emitWideStore(support::SourceLocation loc, IrValue destAddr, IrValue value,
+		const Type* fromType, bool isVolatile)
+	{
+		if (fromType && fromType->isWideInteger())
+		{
+			// A wide source is already the address of the eight bytes: read and write them as two
+			// words. The source's own volatility rides on the loads (a `volatile long long` read has
+			// to stay observable), the destination's on the stores.
+			bool sourceVolatile = fromType->isVolatile();
+			IrValue low = loadWideWord(loc, value, false, sourceVolatile);
+			IrValue high = loadWideWord(loc, value, true, sourceVolatile);
+			emitStore(loc, destAddr, IrMemSize::Word, low, false, isVolatile);
+			emitStore(loc, offsetAddress(loc, destAddr, 4), IrMemSize::Word, high, false, isVolatile);
+			return;
+		}
+
+		// A scalar source: the low word is the value itself (a narrow value is already extended to a
+		// word by the narrowing invariant) and the high word is its sign or zero extension.
+		emitStore(loc, destAddr, IrMemSize::Word, value, false, isVolatile);
+		IrValue high = (fromType && fromType->isSigned())
+			? emitBinOp(loc, IrBinOp::Sar, value, emitConstInt(loc, 31), false)
+			: emitConstInt(loc, 0);
+		emitStore(loc, offsetAddress(loc, destAddr, 4), IrMemSize::Word, high, false, isVolatile);
+	}
+
+	IrValue IrBuilder::materializeWide(support::SourceLocation loc, IrValue value, const Type* fromType)
+	{
+		if (fromType && fromType->isWideInteger())
+			return value;
+		IrValue addr = emitFrameAddr(loc, newStructTempSlot(8));
+		emitWideStore(loc, addr, value, fromType, false);
+		return addr;
+	}
+
+	IrValue IrBuilder::lowerWideArithmetic(support::SourceLocation loc, BinaryOp op, const Type* resultType,
+		const Type* lhsType, const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
+	{
+		switch (op)
+		{
+			case BinaryOp::Add:
+			case BinaryOp::Sub:
+			case BinaryOp::BitAnd:
+			case BinaryOp::BitOr:
+			case BinaryOp::BitXor:
+				break;
+			case BinaryOp::Mul:
+				rejectWideFeature(loc, "64-bit multiplication");
+				return lhsVal;
+			case BinaryOp::Div:
+				rejectWideFeature(loc, "64-bit division");
+				return lhsVal;
+			case BinaryOp::Mod:
+				rejectWideFeature(loc, "64-bit modulo");
+				return lhsVal;
+			case BinaryOp::Shl:
+			case BinaryOp::Shr:
+				rejectWideFeature(loc, "64-bit shift");
+				return lhsVal;
+			default:
+				return lhsVal; // comparisons/logical never reach lowerArithmetic()
+		}
+
+		IrValue a = materializeWide(loc, lhsVal, lhsType);
+		IrValue b = materializeWide(loc, rhsVal, rhsType);
+		bool aVolatile = lhsType && lhsType->isVolatile();
+		bool bVolatile = rhsType && rhsType->isVolatile();
+		IrValue aLow = loadWideWord(loc, a, false, aVolatile);
+		IrValue aHigh = loadWideWord(loc, a, true, aVolatile);
+		IrValue bLow = loadWideWord(loc, b, false, bVolatile);
+		IrValue bHigh = loadWideWord(loc, b, true, bVolatile);
+
+		IrValue low = IrValue{};
+		IrValue high = IrValue{};
+		switch (op)
+		{
+			case BinaryOp::Add:
+			{
+				// Carry out of the low word is `sum < a` (unsigned, so a wrap-around is exactly the
+				// carry) - there is no ADDC in the IR, but one Cmp is all the flag it would need.
+				low = emitBinOp(loc, IrBinOp::Add, aLow, bLow, true);
+				IrValue carry = emitCmp(loc, IrCmpPredicate::Lt, low, aLow, true);
+				IrValue highSum = emitBinOp(loc, IrBinOp::Add, aHigh, bHigh, true);
+				high = emitBinOp(loc, IrBinOp::Add, highSum, carry, true);
+				break;
+			}
+			case BinaryOp::Sub:
+			{
+				// Borrow out of the low word is `a < b` (unsigned).
+				low = emitBinOp(loc, IrBinOp::Sub, aLow, bLow, true);
+				IrValue borrow = emitCmp(loc, IrCmpPredicate::Lt, aLow, bLow, true);
+				IrValue highDiff = emitBinOp(loc, IrBinOp::Sub, aHigh, bHigh, true);
+				high = emitBinOp(loc, IrBinOp::Sub, highDiff, borrow, true);
+				break;
+			}
+			case BinaryOp::BitAnd:
+				low = emitBinOp(loc, IrBinOp::And, aLow, bLow, true);
+				high = emitBinOp(loc, IrBinOp::And, aHigh, bHigh, true);
+				break;
+			case BinaryOp::BitOr:
+				low = emitBinOp(loc, IrBinOp::Or, aLow, bLow, true);
+				high = emitBinOp(loc, IrBinOp::Or, aHigh, bHigh, true);
+				break;
+			case BinaryOp::BitXor:
+				low = emitBinOp(loc, IrBinOp::Xor, aLow, bLow, true);
+				high = emitBinOp(loc, IrBinOp::Xor, aHigh, bHigh, true);
+				break;
+			default:
+				break;
+		}
+		return makeWideValue(loc, low, high);
+	}
+
+	IrValue IrBuilder::lowerWideCompare(support::SourceLocation loc, BinaryOp op, IrValue lhsAddr, IrValue rhsAddr, bool isUnsigned)
+	{
+		IrValue aLow = loadWideWord(loc, lhsAddr, false, false);
+		IrValue aHigh = loadWideWord(loc, lhsAddr, true, false);
+		IrValue bLow = loadWideWord(loc, rhsAddr, false, false);
+		IrValue bHigh = loadWideWord(loc, rhsAddr, true, false);
+
+		// `highCmp` orders the two values (signed when the wide type is); the low words are compared
+		// unsigned because the sign lives in the high word. The result is `highCmp || (highEq &&
+		// lowCmp)`, or its negation for Eq/Ne - each Cmp already yields a 0/1 word, so the boolean
+		// combination is plain and/or, no control flow needed.
+		IrValue highEq = emitCmp(loc, IrCmpPredicate::Eq, aHigh, bHigh, false);
+		switch (op)
+		{
+			case BinaryOp::Eq:
+			{
+				IrValue lowEq = emitCmp(loc, IrCmpPredicate::Eq, aLow, bLow, false);
+				return emitBinOp(loc, IrBinOp::And, highEq, lowEq, true);
+			}
+			case BinaryOp::Ne:
+			{
+				IrValue lowNe = emitCmp(loc, IrCmpPredicate::Ne, aLow, bLow, false);
+				IrValue highNe = emitCmp(loc, IrCmpPredicate::Ne, aHigh, bHigh, false);
+				return emitBinOp(loc, IrBinOp::Or, highNe, lowNe, true);
+			}
+			case BinaryOp::Lt:
+			case BinaryOp::Le:
+			case BinaryOp::Gt:
+			case BinaryOp::Ge:
+			{
+				IrCmpPredicate highPredicate = (op == BinaryOp::Lt || op == BinaryOp::Le)
+					? IrCmpPredicate::Lt : IrCmpPredicate::Gt;
+				IrCmpPredicate lowPredicate = cmpPredicateFor(op);
+				IrValue highCmp = emitCmp(loc, highPredicate, aHigh, bHigh, isUnsigned);
+				IrValue lowCmp = emitCmp(loc, lowPredicate, aLow, bLow, true);
+				IrValue sameHighAndLow = emitBinOp(loc, IrBinOp::And, highEq, lowCmp, true);
+				return emitBinOp(loc, IrBinOp::Or, highCmp, sameHighAndLow, true);
+			}
+			default:
+				return emitConstInt(loc, 0);
+		}
+	}
+
+	IrValue IrBuilder::toWord(support::SourceLocation loc, IrValue value, const Type* type)
+	{
+		if (type && type->isWideInteger())
+			return emitLoad(loc, value, IrMemSize::Word, false, false);
+		return value;
+	}
+
 	void IrBuilder::lowerInitializerInto(support::SourceLocation loc, IrValue baseAddr, u32 offset,
 		const Type* type, Expr* init)
 	{
@@ -693,10 +873,16 @@ namespace ceresc::ir
 		if (!list)
 		{
 			// An ordinary expression. A struct-typed one is an address (see ir_builder.h), so it is
-			// copied rather than stored; everything else is one scalar store.
+			// copied rather than stored; a 64-bit one is the address of its two words; everything
+			// else is one scalar store.
 			if (isStructType(type))
 			{
 				emitMemoryCopy(loc, offsetAddress(loc, baseAddr, offset), lowerExpr(init), totalSize, align);
+				return;
+			}
+			if (type->isWideInteger())
+			{
+				emitWideStore(loc, offsetAddress(loc, baseAddr, offset), lowerExpr(init), init->type(), type->isVolatile());
 				return;
 			}
 			IrValue value = convertForStore(loc, lowerExpr(init), init->type(), type);
@@ -839,7 +1025,6 @@ namespace ceresc::ir
 	IrValue IrBuilder::lowerAddress(Expr* expr)
 	{
 		support::SourceLocation loc = expr->location();
-		rejectWideInteger(loc, expr->type());
 
 		if (auto* name = dynamic_cast<ast::NameExpr*>(expr))
 		{
@@ -875,7 +1060,9 @@ namespace ceresc::ir
 		{
 			const Type* arrayType = index->array()->type();
 			IrValue base = (arrayType && arrayType->isArray()) ? lowerAddress(index->array()) : lowerExpr(index->array());
-			IrValue indexValue = lowerExpr(index->index());
+			// A 64-bit index is converted to `int` for the addressing, exactly as C converts a
+			// subscript to ptrdiff.
+			IrValue indexValue = toWord(loc, lowerExpr(index->index()), index->index()->type());
 			u32 elemSize = (arrayType && arrayType->arrayElementType()) ? arrayType->arrayElementType()->sizeInBytes() : 1u;
 			IrValue offset = indexValue;
 			if (elemSize != 1)
@@ -946,7 +1133,7 @@ namespace ceresc::ir
 		// address is simply how this IR represents it, and whoever consumes it knows to copy from
 		// there rather than treat it as a pointer value.
 		const Type* type = expr->type();
-		if (type && (type->isArray() || type->isAggregate()))
+		if (type && (type->isArray() || type->isAggregate() || type->isWideInteger()))
 			return lowerAddress(expr);
 		// A function decays to a pointer to itself, and its address IS its value - there is nothing
 		// to load through. Same shape as the array case above, and the same reason: a function type
@@ -988,6 +1175,16 @@ namespace ceresc::ir
 
 		support::SourceLocation loc = cond->location();
 		IrValue value = lowerExpr(cond);
+		// A 64-bit condition is true when either word is non-zero (there is no -0 to worry about),
+		// which is one `or` and the same branch the scalar case already takes.
+		if (cond->type() && cond->type()->isWideInteger())
+		{
+			IrValue low = loadWideWord(loc, value, false, false);
+			IrValue high = loadWideWord(loc, value, true, false);
+			IrValue either = emitBinOp(loc, IrBinOp::Or, low, high, true);
+			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, false, either, emitConstInt(loc, 0), trueBlock, falseBlock });
+			return;
+		}
 		bool isFloat = cond->type() && cond->type()->isFloat();
 		IrValue zero = isFloat ? emitConstFloat(loc, 0.0f) : emitConstInt(loc, 0);
 		emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, isFloat, isFloat, value, zero, trueBlock, falseBlock });
@@ -1027,10 +1224,34 @@ namespace ceresc::ir
 
 	IrValue IrBuilder::convertForStore(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
 	{
-		// A value moving INTO a 64-bit object is a 64-bit value even when the source is a plain
-		// `int` literal (`long long x = 5;`), so the guard has to sit here as well as in lowerExpr()
-		// (F3.1a - see rejectWideInteger).
-		rejectWideInteger(loc, toType);
+		bool toWide = toType && toType->isWideInteger();
+		bool fromWide = fromType && fromType->isWideInteger();
+
+		// A value moving into a 64-bit object: a wide source is already the address of its bytes, a
+		// scalar one is extended into a fresh temp. Either way the result IS the wide value (its
+		// address), which is what every wide consumer expects.
+		if (toWide)
+		{
+			if (fromType && fromType->isFloat())
+			{
+				rejectWideFeature(loc, "a float-to-64-bit conversion");
+				return value;
+			}
+			return materializeWide(loc, value, fromType);
+		}
+
+		// A 64-bit value moving into a scalar: the low word is the value (truncation), and the
+		// scalar conversions below (bool, narrowing) then apply to it as to any other word.
+		if (fromWide)
+		{
+			if (toType && toType->isFloat())
+			{
+				rejectWideFeature(loc, "a 64-bit-to-float conversion");
+				return value;
+			}
+			value = emitLoad(loc, value, IrMemSize::Word, false, toType && toType->isSigned());
+			fromType = nullptr;
+		}
 
 		bool fromFloat = fromType && fromType->isFloat();
 		bool toFloat = toType && toType->isFloat();
@@ -1081,6 +1302,16 @@ namespace ceresc::ir
 	IrValue IrBuilder::lowerArithmetic(support::SourceLocation loc, BinaryOp op, const Type* resultType,
 		const Type* lhsType, const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
 	{
+		// A 64-bit result has its own lowering (the two-word pair) - see lowerWideArithmetic().
+		if (resultType && resultType->isWideInteger())
+			return lowerWideArithmetic(loc, op, resultType, lhsType, rhsType, lhsVal, rhsVal);
+
+		// A scalar result with a wide operand - a pointer offset (`p + wide`), a shift amount
+		// (`int << wide`) - converts that operand to a word first, exactly as C converts it to
+		// `int`. A wide result never reaches here (the dispatch above caught it).
+		lhsVal = toWord(loc, lhsVal, lhsType);
+		rhsVal = toWord(loc, rhsVal, rhsType);
+
 		// isArray() alongside isPointer(): node.lhs()->type()/node.rhs()->type() (this function's
 		// only caller, visit(BinaryExpr&)) are the AST's own, undecayed annotations - an array
 		// operand's real Type stays Array there even though sema type-checked `arr + 1` as pointer
@@ -1155,6 +1386,17 @@ namespace ceresc::ir
 
 	void IrBuilder::visit(ast::IntLiteralExpr& node)
 	{
+		// A 64-bit literal's two words come straight from the source value (sema typed it LongLong/
+		// ULongLong from the `ll`/`LL` suffix) - not from materializeWide(), whose extension would
+		// be wrong for a literal like 0x100000000LL whose high word is genuinely non-zero.
+		if (node.type() && node.type()->isWideInteger())
+		{
+			u64 bits = static_cast<u64>(node.value());
+			IrValue low = emitConstInt(node.location(), static_cast<i64>(static_cast<u32>(bits)));
+			IrValue high = emitConstInt(node.location(), static_cast<i64>(static_cast<u32>(bits >> 32)));
+			_lastValue = makeWideValue(node.location(), low, high);
+			return;
+		}
 		_lastValue = emitConstInt(node.location(), static_cast<i64>(node.value()));
 	}
 
@@ -1201,6 +1443,11 @@ namespace ceresc::ir
 		support::SourceLocation loc = node.location();
 		const Type* resultType = node.type();
 		bool hasResult = resultType && !resultType->isVoid();
+
+		// The 64-bit calling convention is F3.4: a wide argument or result would have to travel in
+		// two registers/words, so refuse one here rather than emit a call the callee cannot honour.
+		if (resultType && resultType->isWideInteger())
+			rejectWideFeature(loc, "a 64-bit function result");
 
 		// A struct coming back through memory needs somewhere to come back TO, decided here rather
 		// than by the callee: a fresh frame slot, whose address becomes the call's hidden first
@@ -1253,6 +1500,8 @@ namespace ceresc::ir
 			const Type* argType = arg->type();
 			const Type* paramType = argIndex < params.size() ? params[argIndex].type : nullptr;
 			++argIndex;
+			if ((argType && argType->isWideInteger()) || (paramType && paramType->isWideInteger()))
+				rejectWideFeature(loc, "a 64-bit call argument");
 			if (isIndirectStruct(argType))
 			{
 				// By value, without a by-value register class: copy the argument into a slot of the
@@ -1353,13 +1602,44 @@ namespace ceresc::ir
 			case UnaryOp::Negate:
 			{
 				const Type* operandType = node.operand()->type();
+				if (operandType && operandType->isWideInteger())
+				{
+					// Two's complement on the pair: `low' = -low`, and `high' = ~high + (low == 0)`
+					// (the carry out of negating the low word). See the negation worked through in
+					// lowerWideArithmetic's sibling helpers.
+					IrValue a = materializeWide(loc, lowerExpr(node.operand()), operandType);
+					bool isVolatile = operandType->isVolatile();
+					IrValue low = loadWideWord(loc, a, false, isVolatile);
+					IrValue high = loadWideWord(loc, a, true, isVolatile);
+					IrValue zero = emitConstInt(loc, 0);
+					IrValue negatedLow = emitBinOp(loc, IrBinOp::Sub, zero, low, true);
+					IrValue lowIsZero = emitCmp(loc, IrCmpPredicate::Eq, low, zero, false);
+					IrValue notHigh = emitBinOp(loc, IrBinOp::Xor, high, emitConstInt(loc, -1), true);
+					IrValue negatedHigh = emitBinOp(loc, IrBinOp::Add, notHigh, lowIsZero, true);
+					_lastValue = makeWideValue(loc, negatedLow, negatedHigh);
+					return;
+				}
 				_lastValue = emitUnOp(loc, IrUnOp::Neg, lowerExpr(node.operand()), operandType && operandType->isFloat());
 				return;
 			}
 
 			case UnaryOp::BitwiseNot:
+			{
+				const Type* operandType = node.operand()->type();
+				if (operandType && operandType->isWideInteger())
+				{
+					IrValue a = materializeWide(loc, lowerExpr(node.operand()), operandType);
+					bool isVolatile = operandType->isVolatile();
+					IrValue low = loadWideWord(loc, a, false, isVolatile);
+					IrValue high = loadWideWord(loc, a, true, isVolatile);
+					IrValue minusOne = emitConstInt(loc, -1);
+					_lastValue = makeWideValue(loc, emitBinOp(loc, IrBinOp::Xor, low, minusOne, true),
+						emitBinOp(loc, IrBinOp::Xor, high, minusOne, true));
+					return;
+				}
 				_lastValue = emitUnOp(loc, IrUnOp::Not, lowerExpr(node.operand()));
 				return;
+			}
 
 			case UnaryOp::LogicalNot:
 				_lastValue = materializeBoolean(&node);
@@ -1371,6 +1651,17 @@ namespace ceresc::ir
 			case UnaryOp::PostDecrement:
 			{
 				const Type* type = node.operand()->type();
+				bool isIncrement = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PostIncrement);
+				if (type && type->isWideInteger())
+				{
+					IrValue addr = lowerAddress(node.operand());
+					IrValue newValue = lowerWideArithmetic(loc, isIncrement ? BinaryOp::Add : BinaryOp::Sub,
+						type, type, &Type::Int, addr, emitConstInt(loc, 1));
+					emitWideStore(loc, addr, newValue, type, type->isVolatile());
+					bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
+					_lastValue = isPre ? newValue : addr; // a post-inc's value is the old one, still in place
+					return;
+				}
 				bool isFloat = type && type->isFloat();
 				IrValue addr = lowerAddress(node.operand());
 				IrMemSize size = memSizeOf(type);
@@ -1383,7 +1674,6 @@ namespace ceresc::ir
 					i64 step = (type && type->isPointer() && type->arrayElementType()) ? type->arrayElementType()->sizeInBytes() : 1;
 					stepValue = emitConstInt(loc, step);
 				}
-				bool isIncrement = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PostIncrement);
 				IrValue newValue = emitBinOp(loc, isIncrement ? IrBinOp::Add : IrBinOp::Sub, oldValue, stepValue, type && !type->isSigned(), isFloat);
 				newValue = convertForStore(loc, newValue, isFloat ? type : &Type::Int, type);
 				emitStore(loc, addr, size, newValue, isFloat, type && type->isVolatile());
@@ -1422,6 +1712,19 @@ namespace ceresc::ir
 			{
 				const Type* lhsType = node.lhs()->type();
 				const Type* rhsType = node.rhs()->type();
+				if ((lhsType && lhsType->isWideInteger()) || (rhsType && rhsType->isWideInteger()))
+				{
+					// Both operands are promoted to the common 64-bit type first, so `long long`
+					// against `int` compares the int's sign-extended pair, and the signedness of the
+					// comparison comes from that common type (unsigned only if it is `unsigned long
+					// long`).
+					IrValue a = materializeWide(loc, lhs, lhsType);
+					IrValue b = materializeWide(loc, rhs, rhsType);
+					const Type* common = commonArithmeticType(lhsType, rhsType);
+					bool isUnsigned = common && !common->isSigned();
+					_lastValue = lowerWideCompare(loc, node.op(), a, b, isUnsigned);
+					return;
+				}
 				bool cmpIsFloat = (lhsType && lhsType->isFloat()) || (rhsType && rhsType->isFloat());
 				if (cmpIsFloat)
 				{
@@ -1468,6 +1771,31 @@ namespace ceresc::ir
 		{
 			_diagnostics.error(DiagId::CompoundAssignToStruct, loc, "compound assignment is not valid for a struct type");
 			_lastValue = IrValue{};
+			return;
+		}
+
+		if (targetType && targetType->isWideInteger())
+		{
+			// A wide target is eight bytes, never a scalar store: `x = y` is a two-word copy (or an
+			// extension of a scalar y), and `x op= y` computes the wide result first. The value of
+			// the assignment is the destination's address, which keeps the wide convention intact
+			// and makes `a = b = c` copy from the inner destination.
+			if (node.op() == AssignOp::Assign)
+			{
+				IrValue value = lowerExpr(node.value()); // a wide source IS its address
+				IrValue destAddr = lowerAddress(node.target());
+				emitWideStore(loc, destAddr, value, node.value()->type(), targetType->isVolatile());
+				_lastValue = destAddr;
+				return;
+			}
+
+			IrValue addr = lowerAddress(node.target());
+			IrValue rhs = lowerExpr(node.value());
+			BinaryOp binaryOp = binaryOpForCompoundAssign(node.op());
+			const Type* promotedType = commonArithmeticType(targetType, node.value()->type());
+			IrValue value = lowerArithmetic(loc, binaryOp, promotedType, targetType, node.value()->type(), addr, rhs);
+			emitWideStore(loc, addr, value, promotedType, targetType->isVolatile());
+			_lastValue = value;
 			return;
 		}
 
@@ -1591,6 +1919,13 @@ namespace ceresc::ir
 			_lastValue = emitConstInt(loc, isConstant ? 1 : 0);
 			return;
 		}
+
+		// Every remaining builtin is one 32-bit machine instruction (or an overflow expansion over
+		// one), so a 64-bit operand has no encoding - refuse it rather than use the address's low
+		// word. `__builtin_expect` above is the exception, since it just forwards its operand.
+		for (ast::Expr* argument : args)
+			if (argument->type() && argument->type()->isWideInteger())
+				rejectWideFeature(loc, "a 64-bit operand to a builtin");
 
 		// The overflow builtins expand to the operation, a store, and an overflow test:
 		//   add.u:  sum < a                       add.s:  ((a^sum) & (b^sum)) < 0
@@ -1746,7 +2081,8 @@ namespace ceresc::ir
 		// returns the non-NaN operand - a difference this phase does not model. `abs` has the same
 		// -0.0 caveat, so it is integer too.
 		const ast::Type* resultType = node.type();
-		if (!resultType || resultType->isFloat() || resultType->isPointer() || resultType->isArray())
+		if (!resultType || resultType->isFloat() || resultType->isPointer() || resultType->isArray() ||
+			resultType->isWideInteger())
 			return false;
 
 		Expr* lhs = cond->lhs();
@@ -1837,7 +2173,36 @@ namespace ceresc::ir
 		BasicBlock& elseBlock = _currentFunction->createBlock();
 		BasicBlock& mergeBlock = _currentFunction->createBlock();
 
+		// A wide result needs an 8-byte home, and its address has to be materialized in the
+		// pre-branch block: emitting the FrameAddr after lowerCondition() below would append it to
+		// the already-terminated block, i.e. an unreachable one, and both arms would then read a
+		// temp that never runs.
+		IrValue wideResultAddr{};
+		if (node.type() && node.type()->isWideInteger())
+			wideResultAddr = emitFrameAddr(loc, newStructTempSlot(8));
+
 		lowerCondition(node.cond(), &thenBlock, &elseBlock);
+
+		// A wide result is an 8-byte object, so both arms copy their two words into one temp rather
+		// than `Copy` a single value into a register.
+		if (node.type() && node.type()->isWideInteger())
+		{
+			IrValue resultAddr = wideResultAddr;
+
+			_currentBlock = &thenBlock;
+			emitWideStore(loc, resultAddr, lowerExpr(node.thenExpr()), node.thenExpr()->type(), false);
+			if (!_currentBlock->isTerminated())
+				emitVoid(loc, IrJumpPayload{ &mergeBlock });
+
+			_currentBlock = &elseBlock;
+			emitWideStore(loc, resultAddr, lowerExpr(node.elseExpr()), node.elseExpr()->type(), false);
+			if (!_currentBlock->isTerminated())
+				emitVoid(loc, IrJumpPayload{ &mergeBlock });
+
+			_currentBlock = &mergeBlock;
+			_lastValue = resultAddr;
+			return;
+		}
 
 		IrValue result = _currentFunction->newTemp();
 		bool resultIsFloat = node.type() && node.type()->isFloat();
@@ -2005,6 +2370,15 @@ namespace ceresc::ir
 
 		const Type* returnType = _currentFunction->returnType();
 
+		if (returnType && returnType->isWideInteger())
+		{
+			// F3.4 owns the 64-bit return convention; the function was already refused at its
+			// definition, and this keeps the return itself from emitting a bogus one-register value.
+			rejectWideFeature(loc, "a 64-bit function return");
+			emitVoid(loc, IrReturnPayload{ false, false, IrValue{} });
+			return;
+		}
+
 		if (_hiddenReturnSlot)
 		{
 			// The caller handed us where to put the result (ir_builder.h's struct convention):
@@ -2146,6 +2520,12 @@ namespace ceresc::ir
 	void IrBuilder::visit(ast::SwitchStmt& node)
 	{
 		support::SourceLocation loc = node.location();
+
+		// A 64-bit discriminant is F9 (a `switch` over a wide type): the dispatch below compares one
+		// word, so refuse it rather than compare the value's address.
+		if (node.cond()->type() && node.cond()->type()->isWideInteger())
+			rejectWideFeature(loc, "a 64-bit switch condition");
+
 		IrValue condValue = lowerExpr(node.cond());
 
 		std::vector<std::pair<i64, BasicBlock*>> cases;
@@ -2359,6 +2739,13 @@ namespace ceresc::ir
 			return;
 
 		const Type* type = node.type();
+		if (type && type->isWideInteger())
+		{
+			// A wide local is eight bytes; its initializer (a plain expression or a brace list) is
+			// written as the two words by the same path a struct's field goes through.
+			lowerInitializerInto(node.location(), emitFrameAddr(node.location(), symbol.localSlot), 0, type, node.initializer());
+			return;
+		}
 		bool isAggregateInitializer = dynamic_cast<ast::InitListExpr*>(node.initializer()) != nullptr ||
 			isStructType(type) ||
 			(type && type->isArray()); // `char s[8] = "hola"` is the only non-list form an array takes
@@ -2386,12 +2773,14 @@ namespace ceresc::ir
 		if (!node.isDefinition())
 			return; // a prototype has nothing to lower - see the header comment
 
-		// A 64-bit parameter or return type would need a 64-bit calling convention (F3.4) on top of
-		// the missing representation, so refuse it here too rather than emit a signature the back
-		// end cannot honor (F3.1a - see rejectWideInteger).
-		rejectWideInteger(node.location(), node.returnType());
+		// A 64-bit parameter or return type needs the 64-bit calling convention (F3.4) on top of the
+		// value representation, so refuse it here rather than emit a signature the back end cannot
+		// honor. A wide *local* is fine - that is what F3.1b lowers.
+		if (node.returnType() && node.returnType()->isWideInteger())
+			rejectWideFeature(node.location(), "a 64-bit function return type");
 		for (const Param& param : node.params())
-			rejectWideInteger(node.location(), param.type);
+			if (param.type && param.type->isWideInteger())
+				rejectWideFeature(node.location(), "a 64-bit function parameter");
 
 		IrFunction& function = _module.addFunction(node.name(), node.returnType());
 		// Two facts the optimizer needs and cannot see in the body: whether another object may call
