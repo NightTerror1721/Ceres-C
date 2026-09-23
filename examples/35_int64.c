@@ -2,16 +2,16 @@
 //
 // `long long` and `unsigned long long` are 8-byte types, not spellings of the 32-bit ones:
 // `sizeof`, struct layout and the `ll`/`LL` literal suffix all see the full width. Their values
-// lower as an addressed pair of words (low at +0, high at +4), so addition, subtraction, the
-// bitwise operators and comparisons compute on all 64 bits, and a value that does not fit 32 bits
-// keeps its high half through a variable, a struct field and an array element.
+// lower as an addressed pair of words (low at +0, high at +4), so arithmetic, the bitwise operators
+// and comparisons compute on all 64 bits, and a value that does not fit 32 bits keeps its high half
+// through a variable, a struct field, an array element and a global.
 //
-// The two halves are read back through a union so the program can print them without a 64-bit
-// division to decimalize the whole value - and because a 64-bit value cannot yet cross a function
-// boundary, the helper takes a POINTER to it rather than the value itself.
+// The two halves are read back through a union because this target is little-endian; the helper
+// takes a POINTER to the value rather than the value itself, because a 64-bit value cannot yet cross
+// a function boundary (the wide calling convention is a later phase).
 //
-// Multiplication, division, remainder, shifts and the float conversions are the next phases and
-// are refused with E5002 rather than silently truncated; every line here is add/sub/bitwise/compare.
+// Shifts and the float conversions are the next phase and are refused with E5002 rather than
+// silently truncated; every line here is add/sub/mul/div/mod/bitwise/compare.
 //
 //     ceresc examples/35_int64.c --run
 
@@ -40,7 +40,8 @@ void putint(int value)
 }
 
 // One 64-bit value, printed as its two 32-bit words. The parameter is a pointer because the 64-bit
-// calling convention is a later phase; the value itself is only ever a local. Reading the inactive
+// calling convention is a later phase, so the value is reached by pointer and never passed by value.
+// Reading the inactive
 // union member is the little-endian assumption the whole lowering makes (low word first), so this
 // only prints `halves[0]` as the low word because Ceres stores the low word at offset 0.
 void put64(char* label, long long* value)

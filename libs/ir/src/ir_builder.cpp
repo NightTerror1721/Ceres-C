@@ -1704,17 +1704,19 @@ namespace ceresc::ir
 				if (type && type->isWideInteger())
 				{
 					IrValue addr = lowerAddress(node.operand());
+					bool isVolatile = type->isVolatile();
 					bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
-					// A post form's value is the OLD one, so snapshot it before the store overwrites
-					// it - `long long a = 5; long long b = a++;` has to leave `b == 5`. The scalar
-					// path below gets this for free by loading into a register.
-					IrValue oldValue = isPre ? IrValue{} : makeWideValue(loc,
-						loadWideWord(loc, addr, false, type->isVolatile()),
-						loadWideWord(loc, addr, true, type->isVolatile()));
+					// The object is read ONCE - a `volatile long long` `a++` implies a single read
+					// (plus the write), so the two words are snapshotted into a temp and the
+					// arithmetic works on that, not on the object again. The snapshot is a post
+					// form's value; a pre form returns the newly computed one.
+					IrValue snapshot = makeWideValue(loc, loadWideWord(loc, addr, false, isVolatile),
+						loadWideWord(loc, addr, true, isVolatile));
+					const Type* plain = type->isSigned() ? &Type::LongLong : &Type::ULongLong;
 					IrValue newValue = lowerWideArithmetic(loc, isIncrement ? BinaryOp::Add : BinaryOp::Sub,
-						type, type, &Type::Int, addr, emitConstInt(loc, 1));
-					emitWideStore(loc, addr, newValue, type, type->isVolatile());
-					_lastValue = isPre ? newValue : oldValue;
+						plain, plain, &Type::Int, snapshot, emitConstInt(loc, 1));
+					emitWideStore(loc, addr, newValue, plain, isVolatile);
+					_lastValue = isPre ? newValue : snapshot;
 					return;
 				}
 				bool isFloat = type && type->isFloat();

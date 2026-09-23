@@ -1279,6 +1279,22 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   ~1700 casos aleatorios a los tres niveles (sin incluir en el repo, por ser un banco de pruebas).
   Siguen fuera de F3 los desplazamientos y las conversiones con `float` (F3.3) y la ABI ancha (F3.4).
 
+- **Revisión de `ocr` sobre F3.2** (`71ab3d8..2d5ac5a`): 10 ficheros, 9 hallazgos, **ninguno crítico
+  ni alto**, dos medios, todos corregidos:
+  (1) *medio* (documentación, no código) — la cabecera de `examples/35_int64.c` seguía diciendo que
+  `*`/`/`/`%` se rechazan, obsoleto en el mismo commit que los añade; reescrita junto con la
+  justificación del `union` (ya no es «evitar una división de 64 bits») y la frase «el valor solo es
+  un local» (ahora hay un global).
+  (2) *medio* (test) — el test de codegen de `__cc_div64` solo comprobaba la presencia por substring;
+  ahora comprueba también `popm` (que el `pushm`/`popm` cuadra), que un programa con `/` y `%` emite
+  la rutina **una sola vez** y hace dos llamadas, y que un programa que no divide no la lleva.
+  Uno *bajo* de corrección: el `a++`/`a--` ancho sobre un `volatile long long` leía el objeto dos veces
+  (el snapshot y otra vez para calcular), cuando la fuente implica una sola lectura; ahora se lee una
+  vez a un temporal y la aritmética trabaja sobre él. Bajos restantes: comentario a medias en la rama
+  de signo del cociente, máscara `pushm`/`popm` como literal repetido (ahora `kDiv64SaveMask`),
+  `emitEmittedRoutines` renombrado a `emitCarriedRoutines`, y un comentario del e2e con la fase
+  equivocada (`F3.2-F3.4` → `F3.3-F3.4`).
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;

@@ -425,7 +425,7 @@ namespace ceresc::codegen
 		// F3.2: a 64-bit division/remainder site calls the compiler's own `__cc_div64`.
 		bool _usesDiv64 = false;
 		// Emits every compiler-carried routine a call site asked for, at the end of `@text`.
-		void emitEmittedRoutines();
+		void emitCarriedRoutines();
 
 		// True while generating an `__interrupt` handler. Two things change, and both follow from the
 		// same fact: a handler is not called, it preempts. It ends in `iret`, which pops the flags and
@@ -459,6 +459,9 @@ namespace ceresc::codegen
 		// callee-saved f8-f15, which only become reachable when value placement hands one out -
 		// calleeSavedFloatMask(), OR-ed in by emitInterruptPrologue().
 		static constexpr u32 kInterruptCallerSavedFloatMask = 0x00FF;
+		// r8-r11 (bits 8-11), the integer half a call must preserve: what `__cc_div64` brackets its
+		// body with. A named mask keeps the `pushm` and `popm` in sync.
+		static constexpr u32 kDiv64SaveMask = 0x0F00;
 
 		// The two halves of that, emitted around the frame the ordinary prologue/epilogue open.
 		void emitInterruptPrologue(const ir::IrFunction& function, std::string_view comment);

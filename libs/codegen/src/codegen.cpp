@@ -2217,7 +2217,7 @@ namespace ceresc::codegen
 		}
 	}
 
-	void CodeGen::emitEmittedRoutines()
+	void CodeGen::emitCarriedRoutines()
 	{
 		// The byte-fill loop's word-at-a-time routine (ir_optimizer.cpp's lowerLoopIdioms). A leaf
 		// with no frame: it uses r0-r7 only and returns nothing, so it is just `ret`. The counter is
@@ -2416,7 +2416,7 @@ namespace ceresc::codegen
 		{
 			_emitter.raw("// emitted because a 64-bit division or remainder was lowered (docs/14 F3.2)");
 			_emitter.label("__cc_div64");
-			_emitter.instr("pushm 0x0F00");            // r8-r11 are the callee-saved pair
+			_emitter.instr(std::format("pushm 0x{:04X}", kDiv64SaveMask)); // r8-r11, the callee-saved half
 			_emitter.instr("ldr  r8,  [r1]");          // dividend low
 			_emitter.instr("ldr  r9,  [r1 + 4]");      // dividend high
 			_emitter.instr("ldr  r10, [r2]");          // divisor low
@@ -2428,7 +2428,7 @@ namespace ceresc::codegen
 			_emitter.instr("str  [r0 + 4], r12");
 			_emitter.instr("str  [r0 + 8], r12");
 			_emitter.instr("str  [r0 + 12], r12");
-			_emitter.instr("popm 0x0F00");
+			_emitter.instr(std::format("popm 0x{:04X}", kDiv64SaveMask));
 			_emitter.instr("ret");
 			_emitter.localLabel("div_nonzero");
 			_emitter.instr("mov  r1, r3");             // r1 = isSigned, captured before r3 is reused
@@ -2474,7 +2474,7 @@ namespace ceresc::codegen
 			_emitter.localLabel("div_nosub");
 			_emitter.instr("sub  r12, r12, 1");
 			_emitter.instr("ifne r12, 0, .div_loop");
-			_emitter.instr("ifeq r3, 0, .div_qpos");   // quotients are negative only when one sign was
+			_emitter.instr("ifeq r3, 0, .div_qpos");   // a quotient is negative only when one sign was negative
 			_emitter.instr("not  r6, r6");
 			_emitter.instr("not  r7, r7");
 			_emitter.instr("add  r6, r6, 1");
@@ -2490,7 +2490,7 @@ namespace ceresc::codegen
 			_emitter.instr("str  [r0 + 4], r7");
 			_emitter.instr("str  [r0 + 8], r4");
 			_emitter.instr("str  [r0 + 12], r5");
-			_emitter.instr("popm 0x0F00");
+			_emitter.instr(std::format("popm 0x{:04X}", kDiv64SaveMask));
 			_emitter.instr("ret");
 		}
 	}
@@ -2756,7 +2756,7 @@ namespace ceresc::codegen
 
 		// The compiler's own runtime routines, if any call site asked for one - still inside `@text`,
 		// after every function.
-		emitEmittedRoutines();
+		emitCarriedRoutines();
 
 		// Jump tables go in their own `@rodata` block after all the code: their entries name block
 		// labels, which only exist once the function they belong to has been emitted.
