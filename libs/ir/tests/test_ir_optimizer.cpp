@@ -669,13 +669,42 @@ TEST(ir_optimizer, inlining_leaves_a_recursive_function_alone)
 	CHECK(contains(text, "call"));
 }
 
-TEST(ir_optimizer, inlining_leaves_a_function_with_control_flow_alone)
+TEST(ir_optimizer, inlining_splices_a_function_that_calls_another_one)
+{
+	// A callee may itself call something: the nested call is copied along with the rest of the body.
+	// The outer call is gone; the inner one is only gone too because the whole chain folds away.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.inlining = true;
+
+	std::string text = optimizedIr(
+		"int add(int a, int b) { return a + b; } int twice(int x) { return add(x, x); } int main() { return twice(3); }",
+		options);
+	CHECK(!contains(text, "call twice"));
+}
+
+TEST(ir_optimizer, inlining_splices_a_function_with_control_flow_into_its_caller)
 {
 	support::OptimizationOptions options = support::OptimizationOptions::none();
 	options.inlining = true;
 
-	std::string text = optimizedIr("int pick(int n) { if (n) return 1; return 2; } int main() { return pick(1); }", options);
-	CHECK(contains(text, "call"));
+	// A multi-block callee whose result is returned unchanged: the caller's own call is replaced by a
+	// copy of the callee's blocks, so no `call pick` survives.
+	std::string text = optimizedIr(
+		"int pick(int n) { if (n) return 1; return 2; } int main(int argc) { return pick(argc); }", options);
+	CHECK(!contains(text, "call pick"));
+	CHECK(contains(text, "br.")); // the copied branch is there
+}
+
+TEST(ir_optimizer, inlining_leaves_a_function_with_inline_assembly_alone)
+{
+	// The asm text may define a label; copying it would define that label twice. `xs` must keep its
+	// own body, and main must still call it.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.inlining = true;
+
+	std::string mainIr = optimizedIr(
+		"void xs(void) { __asm__(\".spot:\\n\\tnop\"); } int main(void) { xs(); return 0; }", options, "main");
+	CHECK(contains(mainIr, "call xs"));
 }
 
 TEST(ir_optimizer, inlining_is_off_at_O1)

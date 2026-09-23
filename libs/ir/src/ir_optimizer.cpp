@@ -1851,10 +1851,58 @@ namespace ceresc::ir
 
 		// ---- pass: inlining ---------------------------------------------------------------------------
 
-		// A callee worth splicing: one straight-line block that ends in a Return and calls nothing
-		// itself (which also rules out recursion by construction), short enough to be worth copying,
-		// and not the entry point - `main` is never called from anywhere in the first place, and
-		// codegen gives it a different epilogue entirely (codegen.h's own note).
+		// How many instructions a function's body holds, across all of its blocks - the size the
+		// inliner weighs against the limit below.
+		usize instructionCount(const IrFunction& function)
+		{
+			usize total = 0;
+			for (const auto& block : function.blocks())
+				total += block->instrs().size();
+			return total;
+		}
+
+		// The instruction budget a callee gets before copying it stops being worth it. `inline` is a
+		// hint about what is worth copying, not a licence to copy a four-hundred-instruction body into
+		// every call; `always_inline` is the one that genuinely asks for no limit.
+		usize inlineLimit(const IrFunction& function)
+		{
+			if (function.isAlwaysInline())
+				return ~usize(0);
+			if (function.isInlineHint())
+				return kMaxInlineInstrsWhenRequested;
+			return kMaxInlineInstrs;
+		}
+
+		bool isTerminatorInstr(const IrInstr& instr)
+		{
+			switch (instr.opcode())
+			{
+				case IrOpcode::Jump:
+				case IrOpcode::CondJump:
+				case IrOpcode::TableJump:
+				case IrOpcode::Return:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		// The block that followed `block` in emission order, which is where it fell through to when
+		// it had no terminator of its own.
+		BasicBlock* nextBlockAfter(const IrFunction& function, const BasicBlock& block)
+		{
+			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+			for (usize i = 0; i + 1 < blocks.size(); ++i)
+				if (blocks[i].get() == &block)
+					return blocks[i + 1].get();
+			return nullptr;
+		}
+
+		// A callee worth splicing: any shape of control flow (several blocks, calls to other
+		// functions), short enough to be worth copying, and not the entry point - `main` is never
+		// called from anywhere in the first place, and codegen gives it a different epilogue
+		// (codegen.h's own note). Any function that is called can be inlined; only `main`, a handler
+		// and a variadic function are ruled out by what they are rather than by their shape.
 		bool isInlinable(const IrFunction& function)
 		{
 			if (function.name() == "main")
@@ -1870,44 +1918,31 @@ namespace ceresc::ir
 			if (function.isInterruptHandler())
 				return false;
 			// A variadic callee is handed arguments its parameter list does not describe, so there is
-			// nothing for inlineCall() to bind them to - and its body reads them out of the caller's
+			// nothing for the splice to bind them to - and its body reads them out of the caller's
 			// frame (IrOpcode::VaStart), which stops meaning anything once the body is spliced into a
-			// different frame entirely. Ruled out here rather than left to inlineCall()'s arity guard,
-			// which would already decline every such call but only by accident of the argument count.
+			// different frame entirely.
 			if (function.isVariadic())
 				return false;
-			if (function.blocks().size() != 1)
+			if (function.blocks().empty())
+				return false;
+			// The last block has to end in a terminator: an unterminated one falls through to whatever
+			// block is emitted next, and a splice moves the body somewhere else entirely.
+			std::span<IrInstr* const> lastInstrs = function.blocks().back()->instrs();
+			if (lastInstrs.empty() || !isTerminatorInstr(*lastInstrs.back()))
 				return false;
 
-			std::span<IrInstr* const> instrs = function.blocks().front()->instrs();
-			// `inline` raises the size limit rather than removing it: the request is a hint about what
-			// is worth copying, not a licence to copy a four-hundred-instruction body into every call.
-			usize limit = function.isAlwaysInline() ? ~usize(0)
-				: function.isInlineHint() ? kMaxInlineInstrsWhenRequested
-				: kMaxInlineInstrs;
-			if (instrs.empty() || instrs.size() > limit)
-				return false;
-			if (instrs.back()->opcode() != IrOpcode::Return)
-				return false;
-
-			for (IrInstr* instr : instrs)
-			{
-				if (instr->opcode() == IrOpcode::Call)
-					return false;
-				// A Return anywhere but at the very end would mean control leaves early, which a
-				// single block cannot express anyway - but check rather than assume.
-				if (instr->opcode() == IrOpcode::Return && instr != instrs.back())
-					return false;
-			}
-			return true;
+			usize total = instructionCount(function);
+			return total != 0 && total <= inlineLimit(function);
 		}
 
 		// Rebuilds one callee instruction inside the caller: every temporary it names becomes a
-		// fresh caller temporary, and every local slot it names becomes the caller slot reserved for
-		// it. Only ever applied to the shapes isInlinable() allows, so Jump/CondJump (which would
-		// also need their BasicBlock* remapped) can never reach here.
+		// fresh caller temporary, every local slot it names becomes the caller slot reserved for it,
+		// and every block a branch names becomes the caller block its copy lives in. A Return is not
+		// handled here: the splice turns each one into a copy of the result plus a jump to the
+		// continuation, so it never reaches this switch.
 		IrInstr* remapInstr(const IrInstr& instr, support::Arena& arena, IrFunction& caller,
-			std::unordered_map<u32, IrValue>& tempMap, const std::vector<u32>& localMap)
+			std::unordered_map<u32, IrValue>& tempMap, const std::vector<u32>& localMap,
+			const std::unordered_map<const BasicBlock*, BasicBlock*>& blockMap)
 		{
 			auto mapValue = [&](IrValue value) -> IrValue
 			{
@@ -1919,6 +1954,11 @@ namespace ceresc::ir
 				IrValue fresh = caller.newTemp();
 				tempMap.emplace(value.id, fresh);
 				return fresh;
+			};
+			auto mapBlock = [&](const BasicBlock* block) -> BasicBlock*
+			{
+				auto it = blockMap.find(block);
+				return it == blockMap.end() ? nullptr : it->second;
 			};
 
 			support::SourceLocation loc = instr.location();
@@ -1989,6 +2029,65 @@ namespace ceresc::ir
 					p.value = mapValue(p.value);
 					return arena.create<IrInstr>(loc, p);
 				}
+				case IrOpcode::Param:
+				{
+					IrParamPayload p = instr.as<IrParamPayload>();
+					p.value = mapValue(p.value);
+					return arena.create<IrInstr>(loc, p);
+				}
+				// A call inside the callee becomes a call inside the caller. Its own Params sit
+				// immediately before it and are remapped in the same pass, so the argCount still
+				// describes them.
+				case IrOpcode::Call:
+				{
+					IrCallPayload p = instr.as<IrCallPayload>();
+					p.calleeValue = mapValue(p.calleeValue);
+					p.result = mapValue(p.result);
+					return arena.create<IrInstr>(loc, p);
+				}
+				case IrOpcode::Jump:
+				{
+					IrJumpPayload p = instr.as<IrJumpPayload>();
+					if (BasicBlock* target = mapBlock(p.target))
+					{
+						p.target = target;
+						return arena.create<IrInstr>(loc, p);
+					}
+					return nullptr;
+				}
+				case IrOpcode::CondJump:
+				{
+					IrCondJumpPayload p = instr.as<IrCondJumpPayload>();
+					BasicBlock* trueTarget = mapBlock(p.trueTarget);
+					BasicBlock* falseTarget = mapBlock(p.falseTarget);
+					if (!trueTarget || !falseTarget)
+						return nullptr;
+					p.lhs = mapValue(p.lhs);
+					p.rhs = mapValue(p.rhs);
+					p.trueTarget = trueTarget;
+					p.falseTarget = falseTarget;
+					return arena.create<IrInstr>(loc, p);
+				}
+				case IrOpcode::TableJump:
+				{
+					const IrTableJumpPayload& p = instr.as<IrTableJumpPayload>();
+					BasicBlock** targets = static_cast<BasicBlock**>(arena.allocate(sizeof(BasicBlock*) * p.entryCount, alignof(BasicBlock*)));
+					for (u32 i = 0; i < p.entryCount; ++i)
+					{
+						BasicBlock* mapped = mapBlock(p.targets[i]);
+						if (!mapped)
+							return nullptr;
+						targets[i] = mapped;
+					}
+					BasicBlock* defaultTarget = mapBlock(p.defaultTarget);
+					if (!defaultTarget)
+						return nullptr;
+					IrTableJumpPayload copy = p;
+					copy.targets = targets;
+					copy.defaultTarget = defaultTarget;
+					copy.discriminant = mapValue(p.discriminant);
+					return arena.create<IrInstr>(loc, copy);
+				}
 				case IrOpcode::Builtin:
 				{
 					IrBuiltinPayload p = instr.as<IrBuiltinPayload>();
@@ -1997,99 +2096,221 @@ namespace ceresc::ir
 					p.result = mapValue(p.result);
 					return arena.create<IrInstr>(loc, p);
 				}
+				case IrOpcode::MachineOp:
+					return arena.create<IrInstr>(loc, instr.as<IrMachineOpPayload>());
 				default:
-					return nullptr; // Param/Call/Jump/CondJump/Return never reach here - see isInlinable()
+					return nullptr; // Return is handled by the splice; VaStart never reaches here
 			}
 		}
 
-		// Splices `callee`'s body in place of the Call at the end of `prefix`, whose last `argCount`
-		// entries are that call's Param instructions. Returns false (leaving `prefix` untouched) if
-		// anything about the shape is not what inlining assumes.
-		bool spliceInlinedCall(std::vector<IrInstr*>& prefix, const IrCallPayload& call, support::SourceLocation callLoc,
-			const IrFunction& callee, IrFunction& caller, support::Arena& arena)
+		// The caller temporary a callee value maps to, creating one on first sight. Used both for a
+		// value an instruction defines and for a Return's value, which may be one the body only
+		// passes through (a parameter) rather than produces.
+		IrValue mapCalleeValue(IrFunction& caller, std::unordered_map<u32, IrValue>& tempMap, IrValue value)
 		{
-			if (call.argCount != callee.paramCount() || call.argCount > prefix.size())
+			if (!value.isValid())
+				return value;
+			auto it = tempMap.find(value.id);
+			if (it != tempMap.end())
+				return it->second;
+			IrValue fresh = caller.newTemp();
+			tempMap.emplace(value.id, fresh);
+			return fresh;
+		}
+
+		// Appends the FrameAddr+Store pair that settles argument `i` into the caller slot mapped to the
+		// callee's parameter slot - exactly what the callee's own prologue would have done with the
+		// incoming register.
+		void appendArgumentStore(std::vector<IrInstr*>& out, support::Arena& arena, IrFunction& caller,
+			const IrFunction& callee, const std::vector<u32>& localMap, const std::vector<IrValue>& argValues,
+			u32 i, support::SourceLocation loc)
+		{
+			const IrLocalSlot& slot = callee.localSlots()[i];
+			IrFrameAddrPayload addr;
+			addr.result = caller.newTemp();
+			addr.localIndex = localMap[i];
+			out.push_back(arena.create<IrInstr>(loc, addr));
+
+			IrStorePayload store;
+			store.size = irMemSizeForBytes(slot.sizeInBytes);
+			store.isFloat = slot.isFloat;
+			store.address = addr.result;
+			store.value = argValues[i];
+			out.push_back(arena.create<IrInstr>(loc, store));
+		}
+
+		// Splices `callee`'s body over the Call at `instrs[callIndex]`, whose preceding `argCount`
+		// entries are that call's Param instructions. The caller's block keeps everything before those
+		// Params, stores each argument into the callee slot standing in for its parameter, and jumps
+		// into a fresh copy of the callee's entry block; everything after the Call moves to a fresh
+		// continuation block that every callee Return jumps to. Returns false (touching nothing) when
+		// anything about the shape is not what inlining assumes.
+		bool spliceInlinedCall(IrFunction& caller, BasicBlock& block, std::span<IrInstr* const> instrs,
+			usize callIndex, const IrCallPayload& call, support::SourceLocation callLoc,
+			const IrFunction& callee, support::Arena& arena)
+		{
+			if (call.argCount != callee.paramCount() || call.argCount > callIndex)
 				return false;
-			std::span<IrInstr* const> body = callee.blocks().front()->instrs();
-			const auto& ret = body.back()->as<IrReturnPayload>();
-			if (call.hasResult != ret.hasValue || (call.hasResult && !ret.value.isValid()))
-				return false;
-			std::vector<bool> defined(callee.tempCount(), false);
-			for (IrInstr* instr : body)
-			{
-				if (instr->opcode() == IrOpcode::FrameAddr && instr->as<IrFrameAddrPayload>().localIndex >= callee.localCount())
-					return false;
-				IrValue result = resultOf(*instr);
-				if (result.isValid() && result.id < defined.size())
-					defined[result.id] = true;
-			}
-			if (call.hasResult && (ret.value.id >= defined.size() || !defined[ret.value.id]))
-				return false;
+
+			// Snapshot the block: replacing its instructions below frees the storage `instrs` spans.
+			std::vector<IrInstr*> original(instrs.begin(), instrs.end());
 
 			std::vector<IrValue> argValues(call.argCount);
 			for (u32 i = 0; i < call.argCount; ++i)
 			{
-				const IrInstr* param = prefix[prefix.size() - call.argCount + i];
+				const IrInstr* param = original[callIndex - call.argCount + i];
 				if (param->opcode() != IrOpcode::Param)
 					return false;
 				argValues[i] = param->as<IrParamPayload>().value;
 			}
-			prefix.resize(prefix.size() - call.argCount); // the Params are subsumed by the stores below
 
+			// Validate the whole callee body BEFORE allocating anything in the caller: a bad slot, a
+			// VaStart, an inline-assembly block (its labels would be defined twice once the body is
+			// copied) or a Return of a value the body never defines must decline cleanly rather than
+			// leave a half-spliced block and a trail of orphaned blocks behind.
+			std::vector<bool> defined(callee.tempCount(), false);
+			for (const auto& calleeBlock : callee.blocks())
+			{
+				for (const IrInstr* instr : calleeBlock->instrs())
+				{
+					if (instr->opcode() == IrOpcode::FrameAddr && instr->as<IrFrameAddrPayload>().localIndex >= callee.localCount())
+						return false;
+					if (instr->opcode() == IrOpcode::VaStart)
+						return false;
+					if (instr->opcode() == IrOpcode::Call && !instr->as<IrCallPayload>().inlineAsm.empty())
+						return false;
+					IrValue result = resultOf(*instr);
+					if (result.isValid() && result.id < defined.size())
+						defined[result.id] = true;
+				}
+			}
+			for (const auto& calleeBlock : callee.blocks())
+				for (const IrInstr* instr : calleeBlock->instrs())
+					if (instr->opcode() == IrOpcode::Return && instr->as<IrReturnPayload>().hasValue)
+					{
+						IrValue value = instr->as<IrReturnPayload>().value;
+						if (!value.isValid() || value.id >= defined.size() || !defined[value.id])
+							return false;
+					}
+
+			// Where the block fell through to before the call was replaced - captured now, because
+			// the fresh blocks below are appended and would otherwise become its successor.
+			BasicBlock* originalNext = nextBlockAfter(caller, block);
+
+			// ---- no failure is possible past this point; allocate and commit ------------------------
+			//
 			// Every callee slot - parameters first, then its own locals - gets a fresh slot in the
-			// caller's frame. They are ordinary caller locals from here on, which is what lets the
-			// register allocator (libs/codegen) promote them exactly like any other.
+			// caller's frame, keeping its volatile/register/restrict properties so the accesses through
+			// it stay what they were.
 			std::vector<u32> localMap(callee.localCount());
 			for (u32 i = 0; i < callee.localCount(); ++i)
 			{
 				const IrLocalSlot& slot = callee.localSlots()[i];
-				localMap[i] = caller.newLocalSlot(slot.sizeInBytes, slot.isFloat);
+				localMap[i] = caller.newLocalSlot(slot.sizeInBytes, slot.isFloat, slot.isVolatile, slot.preferRegister, slot.isRestrict);
 			}
 
-			// Each argument is stored into the slot standing in for its parameter, which is exactly
-			// what the callee's own prologue would have done with the incoming register.
-			for (u32 i = 0; i < call.argCount; ++i)
-			{
-				const IrLocalSlot& slot = callee.localSlots()[i];
-				IrFrameAddrPayload addr;
-				addr.result = caller.newTemp();
-				addr.localIndex = localMap[i];
-				prefix.push_back(arena.create<IrInstr>(callLoc, addr));
-
-				IrStorePayload store;
-				store.size = irMemSizeForBytes(slot.sizeInBytes);
-				store.isFloat = slot.isFloat;
-				store.address = addr.result;
-				store.value = argValues[i];
-				prefix.push_back(arena.create<IrInstr>(callLoc, store));
-			}
-
+			// Map every value the callee defines to a fresh caller temporary up front, so a use that
+			// is textually before its definition (a loop-carried value) still names the right temp.
 			std::unordered_map<u32, IrValue> tempMap;
-			for (IrInstr* instr : body)
-			{
-				if (instr->opcode() == IrOpcode::Return)
+			for (const auto& calleeBlock : callee.blocks())
+				for (const IrInstr* instr : calleeBlock->instrs())
 				{
-					const auto& returnPayload = instr->as<IrReturnPayload>();
-					if (call.hasResult)
-					{
-						// The caller reads this call's result, so the callee has to actually produce
-						// one, and it has to be a value the body already defined (which is where
-						// tempMap got its entry). Anything else is IR sema would have rejected -
-						// bail out and leave the real call in place rather than invent a value.
-						if (!returnPayload.hasValue || !returnPayload.value.isValid())
-							return false;
-						auto mapped = tempMap.find(returnPayload.value.id);
-						if (mapped == tempMap.end())
-							return false;
-						prefix.push_back(makeCopy(arena, instr->location(), call.result, mapped->second, call.isFloat));
-					}
-					break; // the Return is the callee's last instruction - see isInlinable()
+					IrValue result = resultOf(*instr);
+					if (result.isValid() && tempMap.find(result.id) == tempMap.end())
+						tempMap.emplace(result.id, caller.newTemp());
 				}
 
-				IrInstr* copied = remapInstr(*instr, arena, caller, tempMap, localMap);
-				if (!copied)
-					return false;
-				prefix.push_back(copied);
+			// Fast path: a single-block callee that ends in a Return splices straight into the
+			// caller's block, keeping the body adjacent to the instructions that follow the call. That
+			// adjacency is what lets constant folding and load forwarding fold the result away (the
+			// `add(3,4)` -> 7 case), which the general path's extra continuation block would break.
+			std::span<const std::unique_ptr<BasicBlock>> calleeBlocks = callee.blocks();
+			if (calleeBlocks.size() == 1)
+			{
+				const BasicBlock& only = *calleeBlocks.front();
+				if (only.instrs().empty() || only.instrs().back()->opcode() != IrOpcode::Return)
+					return false; // an unterminated single block cannot be spliced
+				std::vector<IrInstr*> rewritten;
+				rewritten.reserve(original.size() + 2 * callee.paramCount());
+				for (usize i = 0; i < callIndex - call.argCount; ++i)
+					rewritten.push_back(original[i]);
+				for (u32 i = 0; i < call.argCount; ++i)
+					appendArgumentStore(rewritten, arena, caller, callee, localMap, argValues, i, callLoc);
+				const std::unordered_map<const BasicBlock*, BasicBlock*> noBlocks;
+				for (const IrInstr* instr : only.instrs())
+				{
+					if (instr->opcode() == IrOpcode::Return)
+					{
+						if (call.hasResult)
+							rewritten.push_back(makeCopy(arena, instr->location(), call.result, mapCalleeValue(caller, tempMap, instr->as<IrReturnPayload>().value), call.isFloat));
+						break;
+					}
+					IrInstr* copied = remapInstr(*instr, arena, caller, tempMap, localMap, noBlocks);
+					if (!copied)
+						return false;
+					rewritten.push_back(copied);
+				}
+				for (usize i = callIndex + 1; i < original.size(); ++i)
+					rewritten.push_back(original[i]);
+				block.replaceInstrs(std::move(rewritten));
+				return true;
+			}
+
+			std::unordered_map<const BasicBlock*, BasicBlock*> blockMap;
+			for (const auto& calleeBlock : calleeBlocks)
+				blockMap.emplace(calleeBlock.get(), &caller.createBlock());
+			BasicBlock* continuation = &caller.createBlock();
+			BasicBlock* entryCopy = blockMap.at(calleeBlocks.front().get());
+
+			// The caller's block: prefix, then the argument stores, then a jump into the copy. Each
+			// argument is stored into the slot standing in for its parameter, which is exactly what
+			// the callee's own prologue would have done with the incoming register.
+			std::vector<IrInstr*> head;
+			head.reserve(callIndex - call.argCount + 2 * callee.paramCount() + 1);
+			for (usize i = 0; i < callIndex - call.argCount; ++i)
+				head.push_back(original[i]);
+			for (u32 i = 0; i < call.argCount; ++i)
+				appendArgumentStore(head, arena, caller, callee, localMap, argValues, i, callLoc);
+			head.push_back(arena.create<IrInstr>(callLoc, IrJumpPayload{ entryCopy }));
+			block.replaceInstrs(std::move(head));
+
+			// The continuation: the caller's own instructions after the call. They are no longer
+			// adjacent to the block that came before, so a fall-through has to become a real jump.
+			std::vector<IrInstr*> tail;
+			for (usize i = callIndex + 1; i < original.size(); ++i)
+				tail.push_back(original[i]);
+			if ((tail.empty() || !isTerminatorInstr(*tail.back())) && originalNext)
+				tail.push_back(arena.create<IrInstr>(callLoc, IrJumpPayload{ originalNext }));
+			continuation->replaceInstrs(std::move(tail));
+
+			// Every callee block, copied in place. A Return becomes (optional) a copy of the result
+			// into the call's own result, then a jump to the continuation.
+			for (usize cbIndex = 0; cbIndex < calleeBlocks.size(); ++cbIndex)
+			{
+				const BasicBlock& calleeBlock = *calleeBlocks[cbIndex];
+				std::vector<IrInstr*> body;
+				body.reserve(calleeBlock.instrs().size() + 1);
+				bool terminated = false;
+				for (const IrInstr* instr : calleeBlock.instrs())
+				{
+					if (instr->opcode() == IrOpcode::Return)
+					{
+						if (call.hasResult)
+							body.push_back(makeCopy(arena, instr->location(), call.result, mapCalleeValue(caller, tempMap, instr->as<IrReturnPayload>().value), call.isFloat));
+						body.push_back(arena.create<IrInstr>(instr->location(), IrJumpPayload{ continuation }));
+						terminated = true;
+						break;
+					}
+					IrInstr* copied = remapInstr(*instr, arena, caller, tempMap, localMap, blockMap);
+					if (!copied)
+						return false;
+					body.push_back(copied);
+					if (isTerminatorInstr(*instr))
+						terminated = true;
+				}
+				if (!terminated && cbIndex + 1 < calleeBlocks.size())
+					body.push_back(arena.create<IrInstr>(callLoc, IrJumpPayload{ blockMap.at(calleeBlocks[cbIndex + 1].get()) }));
+				blockMap.at(&calleeBlock)->replaceInstrs(std::move(body));
 			}
 			return true;
 		}
@@ -2107,57 +2328,54 @@ namespace ceresc::ir
 				return false;
 
 			bool changed = false;
-			for (const auto& function : module.functions())
+			for (const auto& functionPtr : module.functions())
 			{
-				for (const auto& block : function->blocks())
+				IrFunction& function = *functionPtr;
+
+				// Snapshot the blocks to scan: inlining appends the callee's block copies to the
+				// caller, and those copies are deliberately NOT rescanned in this pass - which is what
+				// makes inlining a recursive or mutually recursive callee terminate instead of
+				// expanding forever.
+				std::vector<BasicBlock*> blocks;
+				blocks.reserve(function.blocks().size());
+				for (const auto& block : function.blocks())
+					blocks.push_back(block.get());
+
+				for (BasicBlock* block : blocks)
 				{
-					std::vector<IrInstr*> rewritten;
-					rewritten.reserve(block->instrs().size());
-					bool blockChanged = false;
-
-					for (IrInstr* instr : block->instrs())
+					// This block's call sites, collected first and processed from last to first: a
+					// splice keeps everything before the call (the prefix, including every earlier
+					// call and its Params) at the same index, so an earlier site stays valid.
+					std::vector<usize> callIndices;
 					{
-						if (instr->opcode() != IrOpcode::Call)
-						{
-							rewritten.push_back(instr);
-							continue;
-						}
-
-						const auto& call = instr->as<IrCallPayload>();
-						if (call.isIndirect())
-						{
-							// Nothing to look up: the target is an address computed at run time, and
-							// which function it is is exactly what this pass cannot know.
-							rewritten.push_back(instr);
-							continue;
-						}
-						auto candidate = inlinable.find(call.callee);
-						// Never inline a function into itself: isInlinable() already rules out a
-						// callee that calls anything, but a self-call would still be reachable if a
-						// future relaxation let it through.
-						if (candidate == inlinable.end() || candidate->second == function.get())
-						{
-							rewritten.push_back(instr);
-							continue;
-						}
-
-						std::vector<IrInstr*> attempt = rewritten;
-						if (spliceInlinedCall(attempt, call, instr->location(), *candidate->second, *function, arena))
-						{
-							rewritten = std::move(attempt);
-							blockChanged = true;
-							++inlinedOut;
-						}
-						else
-						{
-							rewritten.push_back(instr);
-						}
+						std::span<IrInstr* const> instrs = block->instrs();
+						for (usize i = 0; i < instrs.size(); ++i)
+							if (instrs[i]->opcode() == IrOpcode::Call)
+								callIndices.push_back(i);
 					}
 
-					if (blockChanged)
+					for (auto it = callIndices.rbegin(); it != callIndices.rend(); ++it)
 					{
-						block->replaceInstrs(std::move(rewritten));
-						changed = true;
+						std::span<IrInstr* const> instrs = block->instrs();
+						usize index = *it;
+						if (index >= instrs.size() || instrs[index]->opcode() != IrOpcode::Call)
+							continue;
+						const auto& call = instrs[index]->as<IrCallPayload>();
+						if (call.isIndirect())
+							continue; // the target is an address computed at run time - nothing to look up
+						auto candidate = inlinable.find(call.callee);
+						// Never inline a function into itself.
+						if (candidate == inlinable.end() || candidate->second == &function)
+							continue;
+						// The callee may have grown by an earlier inline in this same pass; splice it
+						// only if it still fits the budget, so a chain of inlines cannot blow up.
+						if (instructionCount(*candidate->second) > inlineLimit(*candidate->second))
+							continue;
+						if (spliceInlinedCall(function, *block, instrs, index, call, instrs[index]->location(), *candidate->second, arena))
+						{
+							changed = true;
+							++inlinedOut;
+						}
 					}
 				}
 			}

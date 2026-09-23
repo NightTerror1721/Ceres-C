@@ -1895,6 +1895,23 @@ TEST(codegen, an_inline_assembly_call_is_never_a_tail_call)
 	CHECK(!contains(text, "jp "));
 }
 
+// ---- inlining (O10) ---------------------------------------------------------------------------
+
+TEST(codegen, a_small_function_with_control_flow_is_inlined_at_O2)
+{
+	// The callee has three blocks; at -O2 its body is copied into `main` and no `call` to it remains.
+	std::string text = atO2("int pick(int n) { if (n) return 1; return 2; } int main(int argc) { return pick(argc); }");
+	CHECK(!contains(text, "call pick"));
+}
+
+TEST(codegen, inlining_is_off_at_O1_and_at_O2_under_the_flag)
+{
+	using support::OptimizationLevel;
+	std::string source = "int pick(int n) { if (n) return 1; return 2; } int main(int argc) { return pick(argc); }";
+	CHECK(contains(generateCasm(source, support::OptimizationOptions::forLevel(OptimizationLevel::O1)), "call pick"));
+	CHECK(contains(generateCasm(source, without(&support::OptimizationOptions::inlining)), "call pick"));
+}
+
 // ---- the callee-saved ABI contract (F4) -------------------------------------------------------
 
 TEST(codegen, the_callee_saved_set_is_the_one_setjmp_saves)

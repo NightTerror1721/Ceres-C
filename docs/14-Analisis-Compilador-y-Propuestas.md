@@ -1042,6 +1042,7 @@ de extremo a extremo la forma que los dos fallos altos podían romper.
 | **F2** — aritmética marcada (`__builtin_add/sub/mul_overflow`) | **hecha** | `Add __builtin_add/sub/mul_overflow` |
 | **O7** — llamada de cola (`return f(args)` → epílogo + `jp`) | **hecha** | `Turn a returned call into a tail call` |
 | **F4** — contrato de ABI de `setjmp`/`longjmp` verificado | **hecha** | `Pin the setjmp/longjmp callee-saved ABI with tests` |
+| **O10** — inlining multi-bloque y con llamadas | **hecha** | `Inline multi-block callees and callees that call` |
 | **F3**, **F6**, **F7**, **F12**, **F14** | **aplazadas, con motivo** | — |
 
 **Por qué se aplazan.** Igual que en la Ola B, cada una es un proyecto en sí:
@@ -1091,7 +1092,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 6 | **O7** — llamada de cola + `BL`/`BLR` | — | **hecho** (solo `jp`; `BL`/`BLR` cambian el epílogo por sitio de llamada y se descartan) |
 | 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | **hecho** (contrato verificado: `setjmp` en CASM a mano + golden de los máscaras callee-saved) |
 | 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; reconocimiento de patrones `min`/`max`/`abs` **hecho** | — | **hecho** |
-| 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
+| 9 | **O10** — inlining multi-bloque y con llamadas | — | **hecho** |
 | 10 | **O11** — **hecho** el plegado de autocomparación (6 predicados); falta el lattice condicional completo | — | parcial |
 | 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
@@ -1119,6 +1120,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   de los espejos no estrictos de `abs` y de los operandos `volatile`. Descartado por nimio el
   hallazgo de que `findTailCall` repite la validación de argumentos del camino de emisión (solo
   divergen ante IR malformado, que `IrBuilder` no produce).
+- **Batch 4** (`O10` inlining multi-bloque): pendiente de la pasada de revisión de este lote.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (análisis de bucles/dominancia para O3/O15/O11, reasignación de registros
