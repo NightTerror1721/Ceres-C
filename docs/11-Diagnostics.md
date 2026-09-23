@@ -305,6 +305,9 @@ These are the codes a `#pragma warning(...)` can name.
 | `E3096` | A one-instruction builtin given an argument of the wrong bank (an integer builtin a float, or a float builtin an integer). |
 | `E3097` | An empty `case` range (`case 5 ... 1:`), whose low bound is greater than its high bound. |
 | `E3098` | A `case` range spanning more than 65536 values, which the dispatch cannot expand. |
+| `E3099` | A flexible array member (`int a[];`) that is not a `struct`'s last field. |
+| `E3100` | A struct with a flexible array member held by value: embedded in another struct, an array element, or an array object. |
+| `E3101` | A flexible array member in a `union`, which has no tail for one to occupy. |
 
 ### `4xxx` — codegen
 

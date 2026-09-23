@@ -30,6 +30,7 @@
 namespace ceresc::ast
 {
 	class StructDecl;
+	class Type;
 }
 
 namespace ceresc::sema
@@ -49,4 +50,12 @@ namespace ceresc::sema
 	// found. A forward declaration (isComplete() == false) has nothing to validate yet and always
 	// returns true. Only reads `decl` - never mutates it.
 	bool validateStructLayout(support::DiagnosticEngine& diagnostics, const ast::StructDecl& decl) noexcept;
+
+	// True when `type` is an array (possibly nested) whose element is, or contains by value, a
+	// struct with a flexible array member. C11 6.7.2.1p18 forbids such a struct as an array
+	// element, so an OBJECT of this type (`struct S arr[2];`) is illegal even though a standalone
+	// object of the struct type itself is allowed - which is why this checks the array wrapper
+	// explicitly rather than just asking whether the type contains a FAM. Used by sema's variable
+	// check; validateStructLayout() covers the same rule for struct fields.
+	bool arrayElementHasFlexibleArrayMember(const ast::Type* type) noexcept;
 }

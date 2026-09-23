@@ -241,6 +241,7 @@ namespace ceresc::support
 		CaseRangeTooLarge                = 3098,
 		FlexibleArrayMemberNotLast       = 3099,
 		FlexibleArrayMemberInAggregate   = 3100,
+		FlexibleArrayMemberInUnion       = 3101,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,

@@ -969,6 +969,24 @@ TEST(sema, sizeof_a_flexible_array_member_is_an_error)
 	CHECK(containsMessage(outcome, "size is not known"));
 }
 
+TEST(sema, a_flexible_array_member_is_rejected_in_a_union)
+{
+	CheckOutcome outcome = checkSource("union U { int n; int a[]; }; int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "not allowed in a union"));
+}
+
+TEST(sema, an_array_of_a_flexible_array_struct_is_rejected)
+{
+	// A struct with a FAM cannot be an array's element, or one element's member would run into the
+	// next. A standalone object of the type (or a pointer to one) is allowed.
+	CheckOutcome outcome = checkSource("struct S { int n; int a[]; }; struct S arr[2]; int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "array of a struct with a flexible array member"));
+
+	CHECK(checkSource("struct S { int n; int a[]; }; struct S one; struct S* p; int main() { }").ok);
+}
+
 // ---- arrays/pointers, now that the parser can actually produce array declarators -------------------
 //
 // Array-to-pointer decay (Sema::decayArray(), sema.cpp): an array's VALUE - passed as an argument,

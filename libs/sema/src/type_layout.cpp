@@ -94,13 +94,16 @@ namespace ceresc::sema
 		// True when `type` is, or contains by value (through arrays and nested struct fields), a
 		// struct with a flexible array member. A pointer never counts: pointing AT such a struct is
 		// exactly what the member is for. `onPath` breaks a by-value cycle the same way
-		// containsByValue() does, so an (already-illegal) cycle cannot spin here.
-		bool containsFlexibleArrayMemberByValue(const ast::Type* type, std::vector<const ast::StructDecl*>& onPath) noexcept
+		// containsByValue() does, and `noCycleMemo` is the same negative-result memo - without it a
+		// DAG-shaped hierarchy (`struct S1 { struct S0 a, b; }; struct S2 { struct S1 a, b; }; ...`)
+		// re-explores each shared sub-struct once per sibling, exponential in nesting depth.
+		bool containsFlexibleArrayMemberByValue(const ast::Type* type,
+			std::vector<const ast::StructDecl*>& onPath, std::vector<const ast::StructDecl*>& noCycleMemo) noexcept
 		{
 			if (!type)
 				return false;
 			if (type->isArray())
-				return containsFlexibleArrayMemberByValue(type->arrayElementType(), onPath);
+				return containsFlexibleArrayMemberByValue(type->arrayElementType(), onPath, noCycleMemo);
 			if (!type->isStruct())
 				return false;
 
@@ -109,20 +112,26 @@ namespace ceresc::sema
 				return false;
 			if (hasFlexibleArrayMember(decl))
 				return true;
+			if (std::find(noCycleMemo.begin(), noCycleMemo.end(), decl) != noCycleMemo.end())
+				return false;
 			if (std::find(onPath.begin(), onPath.end(), decl) != onPath.end())
 				return false;
 
 			onPath.push_back(decl);
+			bool found = false;
 			for (const ast::FieldDecl& field : decl->fields())
 			{
-				if (containsFlexibleArrayMemberByValue(field.type, onPath))
+				if (containsFlexibleArrayMemberByValue(field.type, onPath, noCycleMemo))
 				{
-					onPath.pop_back();
-					return true;
+					found = true;
+					break;
 				}
 			}
 			onPath.pop_back();
-			return false;
+
+			if (!found)
+				noCycleMemo.push_back(decl);
+			return found;
 		}
 	}
 
@@ -156,6 +165,7 @@ namespace ceresc::sema
 		std::vector<const ast::StructDecl*> onPath;
 		std::vector<const ast::StructDecl*> noCycleMemo;
 		std::vector<const ast::StructDecl*> famPath;
+		std::vector<const ast::StructDecl*> famMemo;
 
 		bool ok = true;
 		std::span<const ast::FieldDecl> fields = decl.fields();
@@ -169,15 +179,27 @@ namespace ceresc::sema
 				continue;
 			}
 
-			// A flexible array member is only ever the LAST member of a struct (C11 6.7.2.1p18). The
-			// parser allows an unsized field anywhere so this can say which one is wrong, rather than
-			// the parser rejecting the syntax outright.
-			if (field.type->isArray() && field.type->arraySize() == 0 && index + 1 != fields.size())
+			if (field.type->isArray() && field.type->arraySize() == 0)
 			{
-				diagnostics.error(DiagId::FlexibleArrayMemberNotLast, field.location,
-					"flexible array member '{}' must be the last member of 'struct {}'", field.name, decl.name());
-				ok = false;
-				continue;
+				// A flexible array member is never legal in a union (C11 6.7.2.1p18): a union's
+				// members all start at offset 0, so a tail array has nowhere to go.
+				if (decl.isUnion())
+				{
+					diagnostics.error(DiagId::FlexibleArrayMemberInUnion, field.location,
+						"flexible array member '{}' is not allowed in a union", field.name);
+					ok = false;
+					continue;
+				}
+				// It is also only ever the LAST member of a struct. The parser allows an unsized
+				// field anywhere so this can say which one is wrong, rather than the parser
+				// rejecting the syntax outright.
+				if (index + 1 != fields.size())
+				{
+					diagnostics.error(DiagId::FlexibleArrayMemberNotLast, field.location,
+						"flexible array member '{}' must be the last member of 'struct {}'", field.name, decl.name());
+					ok = false;
+					continue;
+				}
 			}
 
 			const ast::Type* elementType = unwrapArrays(field.type);
@@ -186,7 +208,7 @@ namespace ceresc::sema
 
 			// A struct with a flexible array member has no complete size, so it cannot be embedded
 			// by value or be an element of an array - only pointed at (C11 6.7.2.1p18).
-			if (containsFlexibleArrayMemberByValue(field.type, famPath))
+			if (containsFlexibleArrayMemberByValue(field.type, famPath, famMemo))
 			{
 				diagnostics.error(DiagId::FlexibleArrayMemberInAggregate, field.location,
 					"field '{}' embeds a struct with a flexible array member, which cannot be held by value", field.name);
@@ -226,5 +248,14 @@ namespace ceresc::sema
 			}
 		}
 		return ok;
+	}
+
+	bool arrayElementHasFlexibleArrayMember(const ast::Type* type) noexcept
+	{
+		if (!type || !type->isArray())
+			return false;
+		std::vector<const ast::StructDecl*> onPath;
+		std::vector<const ast::StructDecl*> noCycleMemo;
+		return containsFlexibleArrayMemberByValue(type, onPath, noCycleMemo);
 	}
 }

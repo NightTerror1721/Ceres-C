@@ -1120,7 +1120,17 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   de los espejos no estrictos de `abs` y de los operandos `volatile`. Descartado por nimio el
   hallazgo de que `findTailCall` repite la validación de argumentos del camino de emisión (solo
   divergen ante IR malformado, que `IrBuilder` no produce).
-- **Batch 4** (`O10` inlining multi-bloque): pendiente de la pasada de revisión de este lote.
+- **Batch 4** (`O10` inlining multi-bloque, `O11` SCCP, `F6a` *flexible array members*): 13 ficheros,
+  4 hallazgos, todos corregidos. Uno medio de corrección: un *flexible array member* se aceptaba en
+  una `union` (el mismo `StructDecl` cubre las dos, y el miembro pasaba el test de "último campo"),
+  donde C lo prohíbe porque todos los miembros de una `union` empiezan en el offset 0; ahora se
+  rechaza con `E3101`. Otro medio, de rendimiento: `containsFlexibleArrayMemberByValue` no memoizaba
+  los resultados negativos, así que una jerarquía en forma de DAG re-exploraba cada sub-struct una
+  vez por hermano (exponencial en profundidad); ahora usa el mismo `noCycleMemo` que
+  `containsByValue`. Corregidos además: un array de un struct con FAM a nivel de objeto
+  (`struct S arr[2];`) no se diagnosticaba (ahora se comprueba en `visit(ast::VarDecl&)` con
+  `arrayElementHasFlexibleArrayMember`), y `E3099`/`E3100`/`E3101` faltaban en el catálogo de
+  `docs/11-Diagnostics.md`.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (análisis de bucles/dominancia para O3/O15, reasignación de registros

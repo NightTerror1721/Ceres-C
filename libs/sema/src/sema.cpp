@@ -2100,6 +2100,13 @@ namespace ceresc::sema
 		if (node.type() && node.type()->isVoid())
 			_diagnostics.error(DiagId::VoidVariable, node.location(), "variable '{}' declared with type 'void'", node.name());
 
+		// A struct with a flexible array member cannot be an array's element (C11 6.7.2.1p18): the
+		// member of one element would run into the next. A standalone object of the type is allowed
+		// (its flexible member simply has no storage), which is why only the array case is checked.
+		if (arrayElementHasFlexibleArrayMember(node.type()))
+			_diagnostics.error(DiagId::FlexibleArrayMemberInAggregate, node.location(),
+				"variable '{}' is an array of a struct with a flexible array member, which cannot be held by value", node.name());
+
 		// Before anything looks at the initializer: a list with designators is rewritten into the positional one it
 		// means, which is the only kind the checks below (and code generation after them) understand.
 		if (auto* list = dynamic_cast<ast::InitListExpr*>(node.initializer()))
