@@ -185,10 +185,11 @@ namespace ceresc::ir
 		BasicBlock* _currentBlock = nullptr;
 		IrValue _lastValue{}; // set by every visit(SomeExpr&), read back by lowerExpr() - same idiom as Sema::_lastExprType
 
-		// F3.1b: 64-bit integers are lowered as an 8-byte addressed value (see the wide-integer
-		// helpers below), but a few operations still have no representation (mul/div/mod and shifts,
-		// float conversions, the 64-bit calling convention). The first of those to reach lowering is
-		// reported once, as E5002, instead of being miscompiled. Cleared by build(); see
+		// F3.1b–F3.4 lower 64-bit integers as an 8-byte addressed value (see the wide-integer helpers
+		// below): arithmetic, shifts, conversions and the by-value calling convention all work. A
+		// couple of operations still have no representation — a 64-bit switch discriminant (F9) and a
+		// 64-bit operand to a one-instruction machine builtin — and the first of those to reach
+		// lowering is reported once, as E5002, instead of being miscompiled. Cleared by build(); see
 		// rejectWideFeature().
 		bool _reportedWideInteger = false;
 

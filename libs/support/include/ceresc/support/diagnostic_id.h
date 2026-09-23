@@ -262,9 +262,9 @@ namespace ceresc::support
 
 		// ---- 5xxx  ir -------------------------------------------------------------------------
 		CompoundAssignToStruct = 5001,
-		// F3.1a: `long long`/`unsigned long long` are real 8-byte types (sizeof/layout/literals),
-		// but the IR is 32 bits wide and legalizing a 64-bit value to a (lo, hi) pair is F3.1b. Until
-		// that lands, IrBuilder refuses to lower a wide value rather than truncate it silently.
+		// F3: `long long`/`unsigned long long` lower to an 8-byte (lo, hi) pair now (F3.1b–F3.4), but
+		// a 64-bit `switch` discriminant (F9) and a 64-bit operand to a one-instruction machine
+		// builtin still have no representation; IrBuilder refuses those rather than truncate them.
 		WideIntegerNotSupported = 5002
 	};
 

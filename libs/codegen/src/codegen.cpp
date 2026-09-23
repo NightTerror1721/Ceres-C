@@ -330,16 +330,22 @@ namespace ceresc::codegen
 		}
 	}
 
-	std::string CodeGen::slotAddress(u32 slotIndex)
+	std::string CodeGen::slotAddress(u32 slotIndex)	{
+		return slotAddressOffset(slotIndex, 0);
+	}
+
+	std::string CodeGen::slotAddressOffset(u32 slotIndex, u32 byteOffset)
 	{
 		// A load or store displacement is a signed 16-bit field. A function with thousands of locals
 		// (every -O0 local has its own slot) has slots beyond 32 KiB; those are reached through a
 		// register instead of failing to assemble.
 		constexpr u32 kMaxDisplacement = 32767 - 3;
-		if (slotIndex >= _slotOffsets.size() || _slotOffsets[slotIndex] <= kMaxDisplacement)
+		if (byteOffset == 0 && (slotIndex >= _slotOffsets.size() || _slotOffsets[slotIndex] <= kMaxDisplacement))
 			return std::format("[sp + {}.{}]", _frameName, slotFieldName(slotIndex));
+		if (byteOffset != 0 && slotIndex < _slotOffsets.size() && _slotOffsets[slotIndex] + byteOffset <= kMaxDisplacement)
+			return std::format("[sp + {}.{} + {}]", _frameName, slotFieldName(slotIndex), byteOffset);
 
-		_emitter.instr(std::format("la at, {}", _slotOffsets[slotIndex]), "far frame slot");
+		_emitter.instr(std::format("la at, {}", _slotOffsets[slotIndex] + byteOffset), "far frame slot");
 		_emitter.instr("add at, at, sp", "far frame slot");
 		return "[at + 0]";
 	}
@@ -607,6 +613,11 @@ namespace ceresc::codegen
 		const auto& call = instrs[index]->as<IrCallPayload>();
 		if (call.isIndirect() || !call.inlineAsm.empty())
 			return nullptr;
+		// F3.4: a wide return needs two registers (ret0/ret1), while the tail call's `jp` leaves the
+		// result in r0 only - and a wide argument needs two registers, which the argument-move pass
+		// for a tail call does not do (checked where the arguments are read, above).
+		if (call.hasWideResult)
+			return nullptr;
 
 		const auto& ret = next.as<IrReturnPayload>();
 		if (call.hasResult != ret.hasValue)
@@ -631,14 +642,18 @@ namespace ceresc::codegen
 		if (call.argCount > index)
 			return nullptr;
 		std::vector<bool> argIsFloat(call.argCount);
+		std::vector<bool> argIsWide(call.argCount);
 		for (u32 k = 0; k < call.argCount; ++k)
 		{
 			const IrInstr& paramInstr = *instrs[index - call.argCount + k];
 			if (paramInstr.opcode() != IrOpcode::Param)
 				return nullptr;
 			argIsFloat[k] = paramInstr.as<IrParamPayload>().isFloat;
+			argIsWide[k] = paramInstr.as<IrParamPayload>().isWide;
+			if (argIsWide[k])
+				return nullptr; // a wide argument needs two registers, which the tail call does not move
 		}
-		std::vector<ArgSlot> slots = assignArgSlots(argIsFloat,
+		std::vector<ArgSlot> slots = assignArgSlots(argIsFloat, argIsWide,
 			fixedArgCountOf(instrs.subspan(index - call.argCount, call.argCount)));
 		for (const ArgSlot& slot : slots)
 			if (slot.kind == ArgSlotKind::Stack)
@@ -1082,6 +1097,7 @@ namespace ceresc::codegen
 				u32 argCount = p.argCount;
 
 				std::vector<bool> argIsFloat(argCount);
+				std::vector<bool> argIsWide(argCount);
 				std::vector<IrValue> argValues(argCount);
 				for (u32 k = 0; k < argCount; ++k)
 				{
@@ -1093,6 +1109,7 @@ namespace ceresc::codegen
 					}
 					const auto& param = paramInstr.as<IrParamPayload>();
 					argIsFloat[k] = param.isFloat;
+					argIsWide[k] = param.isWide;
 					argValues[k] = param.value;
 				}
 
@@ -1100,7 +1117,7 @@ namespace ceresc::codegen
 				// never handed to a value in a function that makes a call at all
 				// (value_placement.cpp's allocatable pools), so no source below can be one of the
 				// destinations being written here.
-				std::vector<ArgSlot> slots = assignArgSlots(argIsFloat,
+				std::vector<ArgSlot> slots = assignArgSlots(argIsFloat, argIsWide,
 					fixedArgCountOf(instrs.subspan(index - argCount, argCount)));
 				for (u32 k = 0; k < argCount; ++k)
 				{
@@ -1112,6 +1129,18 @@ namespace ceresc::codegen
 						{
 							bool isFloat = slot.kind == ArgSlotKind::FloatReg;
 							std::string dest = bankReg(slot.index, isFloat);
+							if (slot.wide)
+							{
+								// F3.4: the pair's address is in a register, and the two words are
+								// loaded from it (offset 0 = low, 4 = high) straight into the two
+								// argument registers. The address register is read before either
+								// destination is written, which the address is always allowed to be.
+								std::string base = valueIn(argValues[k], kScratchA, false, loc);
+								std::string destHigh = bankReg(slot.index + 1, false);
+								_emitter.instr(std::format("ldr {}, [{}]", dest, base), comment);
+								_emitter.instr(std::format("ldr {}, [{} + 4]", destHigh, base), comment);
+								break;
+							}
 							std::string source = valueIn(argValues[k], isFloat ? kScratchB : kScratchA, isFloat, loc);
 							if (source != dest)
 								_emitter.instr(std::format("mov {}, {}", dest, source), comment);
@@ -1119,6 +1148,18 @@ namespace ceresc::codegen
 						}
 						case ArgSlotKind::Stack:
 						{
+							if (slot.wide)
+							{
+								// The pair's address is in a register; its two words go to the two
+								// outgoing stack words in order (low then high).
+								std::string base = valueIn(argValues[k], kScratchA, false, loc);
+								std::string scratch = intReg(kScratchB);
+								_emitter.instr(std::format("ldr  {}, [{}]", scratch, base), comment);
+								_emitter.instr(std::format("str  [sp + {}], {}", slot.index * 4, scratch), comment);
+								_emitter.instr(std::format("ldr  {}, [{} + 4]", scratch, base), comment);
+								_emitter.instr(std::format("str  [sp + {}], {}", (slot.index + 1) * 4, scratch), comment);
+								break;
+							}
 							std::string source = valueIn(argValues[k], argIsFloat[k] ? kScratchB : kScratchA, argIsFloat[k], loc);
 							_emitter.instr(std::format("str [sp + {}], {}", slot.index * 4, source), comment);
 							break;
@@ -1161,13 +1202,50 @@ namespace ceresc::codegen
 				{
 					_emitter.instr(std::format("call {}", casmName(p.callee)), comment);
 				}
-				if (p.hasResult)
+				if (p.hasResult || p.hasWideResult)
 				{
-					std::string returned = bankReg(0, p.isFloat);
-					std::string dest = defineInto(p.result, p.isFloat ? kScratchB : kScratchA, p.isFloat);
-					if (dest != returned)
-						_emitter.instr(std::format("mov {}, {}", dest, returned), comment);
-					storeResult(p.result, dest, loc);
+					// The callee's result is in ret0 (r0, or f0 for a float) - and, for a wide result,
+					// ret1 (r1). Both destinations are resolved before either move, because the
+					// optimizer assigns r0/r1 like any other register: a low result whose home IS r1
+					// would be written over the high word before it was read, and the pair can even come
+					// out swapped. A wide result's `result` is the low word and `resultHigh` the high
+					// one (wide results are never float, so ret0 is r0 on that path).
+					const std::string ret0 = bankReg(0, p.isFloat);
+					const std::string r1 = intReg(1);
+					std::string dLow = p.hasResult
+						? defineInto(p.result, p.isFloat ? kScratchB : kScratchA, p.isFloat)
+						: std::string{};
+					std::string dHigh = p.hasWideResult ? defineInto(p.resultHigh, kScratchB, false) : std::string{};
+					if (p.hasWideResult && dLow == r1 && dHigh == ret0)
+					{
+						// Swapped: rotate through a scratch holding neither return word.
+						_emitter.instr(std::format("mov {}, {}", intReg(kScratchA), ret0), comment);
+						_emitter.instr(std::format("mov {}, {}", ret0, r1), comment);
+						_emitter.instr(std::format("mov {}, {}", r1, intReg(kScratchA)), comment);
+					}
+					else if (p.hasWideResult && dLow == r1)
+					{
+						// Writing the low word into r1 would clobber the high word: save high first.
+						_emitter.instr(std::format("mov {}, {}", dHigh, r1), comment);
+						_emitter.instr(std::format("mov {}, {}", r1, ret0), comment);
+					}
+					else if (p.hasWideResult && dHigh == ret0)
+					{
+						// Writing the high word into r0 would clobber the low word: save low first.
+						_emitter.instr(std::format("mov {}, {}", dLow, ret0), comment);
+						_emitter.instr(std::format("mov {}, {}", ret0, r1), comment);
+					}
+					else
+					{
+						if (p.hasResult && dLow != ret0)
+							_emitter.instr(std::format("mov {}, {}", dLow, ret0), comment);
+						if (p.hasWideResult && dHigh != r1)
+							_emitter.instr(std::format("mov {}, {}", dHigh, r1), comment);
+					}
+					if (p.hasResult)
+						storeResult(p.result, dLow, loc);
+					if (p.hasWideResult)
+						storeResult(p.resultHigh, dHigh, loc);
 				}
 				break;
 			}
@@ -1371,7 +1449,34 @@ namespace ceresc::codegen
 			case IrOpcode::Return:
 			{
 				const auto& p = instr.as<IrReturnPayload>();
-				if (p.hasValue)
+				if (p.hasWideValue)
+				{
+					// F3.4: the low word goes in ret0 (r0) and the high word in ret1 (r1). Both sources
+					// are resolved BEFORE either move: the optimizer assigns r0/r1 like any other
+					// register, so a high word already sitting in r0 must be saved before the low word
+					// is written into r0 - and the pair can arrive exactly swapped.
+					std::string low = valueIn(p.value, kScratchA, false, loc);
+					std::string high = valueIn(p.highValue, kScratchB, false, loc);
+					const std::string r0 = intReg(0);
+					const std::string r1 = intReg(1);
+					if (high == r0 && low == r1)
+					{
+						// Swapped: rotate through a scratch holding neither return word.
+						_emitter.instr(std::format("mov {}, {}", intReg(kScratchA), r0), comment);
+						_emitter.instr(std::format("mov {}, {}", r0, r1), comment);
+						_emitter.instr(std::format("mov {}, {}", r1, intReg(kScratchA)), comment);
+					}
+					else
+					{
+						if (high == r0)
+							_emitter.instr(std::format("mov {}, {}", r1, high), comment);
+						if (low != r0)
+							_emitter.instr(std::format("mov {}, {}", r0, low), comment);
+						if (high != r1 && high != r0)
+							_emitter.instr(std::format("mov {}, {}", r1, high), comment);
+					}
+				}
+				else if (p.hasValue)
 				{
 					std::string returnReg = bankReg(0, p.isFloat);
 					std::string source = valueIn(p.value, p.isFloat ? kScratchB : kScratchA, p.isFloat, loc);
@@ -1639,7 +1744,7 @@ namespace ceresc::codegen
 		_fixedStackArgWords = 0;
 		for (const ArgSlot& arrival : arrivals)
 			if (arrival.kind == ArgSlotKind::Stack)
-				++_fixedStackArgWords;
+				_fixedStackArgWords += arrival.wide ? 2 : 1;
 
 		for (u32 i = 0; i < function.paramCount(); ++i)
 		{
@@ -1650,6 +1755,37 @@ namespace ceresc::codegen
 
 			if (home.kind == PlacementKind::None)
 				continue; // nothing in the body reads this parameter - it can stay where it landed
+
+			if (arrival.wide)
+			{
+				// F3.4: a 64-bit parameter arrives as two words and its home is an 8-byte slot (a
+				// wide value is never register-placed - it is a pair in memory). The two words come
+				// from the two arrival registers, or from [fp + 8 + ...] two words apiece.
+				std::string low;
+				std::string high;
+				if (arrival.kind == ArgSlotKind::Stack)
+				{
+					u32 base = 8 + 4 * _calleeSavedWords + arrival.index * 4;
+					low = bankReg(kScratchA, false);
+					high = bankReg(kScratchB, false);
+					_emitter.instr(std::format("ldr {}, [fp + {}]", low, base), comment);
+					_emitter.instr(std::format("ldr {}, [fp + {}]", high, base + 4), comment);
+				}
+				else
+				{
+					low = bankReg(arrival.index, false);
+					high = bankReg(arrival.index + 1, false);
+				}
+				const u32 homeIndex = home.kind == PlacementKind::Slot ? home.index : i;
+				// A wide slot is 8 bytes and needs its high word at +4. The symbolic `[sp + Frame.f]`
+				// form can only name the field itself, so the address goes into a scratch register
+				// once and both words are stored through it.
+				_emitter.instr(std::format("la at, {}.{}", _frameName, slotFieldName(homeIndex)), comment);
+				_emitter.instr("add at, at, sp", comment);
+				_emitter.instr(std::format("str [at], {}", low), comment);
+				_emitter.instr(std::format("str [at + 4], {}", high), comment);
+				continue;
+			}
 
 			if (arrival.kind == ArgSlotKind::Stack)
 			{

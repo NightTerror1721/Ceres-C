@@ -94,18 +94,24 @@ end handles it with no new IR opcode. That covers:
   does not fit 32 bits keeps its high half. `long long`→`float` is within one ULP of correctly
   rounded (the machine's f32 cannot always do better with a 64-bit source); `float`→`long long` is
   exact for every value in range;
-- `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition.
-
-What is **not** implemented yet, and is refused with `E5002` rather than silently truncated:
-
-- **passing or returning a 64-bit value** across a function boundary (F3.4 — the two-register
-  calling convention). A wide *local* is fine; a wide parameter, return or call argument is not.
+- `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition;
+- **crossing a function boundary by value** (F3.4): a wide parameter arrives in two consecutive
+  argument registers (or two outgoing stack words, once the four are spent), a wide argument is passed
+  as those two words, and a wide result comes back in `ret0`/`ret1`. A function with a wide parameter
+  or return type is still **not inlined** and a call that passes or returns a wide value is not turned
+  into a **tail call** — those two optimizations deliberately refuse the shape rather than model the
+  pair.
 
 ```c
 long long  a = 0x0000000100000002LL;  /* fine */
 a + 1;  a * 2;  a / 3;  a << 40;  (float)a;  (long long)1.5f;  /* fine */
-long long  f(long long v);           /* error[E5002]: no 64-bit calling convention yet */
+long long  f(long long v);           /* fine: v arrives in r0/r1, the result returns in r0/r1 */
 ```
+
+Still refused with `E5002` rather than silently truncated, because 64 bits has no encoding there:
+
+- a 64-bit `switch` discriminant (F9);
+- a 64-bit operand to a one-instruction machine builtin (there is no 64-bit form of it).
 
 A decimal literal with an `ll`/`LL` suffix whose value does not fit a signed `long long` (e.g.
 `18446744073709551615LL`) is out of range in C; here it warns (`W0015`) and keeps its 64-bit bit

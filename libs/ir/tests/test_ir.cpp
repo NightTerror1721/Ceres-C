@@ -166,11 +166,8 @@ TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
 
 TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
 {
-	// The 64-bit calling convention is F3.4 and must be refused rather than half-implemented.
-	CHECK(containsMessage(loweringDiagnostics("long long f() { return 0; } int main() { return 0; }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int f(long long v) { return 0; } int main() { return 0; }"), "not supported in generated code"));
-
-	// A wide discriminant (F9) and a wide builtin operand (there is no 64-bit machine builtin) too.
+	// A wide discriminant (F9) and a wide builtin operand (there is no 64-bit machine builtin) are
+	// still refused; F3.4 lowered the wide parameter and return conventions these once stood in for.
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; switch (a) { case 1: return 0; } return 1; }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; return __builtin_clz(a); }"), "not supported in generated code"));
 }
@@ -207,6 +204,24 @@ TEST(ir, the_64_bit_mul_div_mod_lower_to_the_symbol_and_the_emitted_routine)
 	CHECK(mul.find("__builtin_mulhu") != std::string::npos);
 	CHECK(functionIr("int main() { long long a = 12, b = 4; return (int)(a / b); }").find("call __cc_div64") != std::string::npos);
 	CHECK(functionIr("int main() { long long a = 12, b = 5; return (int)(a % b); }").find("call __cc_div64") != std::string::npos);
+}
+
+TEST(ir, a_64_bit_parameter_and_return_lower_to_the_two_word_convention)
+{
+	// F3.4: a wide parameter crosses as the address of its pair, and a wide return goes back in two
+	// words. Both lower with no diagnostic now (they were the "not supported" cases before this
+	// phase).
+	CHECK(!containsMessage(loweringDiagnostics("long long f(long long v) { return v; } int main() { return 0; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("long long f() { return 0x100000000LL; } int main() { return (int)f(); }"), "not supported in generated code"));
+
+	// A wide argument is a Param marked wide, and a wide result defines a second (high) temp on the
+	// Call. The `ret` of a wide function returns both words of the pair.
+	std::string idBody = functionIr("long long id(long long v) { return v; } int main() { return (int)id(1); }", "id");
+	CHECK(idBody.find("ret.wide") != std::string::npos);
+
+	std::string call = functionIr("long long id(long long v) { return v; } int main() { return (int)id(1); }", "main");
+	CHECK(call.find("call.wide id") != std::string::npos);
+	CHECK(call.find("param.wide") != std::string::npos);
 }
 
 TEST(ir, a_64_bit_value_works_in_a_ternary_and_as_an_index)

@@ -47,12 +47,19 @@ namespace ceresc::codegen
 	{
 		ArgSlotKind kind = ArgSlotKind::IntReg;
 		u32 index = 0; // a register number (0-3) for IntReg/FloatReg, or a word index (0-based) for Stack
+		// F3.4: a 64-bit argument takes TWO consecutive slots of its kind (two int registers, or two
+		// outgoing stack words). `wide` marks the first of the pair; the second is a plain follow-on
+		// slot the caller fills with the high word and the callee reads as `index + 1`.
+		bool wide = false;
 	};
 
 	// Assigns a slot to each argument in `isFloatArg` (declaration/evaluation order) - shared by a
 	// Call site's own outgoing arguments and by a function's own incoming parameters, since the
 	// rule is identical on both ends of the same call. Takes `const vector<bool>&`, not a span:
 	// vector<bool>'s bit-packed specialization has no contiguous `bool*` to span over.
+	//
+	// `isWideArg` (F3.4) marks each argument that is a 64-bit integer: it consumes two consecutive
+	// slots of its kind, so a register/stack budget that cannot fit both falls to the stack.
 	//
 	// `fixedArgCount` is where the callee's declared parameter list ends. Arguments at or past it
 	// are the variadic tail and go to the outgoing stack area unconditionally - never to an
@@ -61,7 +68,8 @@ namespace ceresc::codegen
 	// fixed parameters consumed, so the next word is where the tail begins, whereas a register-
 	// passed argument would be indistinguishable from a fixed one. The default means "no tail at
 	// all", which is every ordinary call and every function's own incoming parameter list.
-	std::vector<ArgSlot> assignArgSlots(const std::vector<bool>& isFloatArg, u32 fixedArgCount = ~0u);
+	std::vector<ArgSlot> assignArgSlots(const std::vector<bool>& isFloatArg,
+		const std::vector<bool>& isWideArg = {}, u32 fixedArgCount = ~0u);
 
 	// Where the variadic tail begins in one call's run of Param instructions, or ~0u when that
 	// call has none - the `fixedArgCount` to hand assignArgSlots() for those same arguments.

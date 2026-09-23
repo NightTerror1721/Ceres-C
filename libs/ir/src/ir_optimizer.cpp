@@ -4435,6 +4435,17 @@ namespace ceresc::ir
 				return false;
 			if (function.blocks().empty())
 				return false;
+			// F3.4: a 64-bit parameter or return travels as a two-word pair whose shape the splice
+			// does not model - it turns a Return into ONE copy, and a wide Call defines two result
+			// temps. Refuse rather than miscompile.
+			if (function.returnType() && function.returnType()->isWideInteger())
+				return false;
+			{
+				std::span<const IrLocalSlot> slots = function.localSlots();
+				for (u32 i = 0; i < function.paramCount() && i < slots.size(); ++i)
+					if (slots[i].sizeInBytes == 8 && !slots[i].isFloat)
+						return false;
+			}
 			// The last block has to end in a terminator: an unterminated one falls through to whatever
 			// block is emitted next, and a splice moves the body somewhere else entirely.
 			std::span<IrInstr* const> lastInstrs = function.blocks().back()->instrs();

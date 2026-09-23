@@ -179,19 +179,24 @@ namespace ceresc::ir
 			case IrOpcode::Param:
 			{
 				const auto& payload = instr.as<IrParamPayload>();
-				_output += std::format("param{}{} {}\n", payload.isFloat ? ".f" : "",
-					payload.isVariadicArg ? ".var" : "", valueName(payload.value));
+				_output += std::format("param{}{}{} {}\n", payload.isWide ? ".wide" : "",
+					payload.isFloat ? ".f" : "", payload.isVariadicArg ? ".var" : "",
+					valueName(payload.value));
 				break;
 			}
 			case IrOpcode::Call:
 			{
 				const auto& payload = instr.as<IrCallPayload>();
 				// An indirect call names no symbol, so it prints the temporary it jumps through:
-				// `call %7, 1` rather than `call f, 1`.
+				// `call %7, 1` rather than `call f, 1`. A 64-bit result defines two temporaries (the
+				// low word and the high, ret0/ret1), so it is printed as a pair.
 				std::string target = payload.isIndirect()
 					? std::string(valueName(payload.calleeValue))
 					: std::string(payload.callee);
-				if (payload.hasResult)
+				if (payload.hasWideResult)
+					_output += std::format("{}:{} = call.wide {}, {}\n",
+						valueName(payload.result), valueName(payload.resultHigh), target, payload.argCount);
+				else if (payload.hasResult)
 					_output += payload.isFloat
 						? std::format("{} = call.f {}, {}\n", valueName(payload.result), target, payload.argCount)
 						: std::format("{} = call {}, {}\n", valueName(payload.result), target, payload.argCount);
@@ -237,7 +242,9 @@ namespace ceresc::ir
 			case IrOpcode::Return:
 			{
 				const auto& payload = instr.as<IrReturnPayload>();
-				if (payload.hasValue)
+				if (payload.hasWideValue)
+					_output += std::format("ret.wide {}:{}\n", valueName(payload.value), valueName(payload.highValue));
+				else if (payload.hasValue)
 					_output += std::format("ret{} {}\n", payload.isFloat ? ".f" : "", valueName(payload.value));
 				else
 					_output += "ret\n";

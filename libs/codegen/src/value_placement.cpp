@@ -192,9 +192,15 @@ namespace ceresc::codegen
 		_outgoingSlotCount = layout.outgoingSlotCount();
 
 		std::vector<bool> paramIsFloat(function.paramCount());
+		std::vector<bool> paramIsWide(function.paramCount());
 		for (u32 i = 0; i < function.paramCount(); ++i)
+		{
 			paramIsFloat[i] = localSlots[i].isFloat;
-		_paramArrival = assignArgSlots(paramIsFloat);
+			// A 64-bit parameter has an 8-byte slot (F3.4): the only 8-byte local there is, since a
+			// wide value is an addressed pair and never register-placed.
+			paramIsWide[i] = localSlots[i].sizeInBytes == 8 && !localSlots[i].isFloat;
+		}
+		_paramArrival = assignArgSlots(paramIsFloat, paramIsWide);
 
 		bool anyParamOnStack = std::any_of(_paramArrival.begin(), _paramArrival.end(),
 			[](const ArgSlot& slot) { return slot.kind == ArgSlotKind::Stack; });

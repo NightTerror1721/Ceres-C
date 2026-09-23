@@ -27,7 +27,7 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 
 | Left out | Why |
 | --- | --- |
-| 64-bit float — `double`, `long double` | The spellings are accepted; the WIDTH is not. Ceres has no f64 register, so each one caps to `float` with a warning. `long long`/`unsigned long long` are real 8-byte types but cannot yet be lowered to code — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| 64-bit float — `double`, `long double` | The spellings are accepted; the WIDTH is not. Ceres has no f64 register, so each one caps to `float` with a warning. `long long`/`unsigned long long` are real 8-byte types and lower to code — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 | Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
 | Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef`, macros with arguments and the predefined `__LINE__`/`__FILE__` family. See [08-Preprocessor.md](08-Preprocessor.md). |
 | `malloc`/`free` | There is no allocator to call. |
@@ -404,9 +404,11 @@ struct Padded { char tag; int value; char flag; };
 `long long` and `unsigned long long` are real 8-byte types: `sizeof`, struct layout and an `ll`/`LL`
 literal suffix all see the full width, and a value lowers as an addressed pair of words, so
 arithmetic, shifts, the bitwise operators, comparisons, assignment and the `float` conversions
-(`float`↔`long long`) all compute on the full 64 bits. Passing a 64-bit value across a function
-boundary is not implemented yet — a program that does so is refused with `E5002` rather than
-silently truncated. See [06-Known-Limitations.md](06-Known-Limitations.md).
+(`float`↔`long long`) all compute on the full 64 bits. A 64-bit value crosses a function boundary by
+value too: a parameter arrives in two consecutive argument registers (or two outgoing stack words), an
+argument is passed as those two words, and a result comes back in `ret0`/`ret1`. A 64-bit `switch`
+discriminant and a 64-bit operand to a one-instruction machine builtin are refused with `E5002` rather
+than silently truncated. See [06-Known-Limitations.md](06-Known-Limitations.md).
 
 ## Errors
 

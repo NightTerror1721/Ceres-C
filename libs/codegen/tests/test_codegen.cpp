@@ -186,7 +186,7 @@ TEST(codegen, a_trailing_comment_names_the_file_the_line_was_written_in)
 	CHECK(!contains(plain, "header.h"));
 }
 
-// ---- golden tests (§12 of the architecture plan) --------------------------------------------
+// ---- golden tests (Â§12 of the architecture plan) --------------------------------------------
 //
 // Every program below was also verified for real, at BOTH -O0 and -O2: assembled with the actual
 // `ceres asm` and executed with the actual `ceres run` from the sibling CeresASM checkout (never
@@ -195,7 +195,7 @@ TEST(codegen, a_trailing_comment_names_the_file_the_line_was_written_in)
 // yet) to make the real computed VALUE observable, since `ceres run`'s own process exit code never
 // carries one (verified against CeresASM's Ceres/libs/driver/src/machine_runner.cpp - there is no
 // register-to-exit-code channel at all, which is also why `main` halts the machine instead of an
-// ordinary `leave`/`ret` - see codegen.h). That live check is what tests/e2e (§12) automates, at
+// ordinary `leave`/`ret` - see codegen.h). That live check is what tests/e2e (Â§12) automates, at
 // both levels; what is captured here is that the resulting .casm text, byte for byte, is the one
 // that was actually verified.
 //
@@ -958,7 +958,7 @@ TEST(codegen, address_folding_is_off_at_O0)
 TEST(codegen, an_indexed_store_whose_operands_all_live_in_frame_fields_keeps_the_plain_add)
 {
 	// The register budget: base, index and value are three reads at once and only r4/r5 are scratch
-	// (§10). Turning register allocation off puts all three in frame fields, which is exactly the
+	// (Â§10). Turning register allocation off puts all three in frame fields, which is exactly the
 	// shape findFoldableAddress() refuses - and it must still produce correct code, not a store
 	// with two operands fighting over one register.
 	support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
@@ -1141,7 +1141,7 @@ TEST(codegen, a_struct_returning_function_takes_a_hidden_destination_pointer_in_
 
 TEST(codegen, a_struct_copy_moves_one_word_per_four_aligned_bytes)
 {
-	// Unrolled loads and stores, no call to a memcpy that does not exist (§14) - and exactly as many
+	// Unrolled loads and stores, no call to a memcpy that does not exist (Â§14) - and exactly as many
 	// pairs as the struct has words.
 	std::string text = atO2(
 		"struct Three { int a; int b; int c; };"
@@ -1237,7 +1237,7 @@ TEST(codegen, narrowing_to_a_signed_type_sign_extends_and_to_an_unsigned_one_mas
 TEST(codegen, converting_to_bool_is_one_unsigned_min_and_no_branch)
 {
 	// C says "zero stays zero, anything else becomes one", which unsigned `min` states exactly.
-	// Doing it as a comparison would cost the four-instruction setcc synthesis instead (§9).
+	// Doing it as a comparison would cost the four-instruction setcc synthesis instead (Â§9).
 	std::string text = atO2("int opaque(int v); bool f(int n) { return opaque(n); }");
 	CHECK(contains(text, "min "));
 	CHECK(contains(text, ", 1"));
@@ -2068,4 +2068,62 @@ TEST(codegen, a_64_bit_division_emits_and_calls_the_divmod_routine)
 
 	// A program that never divides never carries it.
 	CHECK(!contains(generateCasm("int main() { long long a = 3, b = 4; return (int)(a * b); }", o0), "__cc_div64"));
+}
+
+TEST(codegen, a_64_bit_parameter_arrives_as_a_register_pair_and_is_homed_as_a_word_pair)
+{
+	// F3.4: a 64-bit parameter takes two consecutive argument registers (r0/r1 for the first), and
+	// its home is an 8-byte frame field written low-then-high through one address.
+	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
+
+	std::string text = generateCasm("long long id(long long v) { return v; } int main() { return 0; }", o0);
+	CHECK(contains(text, "u32[2]")); // the slot really is two words wide
+	// The arrival stores both registers through one address: low at +0, high at +4.
+	CHECK(contains(text, "str [at], r0"));
+	CHECK(contains(text, "str [at + 4], r1"));
+
+	// A second wide parameter takes the NEXT two registers, r2/r3 - not r1/r2.
+	std::string two = generateCasm("long long add2(long long a, long long b) { return a + b; } int main() { return 0; }", o0);
+	CHECK(contains(two, "str [at], r0"));
+	CHECK(contains(two, "str [at + 4], r1"));
+	CHECK(contains(two, "str [at], r2"));
+	CHECK(contains(two, "str [at + 4], r3"));
+}
+
+TEST(codegen, a_64_bit_argument_is_passed_as_two_consecutive_registers)
+{
+	// The caller loads the pair through its address into r0/r1 (offset 0 = low, 4 = high).
+	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
+
+	std::string text = generateCasm("long long id(long long v) { return v; } long long g(long long a) { return a; } int main() { long long x = 5; return (int)g(x); }", o0);
+	CHECK(contains(text, "ldr r0, [r"));
+	CHECK(contains(text, "ldr r1, [r"));
+}
+
+TEST(codegen, a_64_bit_result_comes_back_in_r0_and_r1)
+{
+	// F3.4: the callee moves the low word to ret0 (r0) and the high to ret1 (r1); the caller stores
+	// both returned words into its own 8-byte temp.
+	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
+
+	std::string text = generateCasm("long long f(void) { return 0x100000000LL; } int main() { return (int)f(); }", o0);
+	CHECK(contains(text, "mov r0, r"));
+	CHECK(contains(text, "mov r1, r"));
+}
+
+TEST(codegen, a_wide_parameter_whose_bank_is_full_goes_to_two_stack_words)
+{
+	// Four int argument registers hold two wide parameters exactly; the THIRD wide parameter has no
+	// register left and both of its words go to the outgoing stack area.
+	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
+
+	std::string text = generateCasm(
+		"long long add3(long long a, long long b, long long c) { return a + b + c; } "
+		"int main() { return (int)add3(1, 2, 3); }", o0);
+	// The callee reads the third parameter's two words from the incoming stack.
+	CHECK(contains(text, "ldr r"));
+	CHECK(contains(text, "[fp +"));
+	// The caller stores the third argument's two words to the outgoing stack.
+	CHECK(contains(text, "str  [sp + 0], r"));
+	CHECK(contains(text, "str  [sp + 4], r"));
 }

@@ -231,6 +231,11 @@ namespace ceresc::ir
 		// variadic ones begin - which a register-passed argument could never be.
 		// See docs/09-Variadic-Convention.md.
 		bool isVariadicArg = false;
+
+		// F3.4: the argument is a 64-bit integer, so it travels in TWO consecutive argument
+		// registers (or two outgoing stack words) - the low word in this slot, the high word in the
+		// next. `value` is then the address of the pair, not a scalar.
+		bool isWide = false;
 	};
 
 	struct IrCallPayload
@@ -238,6 +243,11 @@ namespace ceresc::ir
 		IrValue result;   // only meaningful when hasResult is true (the callee's return type is not void)
 		bool hasResult = false;
 		bool isFloat = false; // meaningful only when hasResult: the result comes back in f0/ret0 (§10)
+		// F3.4: a 64-bit result comes back in TWO registers/words (ret0 low, ret1 high). When
+		// hasWideResult is set, `result` holds the low word and `resultHigh` the high one; both are
+		// result temporaries, so `resultOf()`/`forEachOperand()` treat them as defined, not read.
+		IrValue resultHigh;
+		bool hasWideResult = false;
 		// Exactly one of these two says where to jump. A name is the ordinary case and becomes
 		// `call label`; `calleeValue` is an address computed at run time and becomes `call rN`,
 		// which is what a function pointer needs. Kept as two fields rather than one variant so
@@ -310,6 +320,10 @@ namespace ceresc::ir
 		                      // declared return type, not necessarily the return expression's raw
 		                      // type (IrBuilder converts a mismatched one first, see visit(ReturnStmt&))
 		IrValue value;
+		// F3.4: a 64-bit return goes back in two words - `value` is the low (ret0) and this the high
+		// (ret1). Read only when hasWideValue is set.
+		IrValue highValue;
+		bool hasWideValue = false;
 	};
 
 	// One machine instruction with no operands and no result: `sti`, `cli` or `halt`. It exists
@@ -435,6 +449,17 @@ namespace ceresc::ir
 		}
 	}
 
+	// F3.4: the SECOND result a Call defines, when it returns a 64-bit value (the high word in ret1).
+	// An invalid IrValue for every other instruction - the caller that wants it (codegen storing the
+	// pair into the caller's temp) is the only place that knows a wide result is in play.
+	inline IrValue secondResultOf(const IrInstr& instr) noexcept
+	{
+		if (instr.opcode() != IrOpcode::Call)
+			return IrValue{};
+		const IrCallPayload& payload = instr.as<IrCallPayload>();
+		return payload.hasWideResult ? payload.resultHigh : IrValue{};
+	}
+
 	// Calls `fn(IrValue)` once per temporary `instr` READS, in operand order.
 	template <typename F>
 	void forEachOperand(const IrInstr& instr, F&& fn)
@@ -485,6 +510,8 @@ namespace ceresc::ir
 				const IrReturnPayload& p = instr.as<IrReturnPayload>();
 				if (p.hasValue)
 					fn(p.value);
+				if (p.hasWideValue)
+					fn(p.highValue);
 				break;
 			}
 			// An indirect call reads the address it jumps to. A direct one reads nothing: its callee

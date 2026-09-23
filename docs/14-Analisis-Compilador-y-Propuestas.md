@@ -224,11 +224,13 @@ consume.
 ### 6.2 Fuera de alcance (del compilador)
 
 - **Anchos de 64 bits bajados a código**: `long long`/`unsigned long long` son ya tipos reales de 8
-  bytes (F3.1a: `sizeof`, layout, literales `ll`/`LL`), pero el IR es de 32 bits y legalizarlos a una
-  pareja `(lo, hi)` es F3.1b–F3.4; hasta entonces un valor de 64 bits se rechaza con `E5002` en vez de
-  truncarse en silencio. `double`/`long double` se recortan a `float` (W2001); sin `l`/`L` en
-  literales. La STDLIB lo asume explícitamente (`include/stdint.h`: "Nothing 64-bit is defined… an
-  int64_t that quietly held 32 would be a trap") y se simplificará en F3.5.
+  bytes (F3.1a: `sizeof`, layout, literales `ll`/`LL`) y su representación como pareja `(lo, hi)`,
+  aritmética, shifts, conversiones y ABI ancha están bajadas (F3.1b–F3.4); un valor de 64 bits ya no se
+  rechaza con `E5002`. Quedan fuera, por caer en otra frontera, un discriminante de `switch` ancho
+  (F9) y un operando ancho de un builtin de una instrucción (F3.3). `double`/`long double` se recortan
+  a `float` (W2001); sin `l`/`L` en literales. La STDLIB lo asume explícitamente
+  (`include/stdint.h`: "Nothing 64-bit is defined… an int64_t that quietly held 32 would be a trap") y
+  se simplificará en F3.5.
 - **Bitfields**, `__attribute__((packed))` (E2043).
 - **`#line`**, `#include_next`, `_Pragma`, `__has_include`, `#embed`.
 - **Dirección constante con desplazamiento** (`&a[i]` en inicializador estático) → `E4006`.
@@ -1102,7 +1104,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
-| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2/F3.3 hechas** (tipo, representación, aritmética, mul/div/mod, shifts y conversiones); F3.4–F3.5 pendientes |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2/F3.3/F3.4 hechas** (tipo, representación, aritmética, mul/div/mod, shifts, conversiones y ABI ancha); F3.5 pendiente (STDLIB) |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
 
@@ -1214,14 +1216,11 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   bits. `double`/`long double` siguen capados a `float`, que es F3 solo de enteros. Las conversiones
   aritméticas usuales sitúan los dos tipos por encima de todos los de 32 bits (`unsigned long long` >
   `long long` > `unsigned long` > `long` > `unsigned int` > `int`), en `sema.cpp` y en la copia que
-  `ir_builder.cpp` mantiene. **Lo que queda** es la mitad de *representación*: el IR es de 32 bits, así
-  que legalizar un valor de 64 bits a una pareja `(lo, hi)` en cada operación, load/store y llamada es
-  F3.1b–F3.4 (y la STDLIB, F3.5). Para que la mitad ausente no sea una miscompilación silenciosa,
-  `IrBuilder` rechaza con `E5002` cualquier valor de 64 bits que llegue a bajar (`rejectWideInteger()`,
-  en `lowerExpr`/`lowerAddress`/`convertForStore` y en la firma de una función), de modo que un
-  programa que usa `long long` como valor no compila en vez de computar solo sus 32 bits bajos. Es un
-  guardián temporal: F3.1b lo retira al llegar la representación. `tests/e2e` cubría el capado de
-  `long long` y ahora cubre solo el de `double`/`long double`.
+  `ir_builder.cpp` mantiene. La mitad de *representación* (el IR es de 32 bits, así que un valor de 64
+  bits se legaliza a una pareja `(lo, hi)` en cada operación, load/store y llamada) la cubren
+  F3.1b–F3.4; solo queda la STDLIB (F3.5). `IrBuilder` ya no rechaza un `long long` bajado
+  (`rejectWideInteger()` se retiró); siguen rechazados con `E5002` un discriminante de `switch` ancho
+  (F9) y un operando ancho de un builtin de una instrucción.
 
 - **F3.1b** (representación y aritmética básica de los enteros de 64 bits): se eligió la opción **(B)**
   del briefing —un valor de 64 bits baja a la **dirección** de sus 8 bytes, palabra baja en +0 y alta
@@ -1337,6 +1336,28 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `0x0000000100000002 >> 4`, con los tres brazos (0, 1..31, 32..63) cubiertos; el test de codegen
   reutiliza `countOf` en vez de duplicarlo y cuenta `__cc_div64:`/`div_loop:` en vez de un `pushm` que
   también emite una función con llamadas; y el test de IR cubre los bordes 0/1/32 de los shifts.
+
+- **F3.4** (convención de llamada de 64 bits): un valor ancho cruza una frontera de función como la
+  misma pareja de dos palabras que ya representa en memoria. Un **parámetro** ancho llega en **dos
+  registros de argumento consecutivos** (r0/r1 para el primero, r2/r3 para el segundo), y si el banco
+  de cuatro no tiene dos libres, la pareja entera cae a **dos palabras de la pila saliente** (nunca
+  una palabra en un registro y otra en pila, para que el callee siempre lea la segunda en
+  `index + 1` del mismo sitio). Su *home* es un slot de 8 bytes (el único local de 8 bytes, porque un
+  ancho es siempre una pareja en memoria, nunca en registro) que se escribe bajo-alto a través de una
+  única dirección. Un **argumento** ancho viaja como la dirección de su pareja: el llamador carga las
+  dos palabras a los dos registros (o a las dos palabras de pila) desde esa dirección. Un **retorno**
+  ancho vuelve en **ret0/ret1** (r0 la baja, r1 la alta); el llamador guarda las dos palabras en un
+  temporal de 8 bytes recién creado, que es el valor de la `CallExpr`. Se retiran los rechazos
+  `E5002` de firma/llamada/retorno que F3.1b–F3.3 mantenían como guardián. El **inlining** de una
+  función ancha se desactiva en `isInlinable` (el *splice* no modela una pareja de resultado ni un
+  `ret` que devuelve dos valores), y la **llamada de cola** también se descarta cuando hay resultado o
+  argumento ancho (el `jp` deja el resultado solo en r0 y no mueve una pareja). `IrParamPayload.isWide`,
+  `IrCallPayload.resultHigh`/`hasWideResult` y `IrReturnPayload.highValue`/`hasWideValue` llevan la
+  convención por el IR sin añadir opcodes; `assignArgSlots` pasa a devolver **una entrada por
+  argumento** (con bandera `wide`, ocupando dos slots), que es lo que alinea llamador y callee.
+  `examples/35_int64.c` gana `widen`, `add3` (tercer ancho a la pila) y `sum6` (los seis por pila),
+  pasados y devueltos por valor; y se validó con bancos aleatorios de Python (20 casos de ABI mixta,
+  7 de suma de 1..7 anchos, 60 de formas int/float/ancho aleatorias) a los tres niveles.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para

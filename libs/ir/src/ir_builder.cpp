@@ -40,8 +40,8 @@ namespace ceresc::ir
 		}
 
 		// A pointer operand always compares unsigned (addresses have no sign); otherwise unsigned
-		// if either side's own resolved type is unsigned - matches §10's "ifbl/ifbe/ifab/ifae
-		// (unsigned, punteros, tamaños)" note. Bool/Float report isSigned()==false too (type.cpp) -
+		// if either side's own resolved type is unsigned - matches Â§10's "ifbl/ifbe/ifab/ifae
+		// (unsigned, punteros, tamaÃ±os)" note. Bool/Float report isSigned()==false too (type.cpp) -
 		// a float comparison being marked "unsigned" here is a known v1 simplification: codegen does
 		// not exist yet (Fase 6), and this phase's own exit criterion only checks control-flow
 		// shape, not signed/unsigned dispatch - see the header comment on IrBuilder's contract.
@@ -50,7 +50,7 @@ namespace ceresc::ir
 			// A float operand always reads through the unsigned branch family after FCMP, regardless
 			// of Type::isSigned() - a hardware quirk of the ISA, not a signedness question: FCMP
 			// clears Overflow and puts `fs < ft` directly in Carry (05-Instruction-Set.md), which is
-			// exactly what the unsigned comparison jumps read (§10).
+			// exactly what the unsigned comparison jumps read (Â§10).
 			if ((lhs && (lhs->isPointer() || lhs->isArray() || lhs->isFloat())) ||
 				(rhs && (rhs->isPointer() || rhs->isArray() || rhs->isFloat())))
 				return true;
@@ -406,7 +406,7 @@ namespace ceresc::ir
 		// append onto a block that already ended with its own terminator (see BasicBlock::
 		// isTerminated()'s own header comment), lazily start a fresh, unreachable block right here,
 		// the one place every instruction-emitting helper in this file ultimately goes through. No
-		// reachability analysis prunes that block afterward (Fase 9's job, §13) - it simply never
+		// reachability analysis prunes that block afterward (Fase 9's job, Â§13) - it simply never
 		// gets jumped into, and the common case (nothing dead follows) never pays for it at all.
 		if (_currentBlock->isTerminated())
 			_currentBlock = &_currentFunction->createBlock();
@@ -1716,10 +1716,13 @@ namespace ceresc::ir
 		const Type* resultType = node.type();
 		bool hasResult = resultType && !resultType->isVoid();
 
-		// The 64-bit calling convention is F3.4: a wide argument or result would have to travel in
-		// two registers/words, so refuse one here rather than emit a call the callee cannot honour.
-		if (resultType && resultType->isWideInteger())
-			rejectWideFeature(loc, "a 64-bit function result");
+		// F3.4: a 64-bit result comes back in two registers/words. The caller gets a fresh 8-byte
+		// temp, which codegen fills with the two returned words; the CallExpr's value is that temp.
+		bool returnsWide = hasResult && resultType->isWideInteger();
+		IrValue wideResultAddr{};
+		if (returnsWide)
+			wideResultAddr = emitFrameAddr(loc, newStructTempSlot(8));
+
 
 		// A struct coming back through memory needs somewhere to come back TO, decided here rather
 		// than by the callee: a fresh frame slot, whose address becomes the call's hidden first
@@ -1739,12 +1742,15 @@ namespace ceresc::ir
 
 		std::vector<IrValue> argValues;
 		std::vector<bool> argIsFloat;
+		std::vector<bool> argIsWide;
 		argValues.reserve(node.args().size() + 1);
 		argIsFloat.reserve(node.args().size() + 1);
+		argIsWide.reserve(node.args().size() + 1);
 		if (returnsStructIndirect)
 		{
 			argValues.push_back(hiddenDest);
 			argIsFloat.push_back(false);
+			argIsWide.push_back(false);
 		}
 
 		// The callee's declared parameter types, when the callee is a plain name (which sema
@@ -1772,8 +1778,10 @@ namespace ceresc::ir
 			const Type* argType = arg->type();
 			const Type* paramType = argIndex < params.size() ? params[argIndex].type : nullptr;
 			++argIndex;
-			if ((argType && argType->isWideInteger()) || (paramType && paramType->isWideInteger()))
-				rejectWideFeature(loc, "a 64-bit call argument");
+			// F3.4: a 64-bit argument travels as its two words. A wide parameter converts the
+			// argument to 64 bits (materializing a scalar or float source into a pair); a wide
+			// argument reaches the Params as the address of its pair, and codegen reads the two words.
+			bool wideArg = (paramType && paramType->isWideInteger()) || (argType && argType->isWideInteger());
 			if (isIndirectStruct(argType))
 			{
 				// By value, without a by-value register class: copy the argument into a slot of the
@@ -1784,6 +1792,7 @@ namespace ceresc::ir
 				emitMemoryCopy(loc, copy, source, argType->sizeInBytes(), argType->alignment());
 				argValues.push_back(copy);
 				argIsFloat.push_back(false);
+				argIsWide.push_back(false);
 				continue;
 			}
 			if (isStructType(argType))
@@ -1793,6 +1802,7 @@ namespace ceresc::ir
 				IrValue source = lowerExpr(arg);
 				argValues.push_back(emitLoad(loc, source, irMemSizeForBytes(argType->sizeInBytes())));
 				argIsFloat.push_back(false);
+				argIsWide.push_back(false);
 				continue;
 			}
 			// C converts an argument to the parameter's type as if by assignment, and here that is
@@ -1800,10 +1810,13 @@ namespace ceresc::ir
 			// keeps it in the register it arrived in) is narrowed nowhere else. `char f(char c)`
 			// called with 300 has to see 44.
 			IrValue value = lowerExpr(arg);
-			if (paramType)
+			if (wideArg)
+				value = convertForStore(loc, value, argType, paramType && paramType->isWideInteger() ? paramType : argType);
+			else if (paramType)
 				value = convertForStore(loc, value, argType, paramType);
 			argValues.push_back(value);
 			argIsFloat.push_back(argType && argType->isFloat());
+			argIsWide.push_back(wideArg);
 		}
 
 		// A name that resolves to a FUNCTION is a direct call; anything else - a variable holding a
@@ -1821,18 +1834,31 @@ namespace ceresc::ir
 			calleeAddress = lowerExpr(node.callee());
 
 		for (usize i = 0; i < argValues.size(); ++i)
-			emitVoid(loc, IrParamPayload{ argValues[i], argIsFloat[i], i >= fixedArgCount });
+			emitVoid(loc, IrParamPayload{ argValues[i], argIsFloat[i], i >= fixedArgCount, argIsWide[i] });
 
 		IrCallPayload payload;
 		payload.hasResult = hasResult && !returnsStructIndirect;
 		payload.isFloat = hasResult && resultType->isFloat();
+		payload.hasWideResult = returnsWide;
 		payload.callee = isDirect ? callee->name() : std::string_view{};
 		payload.calleeValue = calleeAddress;
 		payload.argCount = static_cast<u32>(argValues.size());
 		if (payload.hasResult)
 			payload.result = _currentFunction->newTemp();
+		if (returnsWide)
+			payload.resultHigh = _currentFunction->newTemp(); // the high word ret1 lands in
 
 		emitVoid(loc, payload);
+
+		if (returnsWide)
+		{
+			// The two returned words are in ret0/ret1; the CallExpr's value is the caller's temp
+			// holding them - the same addressed pair every wide value is.
+			emitStore(loc, wideResultAddr, IrMemSize::Word, payload.result);
+			emitStore(loc, offsetAddress(loc, wideResultAddr, 4), IrMemSize::Word, payload.resultHigh);
+			_lastValue = wideResultAddr;
+			return;
+		}
 
 		if (returnsStructIndirect)
 		{
@@ -2670,7 +2696,7 @@ namespace ceresc::ir
 		support::SourceLocation loc = node.location();
 		if (!node.value())
 		{
-			emitVoid(loc, IrReturnPayload{ false, false, IrValue{} });
+			emitVoid(loc, IrReturnPayload{ false, false, IrValue{}, IrValue{}, false });
 			return;
 		}
 
@@ -2678,10 +2704,12 @@ namespace ceresc::ir
 
 		if (returnType && returnType->isWideInteger())
 		{
-			// F3.4 owns the 64-bit return convention; the function was already refused at its
-			// definition, and this keeps the return itself from emitting a bogus one-register value.
-			rejectWideFeature(loc, "a 64-bit function return");
-			emitVoid(loc, IrReturnPayload{ false, false, IrValue{} });
+			// F3.4: a 64-bit return goes back in two words (ret0 low, ret1 high). The value is the
+			// address of the pair, so load its two words into an IrWideReturnPayload.
+			IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), returnType);
+			IrValue low = loadWideWord(loc, value, false, false);
+			IrValue high = loadWideWord(loc, value, true, false);
+			emitVoid(loc, IrReturnPayload{ true, false, low, high, true });
 			return;
 		}
 
@@ -2693,7 +2721,7 @@ namespace ceresc::ir
 			IrValue source = lowerExpr(node.value()); // a struct expression IS its address
 			IrValue dest = emitLoad(loc, emitFrameAddr(loc, *_hiddenReturnSlot), IrMemSize::Word);
 			emitMemoryCopy(loc, dest, source, returnType->sizeInBytes(), returnType->alignment());
-			emitVoid(loc, IrReturnPayload{ true, false, dest });
+			emitVoid(loc, IrReturnPayload{ true, false, dest, IrValue{}, false });
 			return;
 		}
 
@@ -2702,12 +2730,12 @@ namespace ceresc::ir
 			// 1/2/4 bytes - the whole struct goes back in ret0 as one byte/half/word.
 			IrValue source = lowerExpr(node.value());
 			IrValue value = emitLoad(loc, source, irMemSizeForBytes(returnType->sizeInBytes()));
-			emitVoid(loc, IrReturnPayload{ true, false, value });
+			emitVoid(loc, IrReturnPayload{ true, false, value, IrValue{}, false });
 			return;
 		}
 
 		IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), returnType);
-		emitVoid(loc, IrReturnPayload{ true, returnType && returnType->isFloat(), value });
+		emitVoid(loc, IrReturnPayload{ true, returnType && returnType->isFloat(), value, IrValue{}, false });
 	}
 
 	void IrBuilder::visit(ast::BreakStmt& node)
@@ -2991,7 +3019,7 @@ namespace ceresc::ir
 		{
 			// File scope - nothing to lower here: codegen (Fase 6/7) reads the AST's VarDecl
 			// directly to emit .data/.bss, since no IR instruction models a global's static initial
-			// value (§9's opcode table has none) - see IrModule's own header comment.
+			// value (Â§9's opcode table has none) - see IrModule's own header comment.
 			LocalSymbol symbol;
 			symbol.kind = LocalSymbolKind::Global;
 			declareSymbol(node.name(), symbol);
@@ -3079,15 +3107,6 @@ namespace ceresc::ir
 		if (!node.isDefinition())
 			return; // a prototype has nothing to lower - see the header comment
 
-		// A 64-bit parameter or return type needs the 64-bit calling convention (F3.4) on top of the
-		// value representation, so refuse it here rather than emit a signature the back end cannot
-		// honor. A wide *local* is fine - that is what F3.1b lowers.
-		if (node.returnType() && node.returnType()->isWideInteger())
-			rejectWideFeature(node.location(), "a 64-bit function return type");
-		for (const Param& param : node.params())
-			if (param.type && param.type->isWideInteger())
-				rejectWideFeature(node.location(), "a 64-bit function parameter");
-
 		IrFunction& function = _module.addFunction(node.name(), node.returnType());
 		// Two facts the optimizer needs and cannot see in the body: whether another object may call
 		// this (so unused-function elimination must keep it) and whether the program asked for it to
@@ -3163,7 +3182,7 @@ namespace ceresc::ir
 		// bare `ret` so every block really is terminated (see BasicBlock::isTerminated()'s own
 		// header comment).
 		if (!_currentBlock->isTerminated())
-			emitVoid(node.location(), IrReturnPayload{ false, false, IrValue{} });
+			emitVoid(node.location(), IrReturnPayload{ false, false, IrValue{}, IrValue{}, false });
 
 		popScope();
 		_hiddenReturnSlot.reset();

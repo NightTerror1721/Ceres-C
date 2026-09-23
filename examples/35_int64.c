@@ -14,6 +14,10 @@
 // a shift by 32 or more crosses the word boundary, and a float conversion goes sixteen bits at a
 // time (a value that does not fit 32 bits keeps its high half through the float and back).
 //
+// A 64-bit value now crosses a function boundary by value: an argument travels in two consecutive
+// parameter registers (or two outgoing stack words, once the four are spent) and a result comes back
+// in ret0/ret1. `widen`, `add3` and `sum6` below exercise the register and stack paths both ways.
+//
 //     ceresc examples/35_int64.c --run
 
 void put(char c)
@@ -65,6 +69,30 @@ void put64(char* label, long long* value)
 // A file-scope 64-bit object: codegen writes it as `u32[2] = [low, high]`, and reading it back goes
 // through the same two-word load as a local.
 long long globalWide = 0x0000000A0000000BLL;
+
+// Like put64(), but taking the 64-bit value BY VALUE (F3.4): its two words arrive in parameter
+// registers, and the union's `whole` member and this `value` are the same eight bytes.
+void putvalue(char* label, long long value)
+{
+    union
+    {
+        long long whole;
+        int halves[2];
+    } split;
+    split.whole = value;
+
+    putstr(label);
+    putstr(" low=");
+    putint(split.halves[0]);
+    putstr(" high=");
+    putint(split.halves[1]);
+    put('\n');
+}
+
+// The 64-bit calling convention (F3.4), defined after `main` below.
+long long widen(long long value);
+long long add3(long long a, long long b, long long c);
+long long sum6(long long a, long long b, long long c, long long d, long long e, long long f);
 
 int main(void)
 {
@@ -201,5 +229,38 @@ int main(void)
     put((bool)0x100000000LL ? '1' : '0');
     put('\n');
 
+    // One 64-bit value, printed as its two 32-bit words. A parameter arrives in two registers, so
+    // the union's `whole` member and this helper's `value` are the same eight bytes.
+    putvalue("widen(0x100000000)", widen(0x0000000100000000LL));
+
+    // Two wide arguments fill r0-r3 exactly; the third wide argument goes to two outgoing stack
+    // words, and the result comes back in ret0/ret1.
+    putvalue("add3(1, 2, 3)", add3(1LL, 2LL, 3LL));
+    putvalue("add3(0x100000000, 2, 3)", add3(0x0000000100000000LL, 2LL, 3LL));
+
+    // Six wide arguments: the first two take registers, the rest the outgoing stack.
+    putvalue("sum6(1..6)", sum6(1LL, 2LL, 3LL, 4LL, 5LL, 6LL));
+
     return 0;
+}
+
+// A 64-bit parameter arrives in two consecutive argument registers (r0/r1 for the first), and a
+// 64-bit result goes back in ret0/ret1. `widen` adds a constant whose low word is zero, so the
+// addition itself has to carry into the high word.
+long long widen(long long value)
+{
+    return value + 0x0000000100000000LL;
+}
+
+// Three wide parameters: the first two fill all four int argument registers, and the third is passed
+// on the outgoing stack as two words - and comes back as two words in ret0/ret1.
+long long add3(long long a, long long b, long long c)
+{
+    return a + b + c;
+}
+
+// Six wide parameters: every argument is on the outgoing stack, read back two words apiece.
+long long sum6(long long a, long long b, long long c, long long d, long long e, long long f)
+{
+    return a + b + c + d + e + f;
 }
