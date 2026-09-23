@@ -1429,6 +1429,15 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `assignArgSlots`), y la aserción de codegen prohibía cualquier `mov` en el prólogo (frágil); ahora
   comprueba los dos movimientos peligrosos concretos.
 
+- **Revisión de `ocr` sobre el diff de F3.5 en la STDLIB** (commits `623036a` y su arreglo `42eacb2`):
+  3 hallazgos, los tres corregidos en un commit aparte. Faltaban en `<inttypes.h>` los `PRIoMAX` y
+  las formas i/o/x/X de los tipos LEAST64/FAST64 (y `SCNiMAX`/`SCNoMAX` y las de scanf de
+  LEAST/FAST64), que el estándar sí define; `INT64_MAX + 1` como expresión constante es desbordamiento
+  con signo (UB), y se escribe el patrón envuelto con aritmética sin signo; y `test_int64.c` reutilizaba
+  el `n` que recoge el retorno de `sscanf` como destino de un `%d`, ahora usa un entero aparte.
+  `test_std_headers` pasa a 81/81 y la suite completa queda en 75 tests × 3 niveles más cabeceras y
+  ejemplos, toda verde.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;
