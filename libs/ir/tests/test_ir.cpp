@@ -78,6 +78,42 @@ namespace
 		return ir::IrPrinter{}.print(module);
 	}
 
+	// Runs the same pipeline and returns every diagnostic message it reported, for the F3.1a guard:
+	// a 64-bit value the IR cannot lower is reported (E5002) rather than truncated to 32 bits.
+	std::vector<std::string> loweringDiagnostics(std::string_view source)
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		parser::Parser parser(lexer, arena, diagnostics);
+
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+		if (unit && !diagnostics.hasErrors())
+		{
+			sema::Sema sema(arena, diagnostics);
+			if (sema.check(*unit))
+			{
+				ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
+				builder.build(*unit);
+			}
+		}
+
+		std::vector<std::string> messages;
+		for (const support::Diagnostic& diagnostic : diagnostics.diagnostics())
+			messages.push_back(diagnostic.message);
+		return messages;
+	}
+
+	bool containsMessage(const std::vector<std::string>& messages, std::string_view needle)
+	{
+		for (const std::string& message : messages)
+		{
+			if (message.find(needle) != std::string::npos)
+				return true;
+		}
+		return false;
+	}
 }
 
 // ---- literals / arithmetic ---------------------------------------------------------------------
@@ -109,6 +145,23 @@ TEST(ir, arithmetic_expression_respects_precedence_via_temporaries)
 		"}\n");
 }
 
+TEST(ir, a_64_bit_value_is_refused_rather_than_truncated)
+{
+	// F3.1a: `long long` is a real 8-byte type, but the IR has no 64-bit value - legalizing one to
+	// a (lo, hi) pair is F3.1b. Until then IrBuilder reports E5002 instead of silently lowering only
+	// the low 32 bits, at every place a wide value can enter the IR.
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long x = 5; return 0; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { return 5ll; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { unsigned long long x; return (int)x; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("long long f() { return 0; } int main() { return 0; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int f(long long v) { return 0; } int main() { return 0; }"), "not supported in generated code"));
+
+	// The compile-time uses need no lowering, so they stay legal: `sizeof`/`alignof` never lower
+	// their operand, and a struct with a wide field is only a layout.
+	CHECK(!containsMessage(loweringDiagnostics("int main() { return sizeof(long long); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("struct S { long long w; }; int main() { return sizeof(struct S); }"), "not supported in generated code"));
+}
+
 TEST(ir, a_signed_min_or_max_ternary_lowers_to_one_builtin_when_enabled)
 {
 	support::OptimizationOptions options = support::OptimizationOptions::none();
@@ -120,8 +173,7 @@ TEST(ir, a_signed_min_or_max_ternary_lowers_to_one_builtin_when_enabled)
 	CHECK(functionIr("int mn(int a, int b) { return a >= b ? b : a; }", "mn", options).find("__builtin_imin") != std::string::npos);
 }
 
-TEST(ir, an_unsigned_min_or_max_ternary_picks_the_unsigned_builtin)
-{
+TEST(ir, an_unsigned_min_or_max_ternary_picks_the_unsigned_builtin){
 	support::OptimizationOptions options = support::OptimizationOptions::none();
 	options.minMaxIdioms = true;
 

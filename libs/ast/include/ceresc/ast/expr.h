@@ -100,15 +100,19 @@ namespace ceresc::ast
 	private:
 		u64 _value;
 		bool _isUnsigned;
+		bool _isLongLong;
 
 	public:
-		IntLiteralExpr(support::SourceLocation location, u64 value, bool isUnsigned = false) noexcept : Expr(location), _value(value), _isUnsigned(isUnsigned) {}
+		IntLiteralExpr(support::SourceLocation location, u64 value, bool isUnsigned = false, bool isLongLong = false) noexcept : Expr(location), _value(value), _isUnsigned(isUnsigned), _isLongLong(isLongLong) {}
 
 	public:
 		u64 value() const noexcept { return _value; }
 		// True when the literal was written with a `u`/`U` suffix (`42u`) - what sema reads to give
 		// the literal type `unsigned` instead of `int`.
 		bool isUnsigned() const noexcept { return _isUnsigned; }
+		// True when the literal was written with an `ll`/`LL` suffix (`42ll`) - what sema reads to
+		// give it type `long long` instead of `long`/`int`.
+		bool isLongLong() const noexcept { return _isLongLong; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<IntLiteralExpr>, "IntLiteralExpr must be trivially destructible (Arena-allocated)");

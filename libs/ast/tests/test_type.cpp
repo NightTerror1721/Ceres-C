@@ -24,11 +24,41 @@ TEST(type, primitive_sizes_and_alignments)
 	CHECK_EQ(Type::Short.sizeInBytes(), 2u);
 	CHECK_EQ(Type::Int.sizeInBytes(), 4u);
 	CHECK_EQ(Type::Long.sizeInBytes(), 4u); // int-sized in this ABI - Ceres has no 64-bit register
+	CHECK_EQ(Type::LongLong.sizeInBytes(), 8u); // a real 8-byte type (F3.1a) - see type.h
+	CHECK_EQ(Type::ULongLong.sizeInBytes(), 8u);
 	CHECK_EQ(Type::Float.sizeInBytes(), 4u);
 
 	CHECK_EQ(Type::Bool.alignment(), 1u);
 	CHECK_EQ(Type::Short.alignment(), 2u);
 	CHECK_EQ(Type::Int.alignment(), 4u);
+	CHECK_EQ(Type::LongLong.alignment(), 8u);
+	CHECK_EQ(Type::ULongLong.alignment(), 8u);
+}
+
+TEST(type, wide_integer_predicates)
+{
+	CHECK(Type::LongLong.isLongLong());
+	CHECK(Type::ULongLong.isULongLong());
+	CHECK(Type::LongLong.isWideInteger());
+	CHECK(Type::ULongLong.isWideInteger());
+
+	CHECK(!Type::Long.isLongLong());
+	CHECK(!Type::ULong.isLongLong());
+	CHECK(!Type::LongLong.isULongLong());
+	CHECK(!Type::Int.isWideInteger());
+	CHECK(!Type::ULong.isWideInteger());
+	CHECK(!Type::Float.isWideInteger());
+	CHECK(!Type::Void.isWideInteger());
+}
+
+TEST(type, qualifiers_of_the_wide_integers_use_the_statics)
+{
+	support::Arena arena;
+	CHECK(Type::withConst(arena, &Type::LongLong) == &Type::ConstLongLong);
+	CHECK(Type::withConst(arena, &Type::ULongLong) == &Type::ConstULongLong);
+	CHECK(Type::withVolatile(arena, &Type::LongLong) == &Type::VolatileLongLong);
+	CHECK(Type::withVolatile(arena, &Type::ConstLongLong) == &Type::ConstVolatileLongLong);
+	CHECK(Type::withoutQualifiers(arena, &Type::ConstVolatileULongLong) == &Type::ULongLong);
 }
 
 TEST(type, pointer_is_always_four_bytes)
@@ -79,11 +109,13 @@ TEST(type, isSigned_matches_C_signedness)
 	CHECK(Type::Short.isSigned());
 	CHECK(Type::Int.isSigned());
 	CHECK(Type::Long.isSigned());
+	CHECK(Type::LongLong.isSigned());
 
 	CHECK(!Type::UChar.isSigned());
 	CHECK(!Type::UShort.isSigned());
 	CHECK(!Type::UInt.isSigned());
 	CHECK(!Type::ULong.isSigned());
+	CHECK(!Type::ULongLong.isSigned());
 	CHECK(!Type::Bool.isSigned());
 	CHECK(!Type::Float.isSigned());
 }
@@ -124,6 +156,25 @@ TEST(type, complete_struct_follows_CASMs_pad_to_own_align_round_to_widest_rule)
 	const Type* mixedType = Type::makeStruct(arena, structDecl);
 	CHECK_EQ(mixedType->sizeInBytes(), 12u);
 	CHECK_EQ(mixedType->alignment(), 4u);
+}
+
+TEST(type, struct_with_a_wide_integer_pads_to_the_8_byte_alignment)
+{
+	// `char c; long long w; int i;`: c at 0, w padded to offset 8 (align 8), i at 16, then the
+	// total rounded up to the widest alignment (8) = 24. The point is that a `long long` field is
+	// 8 bytes with alignment 8, so a struct that contains one is laid out for a real 64-bit type.
+	support::Arena arena;
+	StructDecl* structDecl = arena.create<StructDecl>(loc(), std::string_view("Wide"));
+	FieldDecl fields[] = {
+		FieldDecl{ &Type::Char, std::string_view("c"), loc() },
+		FieldDecl{ &Type::LongLong, std::string_view("w"), loc() },
+		FieldDecl{ &Type::Int, std::string_view("i"), loc() },
+	};
+	structDecl->setFields(std::span<const FieldDecl>(fields, 3));
+
+	const Type* wideType = Type::makeStruct(arena, structDecl);
+	CHECK_EQ(wideType->sizeInBytes(), 24u);
+	CHECK_EQ(wideType->alignment(), 8u);
 }
 
 TEST(type, array_size_is_element_size_times_count)

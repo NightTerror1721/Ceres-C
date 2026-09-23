@@ -176,6 +176,8 @@ namespace ceresc::ast
 			case TypeKind::UInt: return prefix + "unsigned int";
 			case TypeKind::Long: return prefix + "long";
 			case TypeKind::ULong: return prefix + "unsigned long";
+			case TypeKind::LongLong: return prefix + "long long";
+			case TypeKind::ULongLong: return prefix + "unsigned long long";
 			case TypeKind::Float: return prefix + "float";
 			case TypeKind::Pointer:
 			{

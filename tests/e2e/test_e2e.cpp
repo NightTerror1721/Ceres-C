@@ -1446,26 +1446,25 @@ TEST(e2e, a_register_parameter_computes_the_same_answer_as_an_ordinary_one)
 		"6");
 }
 
-TEST(e2e, a_capped_wide_type_computes_as_the_32_bit_type_it_really_is)
+TEST(e2e, a_capped_float_width_computes_as_the_32_bit_type_it_really_is)
 {
-	// `long long` and `double` name widths this machine does not have, so they are the 32-bit types
+	// `double`/`long double` name an f64 this machine does not have, so they are the 32-bit type
 	// under another spelling (docs/06-Known-Limitations.md). What that has to mean at run time is
-	// that mixing the two spellings changes nothing at all.
-	runsTheSameAtEveryLevel("capped_wide_types",
+	// that mixing the two spellings changes nothing at all. (`long long` used to share this test;
+	// it is a real 8-byte type now and its lowering is F3.1b, so the IR suite pins the guard that
+	// refuses it until then.)
+	runsTheSameAtEveryLevel("capped_float_types",
 		// And the program says once, with a pragma, that it knows - which is what that pragma is
 		// for and keeps this suite's output about what it ran rather than about what it wrote.
 		"#pragma warning(disable: 2001)\n"
-		"long long widen(long long v) { return v + 1; }"
 		"int main() {"
 		"    char* term = (char*)0xFF000004;"
-		"    long long a = widen(3);"
-		"    unsigned long long b = 2;"
 		"    double d = 1.5;"
 		"    long double e = 0.5;"
-		"    *term = 48 + (int)(a + (long long)b) + (int)(d + e) - 4;" // 4 + 2 + 2 - 4 = 4
+		"    *term = 48 + (int)(d + e);" // 1.5 + 0.5 = 2 -> '2'
 		"    return 0;"
 		"}",
-		"4");
+		"2");
 }
 
 TEST(e2e, adjacent_string_literals_print_as_one_string)

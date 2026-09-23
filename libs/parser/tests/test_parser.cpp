@@ -1254,38 +1254,39 @@ TEST(parser, register_is_the_one_storage_class_a_parameter_may_carry)
 	CHECK(unitHasErrors("int f(void) { return sizeof(register int); }"));
 }
 
-TEST(parser, the_types_that_name_a_width_this_machine_lacks_are_capped_and_said_so)
+TEST(parser, long_long_is_a_real_64_bit_type_and_says_nothing)
 {
-	// Ceres has no 64-bit register and no f64 register, so `long long` and `double` cannot be what
-	// C says they are. They are accepted anyway, as spellings of the 32-bit type they cap to - a
-	// program that uses one gets a number, just not the one it asked for, and is told.
-	CHECK_EQ(printUnit("long long a;"), "(unit (var a long <null>))");
-	CHECK_EQ(printUnit("unsigned long long b;"), "(unit (var b unsigned long <null>))");
-	CHECK_EQ(printUnit("signed long long int c;"), "(unit (var c long <null>))");
-	CHECK_EQ(printUnit("long long int d;"), "(unit (var d long <null>))");
-	CHECK_EQ(printUnit("double e;"), "(unit (var e float <null>))");
-	CHECK_EQ(printUnit("long double f;"), "(unit (var f float <null>))");
+	// F3.1a: `long long`/`unsigned long long` are real kinds of their own (8 bytes, alignment 8),
+	// not spellings of the 32-bit types - so the parser hands them back unchanged and no longer
+	// warns. Lowering one is F3.1b's job; see docs/06-Known-Limitations.md.
+	CHECK_EQ(printUnit("long long a;"), "(unit (var a long long <null>))");
+	CHECK_EQ(printUnit("unsigned long long b;"), "(unit (var b unsigned long long <null>))");
+	CHECK_EQ(printUnit("signed long long int c;"), "(unit (var c long long <null>))");
+	CHECK_EQ(printUnit("long long int d;"), "(unit (var d long long <null>))");
+	CHECK_EQ(diagnosticsFor("long long a; unsigned long long b;"), std::string());
 
 	// `long` on its own is untouched, and says nothing: it always was 32 bits here.
 	CHECK_EQ(printUnit("long g;"), "(unit (var g long <null>))");
 	CHECK_EQ(diagnosticsFor("long g;"), std::string());
 }
 
-TEST(parser, a_capped_width_is_a_warning_naming_both_spellings)
+TEST(parser, the_float_widths_this_machine_lacks_are_capped_and_said_so)
 {
-	std::string warned = diagnosticsFor("long long a; double b; long double c; unsigned long long d;");
-	CHECK(mentions(warned, "'long long' is 32 bits here"));
-	CHECK(mentions(warned, "so it is exactly 'long'"));
+	// There is still no f64 register, so `double`/`long double` remain spellings of `float`.
+	CHECK_EQ(printUnit("double e;"), "(unit (var e float <null>))");
+	CHECK_EQ(printUnit("long double f;"), "(unit (var f float <null>))");
+
+	std::string warned = diagnosticsFor("double b; long double c;");
 	CHECK(mentions(warned, "'double' is 32 bits here"));
+	CHECK(mentions(warned, "so it is exactly 'float'"));
 	CHECK(mentions(warned, "'long double' is 32 bits here"));
-	CHECK(mentions(warned, "'unsigned long long' is 32 bits here"));
-	CHECK(mentions(warned, "so it is exactly 'unsigned long'"));
+	CHECK(mentions(warned, "so it is exactly 'float'"));
 
 	// A warning, not an error: the program still compiles.
 	CHECK(!mentions(warned, "error: "));
 }
 
-TEST(parser, a_capped_type_works_everywhere_its_uncapped_spelling_would)
+TEST(parser, a_wide_type_works_everywhere_its_spelling_would)
 {
 	// A cast, a typedef, a parameter and a sizeof - the four places isTypeSpecStart() decides, and
 	// the reason `double` had to be added to it rather than only to parseTypeSpec().
@@ -1293,6 +1294,7 @@ TEST(parser, a_capped_type_works_everywhere_its_uncapped_spelling_would)
 	CHECK(!parseFails("int f(double d, long long v);"));
 	CHECK(!parseFails("int f(void) { return (int)(double)1; }"));
 	CHECK(!parseFails("int n = sizeof(long double);"));
+	CHECK(!parseFails("int n = sizeof(unsigned long long);"));
 }
 
 TEST(parser, the_machine_builtins_are_syntax_rather_than_calls)

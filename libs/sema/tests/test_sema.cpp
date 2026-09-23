@@ -127,6 +127,44 @@ TEST(sema, literal_suffixes_select_the_type)
 	CHECK_EQ(typeOfMainLastExpr("int main() { 1F; }"), "float");
 }
 
+TEST(sema, long_long_literal_suffix_selects_the_64_bit_type)
+{
+	// `ll`/`LL` names `long long`; with `u`/`U` as well it is `unsigned long long`, in either order.
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42ll; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42LL; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0xFFll; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42ull; }"), "unsigned long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42llu; }"), "unsigned long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42ULL; }"), "unsigned long long");
+}
+
+TEST(sema, long_long_outranks_the_32_bit_integers)
+{
+	// The usual arithmetic conversions: a 64-bit integer beats every 32-bit one, and
+	// `unsigned long long` beats `long long` - so `a + b` picks the wider type.
+	CHECK_EQ(typeOfMainLastExpr("long long a; int main() { a + 1; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("long long a; unsigned int u; int main() { a + u; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("unsigned long long a; long long b; int main() { a + b; }"), "unsigned long long");
+	CHECK_EQ(typeOfMainLastExpr("long long a; int main() { a < 1; }"), "bool");
+	CHECK_EQ(typeOfMainLastExpr("long long a; int main() { a ? a : 0; }"), "long long");
+}
+
+TEST(sema, sizeof_a_wide_integer_is_eight)
+{
+	CHECK(checkSource("_Static_assert(sizeof(long long) == 8, \"\"); int main() { }").ok);
+	CHECK(checkSource("_Static_assert(sizeof(unsigned long long) == 8, \"\"); int main() { }").ok);
+	// Alignment 8 shows up through sizeof: `long long a; char c;` is 9 raw bytes rounded up to 16.
+	CHECK(checkSource("struct S { long long a; char c; };"
+		"_Static_assert(sizeof(struct S) == 16, \"\"); int main() { }").ok);
+}
+
+TEST(sema, struct_layout_pads_a_wide_integer_field)
+{
+	// `char c; long long w; int i;` = 24 bytes (w pads to offset 8, the total rounds up to 8).
+	CHECK(checkSource("struct S { char c; long long w; int i; };"
+		"_Static_assert(sizeof(struct S) == 24, \"\"); int main() { }").ok);
+}
+
 TEST(sema, small_integer_types_promote_to_int_in_arithmetic)
 {
 	CHECK_EQ(typeOfMainLastExpr("int main() { (char)1 + (char)2; }"), "int");

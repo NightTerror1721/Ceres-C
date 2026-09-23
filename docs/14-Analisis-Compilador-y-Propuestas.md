@@ -210,7 +210,7 @@ consume.
 
 | Área | Detalle |
 | --- | --- |
-| Tipos | `void`, `bool`, `char`, `short`, `int`, `long`, `float`; `signed`/`unsigned`; `long long`/`double`/`long double` **aceptados y recortados a 32 bits con aviso W2001** |
+| Tipos | `void`, `bool`, `char`, `short`, `int`, `long`, `long long`, `float`; `signed`/`unsigned`; `long long`/`unsigned long long` **reales de 8 bytes** (F3.1a, sin bajar aún); `double`/`long double` **aceptados y recortados a `float` con aviso W2001** |
 | Cualificadores | `const`, `volatile`, `restrict` |
 | Almacenamiento | `static`, `extern`, `auto`, `register`, `inline` |
 | Derivados | Punteros, arrays 1D/2D fijos (con deducción desde inicializador), `struct`, `union`, `enum`, `typedef`, tipos función |
@@ -218,14 +218,17 @@ consume.
 | Interrupciones | `__interrupt`, `__interrupt_vector`, `__builtin_sti/cli/halt` |
 | Sentencias | `if/else`, `while`, `do/while`, `for`, `switch/case/default`, `goto`+etiquetas, `break`, `continue`, `return` |
 | Operadores | Todos, incluidos `&&`/`\|\|`, asignación compuesta, `++`/`--`, `sizeof`, `alignof`, casts, `?:`, `.` y `->` distintos, y el **operador coma** |
-| Literales | Enteros (`0x`, `0b`), flotantes, `char`, cadenas adyacentes unidas, `true`/`false`, sufijos `u`/`f` |
+| Literales | Enteros (`0x`, `0b`), flotantes, `char`, cadenas adyacentes unidas, `true`/`false`, sufijos `u`, `ll`/`LL` y `f` |
 | Extensiones | `__attribute__((...))`, `__asm__("...")`, literales compuestos, `_Static_assert`, `__func__`, `_Generic`, designadores, coma final |
 
 ### 6.2 Fuera de alcance (del compilador)
 
-- **Anchos de 64 bits reales**: `long long`/`double`/`long double` se recortan a 32 bits (W2001); sin
-  `l`/`L` en literales. La STDLIB lo asume explícitamente (`include/stdint.h`: "Nothing 64-bit is
-  defined… an int64_t that quietly held 32 would be a trap").
+- **Anchos de 64 bits bajados a código**: `long long`/`unsigned long long` son ya tipos reales de 8
+  bytes (F3.1a: `sizeof`, layout, literales `ll`/`LL`), pero el IR es de 32 bits y legalizarlos a una
+  pareja `(lo, hi)` es F3.1b–F3.4; hasta entonces un valor de 64 bits se rechaza con `E5002` en vez de
+  truncarse en silencio. `double`/`long double` se recortan a `float` (W2001); sin `l`/`L` en
+  literales. La STDLIB lo asume explícitamente (`include/stdint.h`: "Nothing 64-bit is defined… an
+  int64_t that quietly held 32 would be a trap") y se simplificará en F3.5.
 - **Bitfields**, `__attribute__((packed))` (E2043).
 - **`#line`**, `#include_next`, `_Pragma`, `__has_include`, `#embed`.
 - **Dirección constante con desplazamiento** (`&a[i]` en inicializador estático) → `E4006`.
@@ -1099,7 +1102,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
-| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a hecha** (tipo, parser, layout, literales); F3.1b–F3.5 pendientes |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
 
@@ -1203,10 +1206,27 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   críticos y para el ancho, más los casos `n = 0` y `n < 0` en el ejemplo —que de hecho cazaron un
   fallo del propio arreglo: el guardián saltaba a `.cmi_none` antes de que `r7` tuviera la base.
 
+- **F3.1a** (mitad de tipos de los enteros de 64 bits): 13 ficheros, sin hallazgos de `ocr` todavía
+  (la pasada de revisión toca cada 3–4 commits). `long long`/`unsigned long long` son ya
+  `TypeKind::LongLong`/`ULongLong`, de 8 bytes y alineación 8: el parser los entrega como tales (sin
+  `W2001`), `sizeof`/`alignof`/layout de struct y `_Static_assert` ven la anchura real, y los
+  literales aceptan el sufijo `ll`/`LL` (y `ull`/`llu` en cualquier orden), que les da el tipo de 64
+  bits. `double`/`long double` siguen capados a `float`, que es F3 solo de enteros. Las conversiones
+  aritméticas usuales sitúan los dos tipos por encima de todos los de 32 bits (`unsigned long long` >
+  `long long` > `unsigned long` > `long` > `unsigned int` > `int`), en `sema.cpp` y en la copia que
+  `ir_builder.cpp` mantiene. **Lo que queda** es la mitad de *representación*: el IR es de 32 bits, así
+  que legalizar un valor de 64 bits a una pareja `(lo, hi)` en cada operación, load/store y llamada es
+  F3.1b–F3.4 (y la STDLIB, F3.5). Para que la mitad ausente no sea una miscompilación silenciosa,
+  `IrBuilder` rechaza con `E5002` cualquier valor de 64 bits que llegue a bajar (`rejectWideInteger()`,
+  en `lowerExpr`/`lowerAddress`/`convertForStore` y en la firma de una función), de modo que un
+  programa que usa `long long` como valor no compila en vez de computar solo sus 32 bits bajos. Es un
+  guardián temporal: F3.1b lo retira al llegar la representación. `tests/e2e` cubría el capado de
+  `long long` y ahora cubre solo el de `double`/`long double`.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
-O4/O5; `#line`/`_Pragma` para F12; ABI ancha para F3; formato de depuración para F8; serialización
-de IR para F13).
+O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;
+formato de depuración para F8; serialización de IR para F13).
 
 **O3 se partió igual que F6.** El LICM ya está: detección de bucles naturales (aristas de retroceso
 sobre un árbol de dominancia) y elevación de cargas/cálculos invariantes al preheader. Un bucle que

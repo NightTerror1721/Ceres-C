@@ -183,6 +183,8 @@ namespace ceresc::ir
 			switch (type->kind())
 			{
 				case TypeKind::Float: return 100;
+				case TypeKind::ULongLong: return 62;
+				case TypeKind::LongLong: return 61;
 				case TypeKind::ULong: return 50;
 				case TypeKind::Long: return 49;
 				case TypeKind::UInt: return 40;
@@ -218,6 +220,7 @@ namespace ceresc::ir
 		_currentFunction = nullptr;
 		_currentBlock = nullptr;
 		_lastValue = IrValue{};
+		_reportedWideInteger = false;
 		_scopes.clear();
 		_scopeSlots.clear();
 		_freeLocalSlots.clear();
@@ -362,10 +365,22 @@ namespace ceresc::ir
 
 	// ---- dispatch helpers -------------------------------------------------------------------------
 
+	void IrBuilder::rejectWideInteger(support::SourceLocation loc, const Type* type)
+	{
+		if (!type || !type->isWideInteger() || _reportedWideInteger)
+			return;
+		_reportedWideInteger = true;
+		_diagnostics.error(DiagId::WideIntegerNotSupported, loc,
+			"'{}' is not supported in generated code yet: this compiler cannot lower a 64-bit value, "
+			"so it is refused rather than silently truncated to 32 bits",
+			type->isULongLong() ? "unsigned long long" : "long long");
+	}
+
 	IrValue IrBuilder::lowerExpr(Expr* expr)
 	{
 		if (!expr)
 			return IrValue{};
+		rejectWideInteger(expr->location(), expr->type());
 		expr->accept(*this);
 		return _lastValue;
 	}
@@ -824,6 +839,7 @@ namespace ceresc::ir
 	IrValue IrBuilder::lowerAddress(Expr* expr)
 	{
 		support::SourceLocation loc = expr->location();
+		rejectWideInteger(loc, expr->type());
 
 		if (auto* name = dynamic_cast<ast::NameExpr*>(expr))
 		{
@@ -1011,6 +1027,11 @@ namespace ceresc::ir
 
 	IrValue IrBuilder::convertForStore(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
 	{
+		// A value moving INTO a 64-bit object is a 64-bit value even when the source is a plain
+		// `int` literal (`long long x = 5;`), so the guard has to sit here as well as in lowerExpr()
+		// (F3.1a - see rejectWideInteger).
+		rejectWideInteger(loc, toType);
+
 		bool fromFloat = fromType && fromType->isFloat();
 		bool toFloat = toType && toType->isFloat();
 
@@ -2364,6 +2385,13 @@ namespace ceresc::ir
 			_module.addPureFunction(node.name());
 		if (!node.isDefinition())
 			return; // a prototype has nothing to lower - see the header comment
+
+		// A 64-bit parameter or return type would need a 64-bit calling convention (F3.4) on top of
+		// the missing representation, so refuse it here too rather than emit a signature the back
+		// end cannot honor (F3.1a - see rejectWideInteger).
+		rejectWideInteger(node.location(), node.returnType());
+		for (const Param& param : node.params())
+			rejectWideInteger(node.location(), param.type);
 
 		IrFunction& function = _module.addFunction(node.name(), node.returnType());
 		// Two facts the optimizer needs and cannot see in the body: whether another object may call

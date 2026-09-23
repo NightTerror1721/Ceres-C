@@ -67,25 +67,34 @@ terminal device's output register at `0xFF000004`; `examples/08_strings.c` write
 routines it needs, and `examples/interop/io.c` wraps them into something reusable. CeresASM's own
 `stdlib/` currently only has `call.casm`, so there is nothing to link against yet either.
 
-### No 64-bit width, in either bank
+### No 64-bit register, so no lowered 64-bit values
 
-Ceres has no 64-bit integer register and no f64 register — not in the ISA, not in the VM. The four
-C types that name one are still accepted, because refusing them turns a program that wants a wide
-number into a syntax error rather than into a number, but each one caps to its 32-bit counterpart
-and says so:
+Ceres has no 64-bit integer register and no f64 register — not in the ISA, not in the VM.
+
+The two C types that name a wide **integer** are nevertheless real types, not spellings: `long long`
+and `unsigned long long` are 8 bytes with alignment 8, so `sizeof(long long)` is 8, a struct field
+of one is laid out for a real 64-bit object, and an `ll`/`LL` literal suffix gives a literal the
+64-bit type. What is missing is the **lowering**: the IR is 32 bits wide, so a 64-bit value has to
+be legalized to a `(lo, hi)` pair at every operation, load/store and call — front-end and back-end
+work that is still to come (F3.1b–F3.4 in [14-Analisis-Compilador-y-Propuestas.md](14-Analisis-Compilador-y-Propuestas.md)).
+Until then a program that uses a 64-bit value at run time is refused with `E5002`, rather than
+silently computing only its low 32 bits. The compile-time uses — `sizeof`, `alignof`, a struct
+field, a `typedef`, a `_Static_assert` — all work.
+
+```c
+long long  a;              /* fine: a type and an object of it */
+sizeof(long long);         /* 8 */
+struct S { long long w; }; /* field offset/alignment are 8 */
+long long  b = 5;          /* error[E5002]: cannot lower a 64-bit value yet */
+```
+
+The two types that name a wide **float** are still capped, because there is no f64 register to give
+them: `double` and `long double` are spellings of `float`, and the parser says so:
 
 | Written | Is | Warning |
 | --- | --- | --- |
-| `long long`, `signed long long` | `long` | `'long long' is 32 bits here: this machine has no 64-bit type at all, so it is exactly 'long'` |
-| `unsigned long long` | `unsigned long` | as above, naming `unsigned long` |
-| `double` | `float` | as above, naming `float` |
+| `double` | `float` | `'double' is 32 bits here: this machine has no 64-bit floating-point type, so it is exactly 'float'` |
 | `long double` | `float` | as above, naming `float` |
-
-They are **spellings**, not types of their own: `long long` and `long` are the same type, a
-`double*` and a `float*` are interchangeable, and `sizeof(long long)` is 4. Modelling them as
-distinct kinds would put a width in the type system that nothing below the parser can produce.
-Supporting the real widths would mean software emulation — front-end and runtime work, not a type
-mapping.
 
 The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
 NAME is then an ordinary name for the capped type and says nothing further.
@@ -226,10 +235,11 @@ a variable of its own still works.
 
 ### No `long` literal suffix
 
-`u`/`U` makes an integer literal unsigned and `f`/`F` makes a float literal (or forces a digit run
-to one, `1f`), both exactly as in C. The `l`/`L` suffix is not accepted, because Ceres has no
-64-bit integer width for it to name — the same reason `long`/`long long` collapse to `int` with a
-warning.
+`u`/`U` makes an integer literal unsigned, `ll`/`LL` makes it 64-bit (`long long`, or `unsigned long
+long` with `u`/`U` as well, in either order: `42ull`, `42llu`), and `f`/`F` makes a float literal (or
+forces a digit run to one, `1f`). The single `l`/`L` suffix is still not accepted, because there is
+no `long` literal suffix to name here — a lone `l` after a number is an identifier, so `1l` is `1`
+followed by `l`, not a literal.
 
 ### Division by zero does not fault
 

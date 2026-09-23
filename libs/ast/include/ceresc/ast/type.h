@@ -13,13 +13,16 @@
 // sizeInBytes()/alignment()/isSigned() - alignment follows the same rule as CASM's own `struct`
 // (each field aligned to its own size, see §8). See the architecture plan, §6.
 //
-// There is no 64-bit anything in this list, and that is the machine speaking rather than an
-// omission: Ceres has no 64-bit register, no f64 register and no instruction that touches either.
-// The four C types that name one - `long long`, `unsigned long long`, `double` and `long double` -
-// are therefore SPELLINGS of the 32-bit types here rather than types of their own: the parser
-// reads them, warns that the width is capped, and hands back Long, ULong and Float. Modelling them
-// as distinct kinds would mean a type system that claims a width no phase below it can produce.
-// See docs/06-Known-Limitations.md.
+// There is no 64-bit REGISTER, and that is the machine speaking rather than an omission: Ceres has
+// no 64-bit register, no f64 register and no instruction that touches either. The two C types that
+// name a wide INTEGER - `long long` and `unsigned long long` - are real kinds here (LongLong/
+// ULongLong): they are 8 bytes with alignment 8, so `sizeof`, struct layout and literals are all
+// correct at compile time. Lowering one is a separate concern: the IR is 32 bits wide, so a 64-bit
+// value has to be legalized to a (lo, hi) pair before codegen, which is F3.1b's job - until it
+// lands, IrBuilder refuses to lower a wide value rather than truncate it silently (see
+// docs/06-Known-Limitations.md and docs/14 §19). The two types that name a wide FLOAT - `double`
+// and `long double` - are still SPELLINGS of Float: the parser reads them, warns that the width is
+// capped, and hands back Float.
 //
 // Float is `float` (f32): it maps directly onto Ceres's native F32 register/DataType (see
 // CeresASM's fregisters.h/data_type.h), so codegen is close to a straight passthrough.
@@ -48,6 +51,8 @@ namespace ceresc::ast
 		UInt,
 		Long,
 		ULong,
+		LongLong,
+		ULongLong,
 		Float,
 		Pointer,
 		Array,
@@ -133,6 +138,12 @@ namespace ceresc::ast
 		constexpr bool isUInt() const noexcept { return _kind == TypeKind::UInt; }
 		constexpr bool isLong() const noexcept { return _kind == TypeKind::Long; }
 		constexpr bool isULong() const noexcept { return _kind == TypeKind::ULong; }
+		constexpr bool isLongLong() const noexcept { return _kind == TypeKind::LongLong; }
+		constexpr bool isULongLong() const noexcept { return _kind == TypeKind::ULongLong; }
+		// Either 64-bit integer kind. The one predicate every phase that cannot yet legalize a wide
+		// value asks (IrBuilder, F3.1a) - `long long` and `unsigned long long` are the only two
+		// kinds it is true for.
+		constexpr bool isWideInteger() const noexcept { return isLongLong() || isULongLong(); }
 		constexpr bool isFloat() const noexcept { return _kind == TypeKind::Float; }
 
 		constexpr bool isPointer() const noexcept { return _kind == TypeKind::Pointer; }
@@ -234,6 +245,8 @@ namespace ceresc::ast
 		static const Type UInt, ConstUInt, VolatileUInt, ConstVolatileUInt;
 		static const Type Long, ConstLong, VolatileLong, ConstVolatileLong;
 		static const Type ULong, ConstULong, VolatileULong, ConstVolatileULong;
+		static const Type LongLong, ConstLongLong, VolatileLongLong, ConstVolatileLongLong;
+		static const Type ULongLong, ConstULongLong, VolatileULongLong, ConstVolatileULongLong;
 		static const Type Float, ConstFloat, VolatileFloat, ConstVolatileFloat;
 	};
 
@@ -278,6 +291,14 @@ namespace ceresc::ast
 	inline constexpr Type Type::ConstULong{ TypeKind::ULong, true, false };
 	inline constexpr Type Type::VolatileULong{ TypeKind::ULong, false, true };
 	inline constexpr Type Type::ConstVolatileULong{ TypeKind::ULong, true, true };
+	inline constexpr Type Type::LongLong{ TypeKind::LongLong, false, false };
+	inline constexpr Type Type::ConstLongLong{ TypeKind::LongLong, true, false };
+	inline constexpr Type Type::VolatileLongLong{ TypeKind::LongLong, false, true };
+	inline constexpr Type Type::ConstVolatileLongLong{ TypeKind::LongLong, true, true };
+	inline constexpr Type Type::ULongLong{ TypeKind::ULongLong, false, false };
+	inline constexpr Type Type::ConstULongLong{ TypeKind::ULongLong, true, false };
+	inline constexpr Type Type::VolatileULongLong{ TypeKind::ULongLong, false, true };
+	inline constexpr Type Type::ConstVolatileULongLong{ TypeKind::ULongLong, true, true };
 	inline constexpr Type Type::Float{ TypeKind::Float, false, false };
 	inline constexpr Type Type::ConstFloat{ TypeKind::Float, true, false };
 	inline constexpr Type Type::VolatileFloat{ TypeKind::Float, false, true };

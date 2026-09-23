@@ -185,6 +185,12 @@ namespace ceresc::ir
 		BasicBlock* _currentBlock = nullptr;
 		IrValue _lastValue{}; // set by every visit(SomeExpr&), read back by lowerExpr() - same idiom as Sema::_lastExprType
 
+		// F3.1a: a 64-bit integer type is real (8 bytes, align 8), but the IR has no 64-bit value -
+		// legalizing one to a (lo, hi) pair is F3.1b. Until then any attempt to lower a wide value
+		// is reported once, as E5002, instead of being silently truncated to 32 bits. Cleared by
+		// build(); see rejectWideInteger().
+		bool _reportedWideInteger = false;
+
 		std::vector<std::unordered_map<std::string_view, LocalSymbol>> _scopes; // function-local block scopes; empty at file scope
 		std::unordered_map<std::string_view, LocalSymbol> _globalSymbols;      // file-scope variables + file-scope enum constants
 
@@ -232,8 +238,13 @@ namespace ceresc::ir
 		void declareSymbol(std::string_view name, const LocalSymbol& symbol);
 		LocalSymbol* lookupSymbol(std::string_view name) noexcept;
 
+		// Reports E5002 the first time a 64-bit integer value would be lowered (F3.1a - see
+		// _reportedWideInteger). A no-op for every other type, so callers can pass any type freely.
+		void rejectWideInteger(support::SourceLocation loc, const ast::Type* type);
+
 		IrValue lowerExpr(ast::Expr* expr);
 		void lowerStmt(ast::Stmt* stmt);
+
 		// The address of an lvalue - see the ".cpp" for why this is its own recursive dynamic_cast
 		// dispatch (mirroring sema.cpp's own isLValue()/evalConstantExpr()) rather than a second
 		// AstVisitor.

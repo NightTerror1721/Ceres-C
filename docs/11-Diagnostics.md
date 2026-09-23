@@ -6,7 +6,7 @@ Every error and warning this compiler can emit has a code, and every message pri
 
 ```
 main.c:12:5: error[E3023]: use of undeclared identifier 'total'
-main.c:3:1: warning[W2001]: 'long long' is 32 bits here: this machine has no 64-bit type at all, so it is exactly 'long'
+main.c:3:1: warning[W2001]: 'double' is 32 bits here: this machine has no 64-bit floating-point type, so it is exactly 'float'
 ```
 
 The letter is the severity. The four digits are a number that never changes and never gets reused
@@ -34,7 +34,7 @@ in it.
 
 ```c
 #pragma warning(disable: 2001)
-long long total = 0;          /* no W2001 here */
+double total = 0;             /* no W2001 here */
 #pragma warning(default: 2001)
 ```
 
@@ -63,7 +63,7 @@ the file it was written in, exactly as in C:
 /* noisy.h */
 #pragma warning(push)
 #pragma warning(disable: 2001)
-long long counter;
+double counter;
 #pragma warning(pop)
 ```
 
@@ -100,7 +100,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `W1004` | A `#pragma` this compiler does not know, ignored. |
 | `W1005` | A `#pragma warning(...)` this compiler could not read, ignored. |
 | `W1006` | A number in a `#pragma warning(...)` that does not name a warning. |
-| `W2001` | `long long`/`double`/`long double` capped to 32 bits — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `W2001` | `double`/`long double` capped to `float` — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 | `W2002` | An `__attribute__` that is ignored: one this compiler does nothing with, or `aligned` above 4 — see [02-Grammar.md](02-Grammar.md). |
 | `W3001` | A `const` variable with no initializer, which can therefore only ever be zero. |
 | `W3002` | A function declared `noreturn` that contains a `return`. |
@@ -326,6 +326,7 @@ These are the codes a `#pragma warning(...)` can name.
 | Code | Means |
 | --- | --- |
 | `E5001` | A compound assignment to a `struct` that reached lowering. |
+| `E5002` | A 64-bit integer (`long long`/`unsigned long long`) value that reached lowering. The type is real (8 bytes, alignment 8, correct `sizeof`/layout/literals), but the IR is 32 bits wide and legalizing a wide value to a `(lo, hi)` pair is F3.1b — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 
 ## Related pages
 

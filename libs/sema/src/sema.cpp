@@ -113,7 +113,8 @@ namespace ceresc::sema
 		{
 			case TypeKind::Bool: case TypeKind::Char: case TypeKind::UChar: case TypeKind::SChar:
 			case TypeKind::Short: case TypeKind::UShort: case TypeKind::Int: case TypeKind::UInt:
-			case TypeKind::Long: case TypeKind::ULong: case TypeKind::Float:
+			case TypeKind::Long: case TypeKind::ULong:
+			case TypeKind::LongLong: case TypeKind::ULongLong: case TypeKind::Float:
 			case TypeKind::Enum: // an enum is an integer type in real C - see integerPromote()
 				return true;
 			default:
@@ -704,6 +705,11 @@ namespace ceresc::sema
 			switch (type->kind())
 			{
 				case TypeKind::Float: return 100;
+				// The 64-bit integers outrank every 32-bit one (and `unsigned long long` outranks
+				// `long long`, as in C), so `long long + long` is `long long` and
+				// `long long + unsigned long long` is `unsigned long long`.
+				case TypeKind::ULongLong: return 62;
+				case TypeKind::LongLong: return 61;
 				case TypeKind::ULong: return 50;
 				case TypeKind::Long: return 49;
 				case TypeKind::UInt: return 40;
@@ -865,9 +871,14 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::IntLiteralExpr& node)
 	{
-		// A `u`/`U` suffix selects the unsigned type; an unsuffixed literal is `int` (no widening to
-		// `long` exists in this subset - see type.h).
-		const Type* type = node.isUnsigned() ? &Type::UInt : &Type::Int;
+		// An `ll`/`LL` suffix selects a 64-bit type (`long long`, or `unsigned long long` with a
+		// `u`/`U` as well); otherwise a `u`/`U` suffix selects `unsigned` and an unsuffixed literal
+		// is `int` (no widening to `long` exists in this subset - see type.h).
+		const Type* type;
+		if (node.isLongLong())
+			type = node.isUnsigned() ? &Type::ULongLong : &Type::LongLong;
+		else
+			type = node.isUnsigned() ? &Type::UInt : &Type::Int;
 		node.setType(type);
 		_lastExprType = type;
 	}

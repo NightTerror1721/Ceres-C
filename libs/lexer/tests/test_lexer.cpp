@@ -233,6 +233,60 @@ TEST(lexer, an_unsuffixed_integer_is_not_unsigned)
 	CHECK(!t.isUnsigned());
 }
 
+TEST(lexer, an_ll_suffix_marks_an_integer_literal_64_bit)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("42ll 43LL 0xFFll 0b101LL", testSourceId(), diagnostics, pool);
+
+	for (u64 expected : { u64(42), u64(43), u64(255), u64(5) })
+	{
+		Token t = lexer.next();
+		CHECK(t.isLiteralInt());
+		CHECK(t.isLongLong());
+		CHECK(!t.isUnsigned());
+		CHECK_EQ(t.integralValue(), expected);
+	}
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, the_u_and_ll_suffixes_combine_in_either_order)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("1ull 2llu 3ULL 4LLU 5uLL 6llU", testSourceId(), diagnostics, pool);
+
+	for (u64 expected : { u64(1), u64(2), u64(3), u64(4), u64(5), u64(6) })
+	{
+		Token t = lexer.next();
+		CHECK(t.isLiteralInt());
+		CHECK(t.isLongLong());
+		CHECK(t.isUnsigned());
+		CHECK_EQ(t.integralValue(), expected);
+	}
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_single_l_suffix_is_not_consumed)
+{
+	// This subset has no `long` literal suffix (docs/06-Known-Limitations.md), so `1l` stays `1`
+	// followed by an identifier `l` - the parser rejects that, rather than the lexer silently
+	// dropping the suffix and handing back a plain `int` literal.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("1l", testSourceId(), diagnostics, pool);
+
+	Token number = lexer.next();
+	CHECK(number.isLiteralInt());
+	CHECK(!number.isLongLong());
+	CHECK(!number.isUnsigned());
+	CHECK_EQ(number.integralValue(), u64(1));
+
+	Token identifier = lexer.next();
+	CHECK(identifier.isIdentifier());
+	CHECK_EQ(identifier.lexeme(), std::string_view("l"));
+}
+
 // ---- char literals ---------------------------------------------------------------------------
 
 TEST(lexer, simple_char_literal)

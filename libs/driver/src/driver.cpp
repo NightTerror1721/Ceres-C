@@ -556,6 +556,14 @@ namespace ceresc::driver
 			// ---- middle and back end ---------------------------------------------------------------
 			ir::IrBuilder builder(arena, diagnostics, options.optimization);
 			ir::IrModule module = builder.build(*unit);
+			// IrBuilder can report a diagnostic of its own (F3.1a's E5002 for a 64-bit value it
+			// cannot lower yet): the IR it produced is not something to optimize or hand to codegen,
+			// so stop here rather than run the back end on a module it has already declared broken.
+			if (diagnostics.hasErrors())
+			{
+				printer.flush(std::cerr);
+				return 1;
+			}
 			// Optimized IR is what --emit-ir shows too: the point of that flag is to see what the back
 			// end will actually be handed, not an intermediate nobody compiles. -O0 leaves it untouched.
 			ir::OptimizationStats stats;

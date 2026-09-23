@@ -11,10 +11,12 @@
 // widest field's alignment. Primitive sizes/alignments mirror CASM's data_type.h
 // (docs/11-Data-Types-and-Literals.md): u8/i8=1, u16/i16=2, u32/i32/f32=4, and a Ceres address
 // (Pointer) is a u32, so 4 bytes as well. `long`/`unsigned long` are int-sized in this ABI - Ceres
-// has no native 64-bit register (see type.h's own note), so there is no wider integer to give them,
-// and neither `long long` nor `double` reaches here as a kind of its own for the same reason: the
-// parser caps both and hands back one of these. Enum is always int-sized, same as most C ABIs - it
-// does not need a StructDecl-style computed layout.
+// has no native 64-bit register (see type.h's own note). `long long`/`unsigned long long` ARE
+// 8 bytes with alignment 8 (F3.1a), even though no register holds one: their width is a fact about
+// the C type, and the back end legalizes a wide value to a (lo, hi) pair when it lowers one (F3.1b;
+// until then IrBuilder refuses to lower it - see type.h). `double`/`long double` do not reach here
+// as a kind of their own: the parser caps both to Float. Enum is always int-sized, same as most C
+// ABIs - it does not need a StructDecl-style computed layout.
 //
 // Both walks take an explicit recursion depth and bail out past a small limit instead of
 // recursing forever: a struct that (illegally) contains itself by value, directly or through
@@ -48,6 +50,8 @@ namespace ceresc::ast
 				case TypeKind::UInt: return 4;
 				case TypeKind::Long: return 4;
 				case TypeKind::ULong: return 4;
+				case TypeKind::LongLong: return 8;
+				case TypeKind::ULongLong: return 8;
 				case TypeKind::Float: return 4;
 				case TypeKind::Pointer: return 4;
 				// A function type is not an OBJECT type: nothing holds one, so it has no size. Zero is
@@ -102,6 +106,10 @@ namespace ceresc::ast
 				case TypeKind::Bool: case TypeKind::Char: case TypeKind::UChar: case TypeKind::SChar: return 1;
 				case TypeKind::Short: case TypeKind::UShort: return 2;
 				case TypeKind::Int: case TypeKind::UInt: case TypeKind::Long: case TypeKind::ULong: return 4;
+				// 64-bit integers align to 8 even though no register is 8 bytes: `long long a[2]`
+				// and a struct field have to land where the C ABI says, and the back end's
+				// word-pair copy can always fall back to narrower pieces for an unaligned pointer.
+				case TypeKind::LongLong: case TypeKind::ULongLong: return 8;
 				case TypeKind::Float: return 4;
 				case TypeKind::Pointer: return 4;
 				case TypeKind::Array: return alignmentOf(type->arrayElementType(), depth + 1);
@@ -201,6 +209,7 @@ namespace ceresc::ast
 			case TypeKind::Short:
 			case TypeKind::Int:
 			case TypeKind::Long:
+			case TypeKind::LongLong:
 			case TypeKind::Enum: // int-sized and int-valued, same as integerPromote() in sema.cpp
 				return true;
 			default:
@@ -235,6 +244,8 @@ namespace ceresc::ast
 			case TypeKind::UInt:   return type->isVolatile() ? &Type::ConstVolatileUInt : &Type::ConstUInt;
 			case TypeKind::Long:   return type->isVolatile() ? &Type::ConstVolatileLong : &Type::ConstLong;
 			case TypeKind::ULong:  return type->isVolatile() ? &Type::ConstVolatileULong : &Type::ConstULong;
+			case TypeKind::LongLong: return type->isVolatile() ? &Type::ConstVolatileLongLong : &Type::ConstLongLong;
+			case TypeKind::ULongLong: return type->isVolatile() ? &Type::ConstVolatileULongLong : &Type::ConstULongLong;
 			case TypeKind::Float:  return type->isVolatile() ? &Type::ConstVolatileFloat : &Type::ConstFloat;
 			default:
 				break;
@@ -261,6 +272,8 @@ namespace ceresc::ast
 			case TypeKind::UInt:   return &Type::UInt;
 			case TypeKind::Long:   return &Type::Long;
 			case TypeKind::ULong:  return &Type::ULong;
+			case TypeKind::LongLong: return &Type::LongLong;
+			case TypeKind::ULongLong: return &Type::ULongLong;
 			case TypeKind::Float:  return &Type::Float;
 			default:
 				break;
@@ -283,6 +296,8 @@ namespace ceresc::ast
 			case TypeKind::UInt: return type->isConst() ? &Type::ConstVolatileUInt : &Type::VolatileUInt;
 			case TypeKind::Long: return type->isConst() ? &Type::ConstVolatileLong : &Type::VolatileLong;
 			case TypeKind::ULong: return type->isConst() ? &Type::ConstVolatileULong : &Type::VolatileULong;
+			case TypeKind::LongLong: return type->isConst() ? &Type::ConstVolatileLongLong : &Type::VolatileLongLong;
+			case TypeKind::ULongLong: return type->isConst() ? &Type::ConstVolatileULongLong : &Type::VolatileULongLong;
 			case TypeKind::Float: return type->isConst() ? &Type::ConstVolatileFloat : &Type::VolatileFloat;
 			default: return makeCompound(arena, type->kind(), type->isConst(), true, type->isRestrict(), type->_payload, type->_arraySize);
 		}

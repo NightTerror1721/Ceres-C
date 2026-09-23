@@ -627,8 +627,9 @@ namespace ceresc::parser
 			{
 				auto value = _current.integralValue();
 				bool isUnsigned = _current.isUnsigned();
+				bool isLongLong = _current.isLongLong();
 				advance();
-				return _arena.create<ast::IntLiteralExpr>(location, value, isUnsigned);
+				return _arena.create<ast::IntLiteralExpr>(location, value, isUnsigned, isLongLong);
 			}
 			case TokenKind::LiteralFloat:
 			{
@@ -859,7 +860,7 @@ namespace ceresc::parser
 		std::string_view actual, const Type* type)
 	{
 		_diagnostics.warning(DiagId::CappedTypeWidth, location,
-			"'{}' is 32 bits here: this machine has no 64-bit type at all, so it is exactly '{}'",
+			"'{}' is 32 bits here: this machine has no 64-bit floating-point type, so it is exactly '{}'",
 			written, actual);
 		return type;
 	}
@@ -896,7 +897,7 @@ namespace ceresc::parser
 				if (match(TokenKind::KwLong))
 				{
 					match(TokenKind::KwInt);
-					return cappedToMachineWidth(location, "long long", "long", &Type::Long);
+					return &Type::LongLong; // 64 bits, a real kind - see type.h
 				}
 				match(TokenKind::KwInt);
 				return &Type::Long;
@@ -922,10 +923,7 @@ namespace ceresc::parser
 					if (match(TokenKind::KwLong))
 					{
 						match(TokenKind::KwInt);
-						return cappedToMachineWidth(location,
-							isUnsigned ? "unsigned long long" : "signed long long",
-							isUnsigned ? "unsigned long" : "long",
-							isUnsigned ? &Type::ULong : &Type::Long);
+						return isUnsigned ? &Type::ULongLong : &Type::LongLong; // 64 bits, a real kind
 					}
 					match(TokenKind::KwInt);
 					return isUnsigned ? &Type::ULong : &Type::Long;

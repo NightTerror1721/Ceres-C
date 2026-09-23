@@ -89,14 +89,40 @@ namespace ceresc::lexer
 		return Token::makeIdentifier(lexeme, startLoc);
 	}
 
-	Token Lexer::makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned)
+	Token Lexer::makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong)
 	{
 		TokenValue::IntegralValue value = 0;
 		auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
 		if (result.ec == std::errc::result_out_of_range)
 			_diagnostics.error(DiagId::IntegerLiteralTooLarge, loc, "integer literal is too large to represent");
 
-		return Token::makeLiteralInt(lexeme, value, loc, isUnsigned);
+		return Token::makeLiteralInt(lexeme, value, loc, isUnsigned, isLongLong);
+	}
+
+	void Lexer::scanIntegerSuffix(bool& isUnsigned, bool& isLongLong) noexcept
+	{
+		// C's integer-suffix: at most one `u`/`U` and at most one `ll`/`LL`, in either order. Two
+		// passes is enough for every legal combination (`u`, `ll`, `ull`, `llu`); anything left after
+		// them (a third suffix letter, a lone `l`, `lL` mixed with digits...) is an identifier of its
+		// own and the parser rejects it exactly as before.
+		for (int pass = 0; pass < 2; ++pass)
+		{
+			if (!isUnsigned && (_cursor.peek() == 'u' || _cursor.peek() == 'U'))
+			{
+				isUnsigned = true;
+				_cursor.advance();
+				continue;
+			}
+			if (!isLongLong && (_cursor.peek() == 'l' || _cursor.peek() == 'L') &&
+				(_cursor.peek(1) == 'l' || _cursor.peek(1) == 'L'))
+			{
+				isLongLong = true;
+				_cursor.advance();
+				_cursor.advance();
+				continue;
+			}
+			break;
+		}
 	}
 
 	Token Lexer::makeFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc)
@@ -126,14 +152,12 @@ namespace ceresc::lexer
 		}
 
 		uoffset digitsEnd = _cursor.position();
-		// A `u`/`U` suffix makes the literal unsigned. `f`/`F` is a hex DIGIT here, never a float
-		// suffix - `0xFFf` is one number - so only the unsigned suffix applies to a radix literal.
+		// A `u`/`U` suffix makes the literal unsigned and `ll`/`LL` makes it 64-bit. `f`/`F` is a hex
+		// DIGIT here, never a float suffix - `0xFFf` is one number - so only the integer suffixes
+		// apply to a radix literal.
 		bool isUnsigned = false;
-		if (_cursor.peek() == 'u' || _cursor.peek() == 'U')
-		{
-			isUnsigned = true;
-			_cursor.advance();
-		}
+		bool isLongLong = false;
+		scanIntegerSuffix(isUnsigned, isLongLong);
 
 		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
 		std::string_view digits = _cursor.buffer().substr(digitsStart, digitsEnd - digitsStart);
@@ -147,7 +171,7 @@ namespace ceresc::lexer
 			return Token::makeLiteralInt(lexeme, 0, startLoc);
 		}
 
-		return makeIntToken(lexeme, startLoc, base, digits, isUnsigned);
+		return makeIntToken(lexeme, startLoc, base, digits, isUnsigned, isLongLong);
 	}
 
 	Token Lexer::scanNumber()
@@ -188,28 +212,26 @@ namespace ceresc::lexer
 				_cursor.advance();
 		}
 
-		// A trailing suffix. `u`/`U` marks an integer literal unsigned; `f`/`F` marks a float, and is
-		// also what turns a digit run with no `.`/exponent into one (`1f`). Each is consumed once;
-		// anything else is an identifier of its own, exactly as before.
+		// A trailing suffix. `u`/`U` marks an integer literal unsigned and `ll`/`LL` makes it 64-bit;
+		// `f`/`F` marks a float, and is also what turns a digit run with no `.`/exponent into one
+		// (`1f`). The integer suffixes combine in either order (`1ull`, `1llu`), while `f` stands
+		// alone. Anything else is an identifier of its own, exactly as before.
 		uoffset digitsEnd = _cursor.position();
 		bool isUnsigned = false;
+		bool isLongLong = false;
 		if (isFloat)
 		{
 			if (_cursor.peek() == 'f' || _cursor.peek() == 'F')
 				_cursor.advance();
 		}
+		else if (_cursor.peek() == 'f' || _cursor.peek() == 'F')
+		{
+			isFloat = true;
+			_cursor.advance();
+		}
 		else
 		{
-			if (_cursor.peek() == 'u' || _cursor.peek() == 'U')
-			{
-				isUnsigned = true;
-				_cursor.advance();
-			}
-			else if (_cursor.peek() == 'f' || _cursor.peek() == 'F')
-			{
-				isFloat = true;
-				_cursor.advance();
-			}
+			scanIntegerSuffix(isUnsigned, isLongLong);
 		}
 
 		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
@@ -217,7 +239,7 @@ namespace ceresc::lexer
 
 		if (isFloat)
 			return makeFloatToken(lexeme, digits, startLoc);
-		return makeIntToken(lexeme, startLoc, 10, digits, isUnsigned);
+		return makeIntToken(lexeme, startLoc, 10, digits, isUnsigned, isLongLong);
 	}
 
 	char Lexer::scanEscapeSequence()

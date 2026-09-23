@@ -10,7 +10,7 @@ here is, by definition, a syntax error.
 
 | Area | What is supported |
 | --- | --- |
-| Types | `void`, `bool`, `char`, `short`, `int`, `long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. `long long`, `double` and `long double` are accepted and capped to 32 bits, with a warning. |
+| Types | `void`, `bool`, `char`, `short`, `int`, `long`, `long long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. `long long`/`unsigned long long` are real 8-byte types; `double` and `long double` are accepted and capped to `float`, with a warning. |
 | Qualifiers | `const`, `volatile` and `restrict`, on either side of the type-spec and after a `*`. |
 | Storage classes | `static`, `extern`, `auto`, `register` and the `inline` function specifier. |
 | Derived types | Pointers, fixed-size arrays (1D and 2D; the size is an integer literal or arithmetic on literals, `[64]`, `[4 * 512]`, `[1 << 6]`, `[BUF + 8]` once macros expand; a variable's outermost size may be left out and taken from its initializer, `int a[] = {1, 2, 3}`, `char s[] = "hi"`, `int m[][2] = {{1, 2}, {3, 4}}`), `struct`, `union`, `enum`, `typedef`, and function types — so function pointers, including arrays of them and functions that return them. |
@@ -18,7 +18,7 @@ here is, by definition, a syntax error.
 | Interrupts | `__interrupt` handlers and `__interrupt_vector`, plus `__builtin_sti`/`__builtin_cli`/`__builtin_halt` — see [10-Interrupts.md](10-Interrupts.md). |
 | Statements | `if`/`else`, `while`, `do`/`while`, `for`, `switch`/`case`/`default`, `goto` + labels, `break`, `continue`, `return`. |
 | Operators | All arithmetic, relational, logical (short-circuiting), bitwise, compound assignment, `&`, `*`, `[]`, `.`, `->`, `++`/`--` in both positions, `sizeof`, `alignof`, explicit casts. |
-| Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. Adjacent string literals are joined into one, as in C. Integer literals take an optional `u`/`U` suffix (unsigned) and float literals an optional `f`/`F`; `f`/`F` also forces a digit run to be a float (`1f`). |
+| Literals | Integers (decimal, `0x`, `0b`), floats (decimal and exponential), `char`, strings, `true`/`false`. Adjacent string literals are joined into one, as in C. Integer literals take an optional `u`/`U` suffix (unsigned) and `ll`/`LL` (64-bit, in either order with `u`: `42ull`, `42llu`); float literals an optional `f`/`F`; `f`/`F` also forces a digit run to be a float (`1f`). |
 
 `.` and `->` are genuinely different operators, not two spellings of one: the parser records which
 token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->x` needs a pointer.
@@ -27,14 +27,15 @@ token it saw and sema checks the operand accordingly. `p.x` needs a struct, `p->
 
 | Left out | Why |
 | --- | --- |
-| 64-bit width — `long long`, `double`, `long double` | The spellings are accepted; the WIDTH is not. Ceres has no 64-bit register and no f64 register, so each one caps to its 32-bit counterpart with a warning. See [06-Known-Limitations.md](06-Known-Limitations.md). |
+| 64-bit float — `double`, `long double` | The spellings are accepted; the WIDTH is not. Ceres has no f64 register, so each one caps to `float` with a warning. `long long`/`unsigned long long` are real 8-byte types but cannot yet be lowered to code — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 | Bitfields | A second layout rule to learn, and nothing needs them yet. `union` itself is supported. |
 | Stringification (`#`), token pasting (`##`), `#line` | Everything else in the preprocessor is implemented, including `#if`/`#ifdef`, macros with arguments and the predefined `__LINE__`/`__FILE__` family. See [08-Preprocessor.md](08-Preprocessor.md). |
 | `malloc`/`free` | There is no allocator to call. |
 
-A capped type is a *spelling*, not a type of its own: `long long` and `long` are the same type
-here, and so are `double` and `float`. That is what "there is no 64-bit anything" means once it is
-followed through — a distinct type would be one no phase below the parser could represent.
+A capped type is a *spelling*, not a type of its own: `double` and `float` are the same type here.
+That is what "there is no 64-bit float" means once it is followed through — a distinct type would be
+one no phase below the parser could represent. `long long` is *not* capped: it is a distinct 8-byte
+type, and only its lowering is still missing.
 
 ## const
 
@@ -387,6 +388,7 @@ table-driven function rather than ten near-identical ones.
 | `char`, `bool` | 1 | 1 |
 | `short` | 2 | 2 |
 | `int`, `long`, `float`, any pointer | 4 | 4 |
+| `long long`, `unsigned long long` | 8 | 8 |
 | array | element size × count | the element's |
 | struct | see below | the widest field's |
 
@@ -398,6 +400,11 @@ program prints the result for a deliberately awkward case.
 struct Padded { char tag; int value; char flag; };
 //              ^0        ^4          ^8           sizeof == 12
 ```
+
+`long long` and `unsigned long long` are real 8-byte types: `sizeof`, struct layout and an `ll`/`LL`
+literal suffix all see the full width. There is still no 64-bit register, so **lowering** a 64-bit
+value is not implemented yet — a program that uses one as a value is refused with `E5002` rather
+than silently truncated. See [06-Known-Limitations.md](06-Known-Limitations.md).
 
 ## Errors
 
