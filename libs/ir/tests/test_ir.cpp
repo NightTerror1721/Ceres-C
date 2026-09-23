@@ -109,6 +109,60 @@ TEST(ir, arithmetic_expression_respects_precedence_via_temporaries)
 		"}\n");
 }
 
+TEST(ir, a_signed_min_or_max_ternary_lowers_to_one_builtin_when_enabled)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.minMaxIdioms = true;
+
+	CHECK(functionIr("int mn(int a, int b) { return a < b ? a : b; }", "mn", options).find("__builtin_imin") != std::string::npos);
+	CHECK(functionIr("int mx(int a, int b) { return a > b ? a : b; }", "mx", options).find("__builtin_imax") != std::string::npos);
+	CHECK(functionIr("int mx(int a, int b) { return a < b ? b : a; }", "mx", options).find("__builtin_imax") != std::string::npos);
+	CHECK(functionIr("int mn(int a, int b) { return a >= b ? b : a; }", "mn", options).find("__builtin_imin") != std::string::npos);
+}
+
+TEST(ir, an_unsigned_min_or_max_ternary_picks_the_unsigned_builtin)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.minMaxIdioms = true;
+
+	CHECK(functionIr("unsigned mn(unsigned a, unsigned b) { return a < b ? a : b; }", "mn", options).find("__builtin_umin") != std::string::npos);
+	CHECK(functionIr("unsigned mx(unsigned a, unsigned b) { return a > b ? a : b; }", "mx", options).find("__builtin_umax") != std::string::npos);
+}
+
+TEST(ir, the_abs_ternary_lowers_to_one_builtin_and_its_mirror_does_not)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.minMaxIdioms = true;
+
+	CHECK(functionIr("int ab(int a) { return a < 0 ? -a : a; }", "ab", options).find("__builtin_abs") != std::string::npos);
+	CHECK(functionIr("int ab(int a) { return 0 > a ? -a : a; }", "ab", options).find("__builtin_abs") != std::string::npos);
+	CHECK(functionIr("int ab(int a) { return a > 0 ? a : -a; }", "ab", options).find("__builtin_abs") != std::string::npos);
+	// `0 > a ? a : -a` selects the negative value when a is negative - that is -abs, not abs.
+	CHECK(functionIr("int na(int a) { return 0 > a ? a : -a; }", "na", options).find("__builtin_abs") == std::string::npos);
+}
+
+TEST(ir, a_non_idiom_ternary_and_side_effecting_operands_keep_the_diamond)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.minMaxIdioms = true;
+
+	// `==` is not a min/max test even though its arms are the operands.
+	std::string equality = functionIr("int f(int a, int b) { return a == b ? a : b; }", "f", options);
+	CHECK(equality.find("__builtin_") == std::string::npos);
+	CHECK(equality.find("cmp.eq") != std::string::npos);
+
+	// A call in the arms would be evaluated twice by the original, once by the builtin.
+	std::string calls = functionIr("int f(void); int g(void); int h(void) { return f() < g() ? f() : g(); }", "h", options);
+	CHECK(calls.find("__builtin_") == std::string::npos);
+}
+
+TEST(ir, the_min_max_idiom_flag_off_keeps_the_branch_diamond)
+{
+	std::string text = functionIr("int mn(int a, int b) { return a < b ? a : b; }", "mn");
+	CHECK(text.find("__builtin_") == std::string::npos);
+	CHECK(text.find("cmp.lt") != std::string::npos);
+}
+
 TEST(ir, unsigned_division_sets_the_isUnsigned_flag_the_signed_one_does_not)
 {
 	std::string signedText = functionIr("int main() { int a; int b; return a / b; }");

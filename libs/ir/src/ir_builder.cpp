@@ -61,6 +61,75 @@ namespace ceresc::ir
 			return false;
 		}
 
+		// True when two expressions are the same side-effect-free computation: the same name, the
+		// same literal, a negation/bitwise-not/logical-not of equivalent operands, or a pure binary
+		// operation of equivalent ones. Used only to recognize a select idiom (`a < b ? a : b`),
+		// where a false positive would silently change which value is selected - so it is
+		// deliberately conservative: no calls, no assignments, no dereference/address-of, no
+		// increments. Sema never inserts cast nodes for the usual arithmetic conversions (it records
+		// the promotion on the enclosing node instead), so the operands here are the source ones.
+		bool exprsEquivalent(const Expr* a, const Expr* b) noexcept
+		{
+			if (a == b)
+				return true;
+			if (!a || !b)
+				return false;
+
+			if (const auto* x = dynamic_cast<const ast::IntLiteralExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::IntLiteralExpr*>(b);
+				return y && x->value() == y->value() && x->isUnsigned() == y->isUnsigned();
+			}
+			if (const auto* x = dynamic_cast<const ast::CharLiteralExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::CharLiteralExpr*>(b);
+				return y && x->value() == y->value();
+			}
+			if (const auto* x = dynamic_cast<const ast::BoolLiteralExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::BoolLiteralExpr*>(b);
+				return y && x->value() == y->value();
+			}
+			if (const auto* x = dynamic_cast<const ast::FloatLiteralExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::FloatLiteralExpr*>(b);
+				return y && x->value() == y->value();
+			}
+			if (const auto* x = dynamic_cast<const ast::NameExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::NameExpr*>(b);
+				return y && x->name() == y->name();
+			}
+			if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::UnaryExpr*>(b);
+				if (!y || x->op() != y->op())
+					return false;
+				if (x->op() != UnaryOp::Negate && x->op() != UnaryOp::BitwiseNot && x->op() != UnaryOp::LogicalNot)
+					return false;
+				return exprsEquivalent(x->operand(), y->operand());
+			}
+			if (const auto* x = dynamic_cast<const ast::BinaryExpr*>(a))
+			{
+				const auto* y = dynamic_cast<const ast::BinaryExpr*>(b);
+				if (!y || x->op() != y->op())
+					return false;
+				switch (x->op())
+				{
+					case BinaryOp::BitOr: case BinaryOp::BitXor: case BinaryOp::BitAnd:
+					case BinaryOp::Eq: case BinaryOp::Ne: case BinaryOp::Lt: case BinaryOp::Le:
+					case BinaryOp::Gt: case BinaryOp::Ge: case BinaryOp::Shl: case BinaryOp::Shr:
+					case BinaryOp::Add: case BinaryOp::Sub: case BinaryOp::Mul:
+					case BinaryOp::Div: case BinaryOp::Mod:
+						break;
+					default:
+						return false; // &&, || and the comma are control flow or sequencing
+				}
+				return exprsEquivalent(x->lhs(), y->lhs()) && exprsEquivalent(x->rhs(), y->rhs());
+			}
+			return false;
+		}
+
 		BinaryOp binaryOpForCompoundAssign(AssignOp op) noexcept
 		{
 			switch (op)
@@ -1635,8 +1704,106 @@ namespace ceresc::ir
 		_lastValue = selected ? lowerExpr(selected) : IrValue{};
 	}
 
+	bool IrBuilder::tryLowerSelectIdiom(ast::TernaryExpr& node)
+	{
+		if (!_options.minMaxIdioms)
+			return false;
+
+		auto* cond = dynamic_cast<ast::BinaryExpr*>(node.cond());
+		if (!cond)
+			return false;
+
+		// Integer min/max only. A float `a < b ? a : b` is NOT fmin/fmax: the select returns the
+		// else arm when the test is false (a NaN on either side picks the else arm), whereas fmin
+		// returns the non-NaN operand - a difference this phase does not model. `abs` has the same
+		// -0.0 caveat, so it is integer too.
+		const ast::Type* resultType = node.type();
+		if (!resultType || resultType->isFloat() || resultType->isPointer() || resultType->isArray())
+			return false;
+
+		Expr* lhs = cond->lhs();
+		Expr* rhs = cond->rhs();
+		Expr* thenE = node.thenExpr();
+		Expr* elseE = node.elseExpr();
+		if (!lhs || !rhs || !thenE || !elseE)
+			return false;
+
+		const BinaryOp op = cond->op();
+		const bool relational = op == BinaryOp::Lt || op == BinaryOp::Le || op == BinaryOp::Gt || op == BinaryOp::Ge;
+
+		// abs: `x < 0 ? -x : x` and its mirrors (zero on either side, non-strict forms included).
+		if (relational && resultType->isSigned())
+		{
+			auto isZero = [](const Expr* e)
+			{
+				const auto* literal = dynamic_cast<const ast::IntLiteralExpr*>(e);
+				return literal && literal->value() == 0 && !literal->isUnsigned();
+			};
+			auto isNegationOf = [](const Expr* neg, const Expr* value)
+			{
+				const auto* unary = dynamic_cast<const ast::UnaryExpr*>(neg);
+				return unary && unary->op() == UnaryOp::Negate && exprsEquivalent(unary->operand(), value);
+			};
+
+			// Exactly one side is the literal 0; the other is the value `x`. The two arms must be
+			// `x` and `-x`, and the arm chosen when the test holds for a negative `x` must be `-x`.
+			Expr* x = nullptr;
+			bool zeroOnLeft = false;
+			if (isZero(rhs)) { x = lhs; zeroOnLeft = false; }
+			else if (isZero(lhs)) { x = rhs; zeroOnLeft = true; }
+
+			if (x)
+			{
+				const bool thenIsX = exprsEquivalent(thenE, x);
+				const bool thenIsNegX = isNegationOf(thenE, x);
+				const bool elseIsX = exprsEquivalent(elseE, x);
+				const bool elseIsNegX = isNegationOf(elseE, x);
+				const bool armsAreXAndNegX = (thenIsX && elseIsNegX) || (thenIsNegX && elseIsX);
+				const bool trueMeansNegative = zeroOnLeft
+					? (op == BinaryOp::Gt || op == BinaryOp::Ge)   // 0 > x  /  0 >= x
+					: (op == BinaryOp::Lt || op == BinaryOp::Le);  // x < 0  /  x <= 0
+
+				if (armsAreXAndNegX && thenIsNegX == trueMeansNegative)
+				{
+					support::SourceLocation loc = node.location();
+					IrValue value = convertForStore(loc, lowerExpr(x), x->type(), resultType);
+					_lastValue = emitBuiltin(loc, ast::Builtin::Abs, value);
+					return true;
+				}
+			}
+		}
+
+		// min/max: both arms are exactly the comparison's two operands. `a == b ? a : b` also has
+		// that shape, so the operator has to be relational before either is considered.
+		if (!relational)
+			return false;
+		const bool thenIsLhs = exprsEquivalent(thenE, lhs);
+		const bool thenIsRhs = exprsEquivalent(thenE, rhs);
+		const bool elseIsLhs = exprsEquivalent(elseE, lhs);
+		const bool elseIsRhs = exprsEquivalent(elseE, rhs);
+		if (!((thenIsLhs && elseIsRhs) || (thenIsRhs && elseIsLhs)))
+			return false;
+
+		// True selects the lhs exactly when the test is `lhs < rhs` (or <=); the lhs is then the
+		// smaller of the two, i.e. min - and the other way round for max.
+		const bool lessWhenTrue = op == BinaryOp::Lt || op == BinaryOp::Le;
+		const bool isMin = thenIsLhs == lessWhenTrue;
+		ast::Builtin kind = resultType->isSigned()
+			? (isMin ? ast::Builtin::MinSigned : ast::Builtin::MaxSigned)
+			: (isMin ? ast::Builtin::MinUnsigned : ast::Builtin::MaxUnsigned);
+
+		support::SourceLocation loc = node.location();
+		IrValue a = convertForStore(loc, lowerExpr(lhs), lhs->type(), resultType);
+		IrValue b = convertForStore(loc, lowerExpr(rhs), rhs->type(), resultType);
+		_lastValue = emitBuiltin(loc, kind, a, b);
+		return true;
+	}
+
 	void IrBuilder::visit(ast::TernaryExpr& node)
 	{
+		if (tryLowerSelectIdiom(node))
+			return;
+
 		support::SourceLocation loc = node.location();
 		BasicBlock& thenBlock = _currentFunction->createBlock();
 		BasicBlock& elseBlock = _currentFunction->createBlock();

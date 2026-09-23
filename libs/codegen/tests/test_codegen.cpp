@@ -1898,3 +1898,28 @@ TEST(codegen, the_callee_saved_set_is_the_one_setjmp_saves)
 	CHECK_EQ(countOf(floats, "fpushm "), usize(1));
 	CHECK_EQ(countOf(floats, "fpopm "), usize(1));
 }
+
+// ---- select idioms (O12) ----------------------------------------------------------------------
+
+TEST(codegen, the_min_max_and_abs_idioms_emit_their_one_instruction)
+{
+	// The four-space indent keeps `min` from matching `imin` and vice versa.
+	CHECK(contains(atO2("int mn(int a, int b) { return a < b ? a : b; }"), "    imin "));
+	CHECK(contains(atO2("int mx(int a, int b) { return a > b ? a : b; }"), "    imax "));
+	CHECK(contains(atO2("unsigned mn(unsigned a, unsigned b) { return a < b ? a : b; }"), "    min "));
+	CHECK(contains(atO2("unsigned mx(unsigned a, unsigned b) { return a > b ? a : b; }"), "    max "));
+	CHECK(contains(atO2("int ab(int a) { return a < 0 ? -a : a; }"), "    abs "));
+
+	// No diamond is left behind: the select is one instruction, not a compare and two branches.
+	std::string mn = atO2("int mn(int a, int b) { return a < b ? a : b; }");
+	CHECK(!contains(mn, "ifls"));
+	CHECK(!contains(mn, "jp .L"));
+}
+
+TEST(codegen, the_min_max_idiom_flag_off_keeps_the_branch_diamond)
+{
+	std::string text = generateCasm("int mn(int a, int b) { return a < b ? a : b; }",
+		without(&support::OptimizationOptions::minMaxIdioms));
+	CHECK(!contains(text, "imin"));
+	CHECK(contains(text, "ifls"));
+}

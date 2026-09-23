@@ -988,6 +988,12 @@ que impida que las dos deriven).
 | **O3**, **O4**, **O5**, **O8**, **O9**, **O10**, **O11**, **O12** | **aplazadas, con motivo** | — |
 | **F4**, **F8**, **F13** | **aplazadas, con motivo** | — |
 
+**O12 se completó después.** Los builtins `imin`/`imax`/`umin`/`umax` ya existían; el
+reconocimiento del patrón (`a < b ? a : b` → `imin`, `x < 0 ? -x : x` → `abs`) se hizo en `IrBuilder`
+sobre el AST, que es donde el diamante todavía no existe. El match exige que cada brazo sea
+estructuralmente uno de los operandos de la comparación (y libres de efectos), así que un ternario
+con llamadas o con `==` conserva el diamante.
+
 **Por qué se aplazan las restantes.** No son cambios de una tarde, y entregarlas a medias arriesga
 miscompilaciones entre niveles (lo que la regla 3 prohíbe):
 
@@ -1084,7 +1090,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | ensamblador | **bloqueado** (CASM no expone `LDRP`/`STRP`) |
 | 6 | **O7** — llamada de cola + `BL`/`BLR` | — | **hecho** (solo `jp`; `BL`/`BLR` cambian el epílogo por sitio de llamada y se descartan) |
 | 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | **hecho** (contrato verificado: `setjmp` en CASM a mano + golden de los máscaras callee-saved) |
-| 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; falta el reconocimiento de patrones `min`/`max`/`abs` | — | parcial |
+| 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; reconocimiento de patrones `min`/`max`/`abs` **hecho** | — | **hecho** |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
 | 10 | **O11** — **hecho** el plegado de autocomparación (6 predicados); falta el lattice condicional completo | — | parcial |
 | 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |

@@ -61,6 +61,7 @@ namespace ceresc::support
 		bool commonSubexpressionElimination = true; // reuse a pure expression already computed in the same block
 		bool blockLayout = true;				// order blocks so a jump to the next one is a fall-through
 		bool tailCalls = true;					// `return f(args)` restores the frame and jumps instead of call+ret
+		bool minMaxIdioms = true;				// `a < b ? a : b` -> imin/umin, `x < 0 ? -x : x` -> abs
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
 		bool framelessLeaf = true;				// no enter/leave at all when nothing needs the frame
@@ -107,6 +108,7 @@ namespace ceresc::support
 			{ "cse",                &OptimizationOptions::commonSubexpressionElimination, "reuse a pure expression already computed in the same basic block" },
 			{ "block-layout",       &OptimizationOptions::blockLayout,              "order blocks so a jump to the next one becomes a fall-through" },
 			{ "tail-calls",         &OptimizationOptions::tailCalls,                "turn `return f(args)` into a frame-restoring jump to f" },
+			{ "min-max",            &OptimizationOptions::minMaxIdioms,             "recognize `a < b ? a : b` as min/max and `x < 0 ? -x : x` as abs" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },
