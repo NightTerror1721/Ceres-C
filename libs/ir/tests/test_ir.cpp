@@ -188,6 +188,11 @@ TEST(ir, the_64_bit_shifts_and_conversions_lower)
 
 	// A shift by 32 branches on the count, so the fully-optimized pipeline sees real control flow.
 	CHECK(functionIr("int main() { long long a = 1; return (int)(a << 40); }").find("shl") != std::string::npos);
+
+	// The three arms of a 64-bit shift: 0, 1..31 and 32..63 are all lowered (a small right shift of a
+	// negative value picks the arithmetic form; the same shift unsigned picks the logical one).
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; return (int)((a << 0) + (a << 1) + (a << 32)); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = -1; return (int)((a >> 1) + (a >> 32) + ((unsigned long long)a >> 1)); }"), "not supported in generated code"));
 }
 
 TEST(ir, the_64_bit_mul_div_mod_lower_to_the_symbol_and_the_emitted_routine)

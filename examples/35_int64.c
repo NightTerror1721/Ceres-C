@@ -118,18 +118,36 @@ int main(void)
     put64("-a % 5", &negatedRemainder);
     put64("(unsigned)a / 3", &unsignedQuotient);
 
-    // Shifts. A shift by 32 or more is the interesting side: the low word comes from the high one
-    // (or is zeroed on a left shift), and an arithmetic right shift fills with the sign.
-    long long leftSmall = a << 4;
-    long long leftLarge = a << 40;
-    long long rightLogical = (unsigned long long)a >> 36;
-    long long rightArithmetic = a >> 36;
-    long long negativeRight = (-1) >> 1;         // arithmetic: stays -1
-    put64("a << 4", &leftSmall);
-    put64("a << 40", &leftLarge);
-    put64("(unsigned)a >> 36", &rightLogical);
-    put64("a >> 36", &rightArithmetic);
-    put64("-1 >> 1", &negativeRight);
+    // Shifts. The three arms (0, 1..31, 32..63) are all hit, and the operands have their top bits
+    // set so the cross-word term is not lost: `<< 4` takes bits out of the low word's top, `>> 4`
+    // brings bits down from the high word, and a wide `>>` keeps the sign (arithmetic) or not.
+    long long shiftedLeftSmall = 0x00000001F0000002LL << 4;
+    long long shiftedLeftLarge = a << 40;
+    long long shiftedLeftZero = a << 0;
+    long long shiftedRightSmall = 0x0000000100000002LL >> 4;
+    long long shiftedRightLarge = (-1LL) >> 36;          // arithmetic: sign-fills the high word
+    long long unsignedRightLarge = (unsigned long long)(-1LL) >> 36; // logical: zero-fills
+    long long negativeRightSmall = (-1LL) >> 1;          // arithmetic: stays -1
+    put64("0x1F0000002 << 4", &shiftedLeftSmall);
+    put64("a << 40", &shiftedLeftLarge);
+    put64("a << 0", &shiftedLeftZero);
+    put64("0x100000002 >> 4", &shiftedRightSmall);
+    put64("-1 >> 36", &shiftedRightLarge);
+    put64("(unsigned)-1 >> 36", &unsignedRightLarge);
+    put64("-1 >> 1", &negativeRightSmall);
+
+    // A 64-bit value compared against a float converts the whole value first. `a` is 0x100000002
+    // (4294967298), which rounds to 4294967296.0f; `4294967297.0f` rounds to the same, so `==` holds
+    // (a float cannot tell them apart), while `a > 1.0f` is plainly true.
+    putstr("a == 4294967297.0f: ");
+    put(a == 4294967297.0f ? '1' : '0');
+    put('\n');
+    putstr("a > 1.0f: ");
+    put(a > 1.0f ? '1' : '0');
+    put('\n');
+    putstr("a < 1.0f: ");
+    put(a < 1.0f ? '1' : '0');
+    put('\n');
 
     // float <-> 64-bit. A value with a non-zero high half survives the round trip through a float
     // (f32 holds 24 significant bits, so 0x100000002 rounds to 0x100000000 - the high word is what

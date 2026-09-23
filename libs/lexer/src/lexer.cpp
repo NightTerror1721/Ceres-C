@@ -101,11 +101,12 @@ namespace ceresc::lexer
 			// silently wrapping to a different number.
 			_diagnostics.error(DiagId::IntegerLiteralTooLarge, loc, "integer literal is too large to represent");
 		}
-		else if (isLongLong && !isUnsigned && value > static_cast<u64>((std::numeric_limits<i64>::max)()))
+		else if (base == 10 && isLongLong && !isUnsigned && value > static_cast<u64>((std::numeric_limits<i64>::max)()))
 		{
 			// In range for u64 but out of range for a signed `long long`. C gives an out-of-range
-			// decimal literal no type; a warning and a 64-bit reinterpretation is the useful answer,
-			// and it is what lets `0xFFFFFFFFFFFFFFFFLL` mean -1 in a mask or an unsigned context.
+			// DECIMAL literal no type; for a hex/binary constant the suffix list includes
+			// `unsigned long long`, so `0xFFFFFFFFFFFFFFFFLL` is a legal unsigned value and is not
+			// reported. A warning and a 64-bit reinterpretation is the useful answer for decimal.
 			_diagnostics.warning(DiagId::IntegerLiteralOutOfRange, loc,
 				"integer literal {} is too large for a signed 'long long'; it is treated as its 64-bit bit pattern",
 				digits);

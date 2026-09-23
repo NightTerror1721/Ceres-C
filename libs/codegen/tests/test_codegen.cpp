@@ -2047,13 +2047,6 @@ TEST(codegen, a_64_bit_division_emits_and_calls_the_divmod_routine)
 {
 	// F3.2: `/` and `%` on a 64-bit value lower to a call to the compiler's own `__cc_div64`, whose
 	// body is emitted at the end of `@text` (file-level, so two units never collide).
-	auto count = [](const std::string& text, std::string_view needle)
-	{
-		std::size_t n = 0;
-		for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + needle.size()))
-			++n;
-		return n;
-	};
 	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
 
 	std::string text = generateCasm("int main() { long long a = 100, b = 7; return (int)(a / b); }", o0);
@@ -2065,11 +2058,13 @@ TEST(codegen, a_64_bit_division_emits_and_calls_the_divmod_routine)
 	CHECK(contains(text, "div_loop"));
 	CHECK(contains(text, "sbc  r5, r5, r11")); // the cross-word borrow
 
-	// `/` and `%` share the one routine, emitted exactly once however many sites ask.
+	// `/` and `%` share the one routine, emitted exactly once however many sites ask. The count is
+	// anchored on the routine's own label, not on `pushm 0x0F00` (which an ordinary call-making
+	// function emits for its own body too).
 	std::string both = generateCasm("int main() { long long a = 100, b = 7; return (int)(a / b) + (int)(a % b); }", o0);
-	CHECK_EQ(count(both, "call __cc_div64"), std::size_t(2));
-	CHECK_EQ(count(both, "__cc_div64:"), std::size_t(1));
-	CHECK_EQ(count(both, "pushm 0x0F00"), std::size_t(1));
+	CHECK_EQ(countOf(both, "call __cc_div64"), usize(2));
+	CHECK_EQ(countOf(both, "__cc_div64:"), usize(1));
+	CHECK_EQ(countOf(both, "div_loop:"), usize(1)); // the label, defined once
 
 	// A program that never divides never carries it.
 	CHECK(!contains(generateCasm("int main() { long long a = 3, b = 4; return (int)(a * b); }", o0), "__cc_div64"));

@@ -691,9 +691,9 @@ namespace ceresc::ir
 
 		if (fromType && fromType->isWideInteger())
 		{
-			// A wide source is already the address of the eight bytes: read and write them as two
-			// words. The source's own volatility rides on the loads (a `volatile long long` read has
-			// to stay observable), the destination's on the stores.
+			// A wide source is already the address of the eight bytes. Its volatility governs the
+			// LOADS (a `volatile long long` read has to stay observable); callers that have already
+			// converted the source into a fresh non-volatile temp pass a plain wide type here.
 			bool sourceVolatile = fromType->isVolatile();
 			IrValue low = loadWideWord(loc, value, false, sourceVolatile);
 			IrValue high = loadWideWord(loc, value, true, sourceVolatile);
@@ -1064,8 +1064,14 @@ namespace ceresc::ir
 			}
 			if (type->isWideInteger())
 			{
-				IrValue wide = convertForStore(loc, lowerExpr(init), init->type(), type);
-				emitWideStore(loc, offsetAddress(loc, baseAddr, offset), wide, type, type->isVolatile());
+				// A wide source is copied as its own address (its volatility rides on the loads); a
+				// scalar or float source is converted first. Keeping the two apart is what stops the
+				// DESTINATION's qualifier from governing the source's reads.
+				if (init->type() && init->type()->isWideInteger())
+					emitWideStore(loc, offsetAddress(loc, baseAddr, offset), lowerExpr(init), init->type(), type->isVolatile());
+				else
+					emitWideStore(loc, offsetAddress(loc, baseAddr, offset),
+						convertForStore(loc, lowerExpr(init), init->type(), type), type, type->isVolatile());
 				return;
 			}
 			IrValue value = convertForStore(loc, lowerExpr(init), init->type(), type);
@@ -1424,6 +1430,11 @@ namespace ceresc::ir
 			// type is undefined in C, so it takes the magnitude path.
 			if (fromType && fromType->isFloat())
 			{
+				// A negative value into an UNSIGNED 64-bit type is UB, so that case needs no branch
+				// and no negative arm at all - the magnitude is the whole answer.
+				if (!toType->isSigned())
+					return lowerFloatMagnitudeToWide(loc, value);
+
 				// A negative value needs a branch on `value < 0`. A float CondJump operand is routed
 				// through the INTEGER register pool by codegen (emitConditionalBranch), so the test
 				// is a materialized FCMP instead - the only float comparison form the back end reads
@@ -1432,15 +1443,8 @@ namespace ceresc::ir
 				BasicBlock& positiveBlock = _currentFunction->createBlock();
 				BasicBlock& mergeBlock = _currentFunction->createBlock();
 				IrValue resultAddr = emitFrameAddr(loc, newStructTempSlot(8));
-				if (toType->isSigned())
-				{
-					IrValue isNegative = emitCmp(loc, IrCmpPredicate::Lt, value, emitConstFloat(loc, 0.0f), true, true);
-					emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, false, isNegative, emitConstInt(loc, 0), &negativeBlock, &positiveBlock });
-				}
-				else
-				{
-					emitVoid(loc, IrJumpPayload{ &positiveBlock });
-				}
+				IrValue isNegative = emitCmp(loc, IrCmpPredicate::Lt, value, emitConstFloat(loc, 0.0f), true, true);
+				emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, false, isNegative, emitConstInt(loc, 0), &negativeBlock, &positiveBlock });
 
 				_currentBlock = &negativeBlock;
 				{
@@ -1474,24 +1478,31 @@ namespace ceresc::ir
 				if (!fromType->isSigned())
 					return lowerWideMagnitudeToFloat(loc, value, fromType->isVolatile());
 
+				// Read the pair ONCE into a fresh temp: a `volatile long long` cast to float implies
+				// a single pair of reads, so both the sign test and the conversion work on the
+				// snapshot (a non-volatile source gets the same snapshot, harmlessly).
+				IrValue snapshot = makeWideValue(loc,
+					loadWideWord(loc, value, false, fromType->isVolatile()),
+					loadWideWord(loc, value, true, fromType->isVolatile()));
+
 				BasicBlock& negativeBlock = _currentFunction->createBlock();
 				BasicBlock& positiveBlock = _currentFunction->createBlock();
 				BasicBlock& mergeBlock = _currentFunction->createBlock();
 				IrValue result = _currentFunction->newTemp();
-				IrValue high = loadWideWord(loc, value, true, fromType->isVolatile());
+				IrValue high = loadWideWord(loc, snapshot, true, false);
 				IrValue zeroWord = emitConstInt(loc, 0);
 				emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Lt, false, false, high, zeroWord, &negativeBlock, &positiveBlock });
 
 				_currentBlock = &negativeBlock;
 				{
-					IrValue negated = lowerWideNegate(loc, value, fromType->isVolatile());
+					IrValue negated = lowerWideNegate(loc, snapshot, false);
 					IrValue magnitude = lowerWideMagnitudeToFloat(loc, negated, false);
 					emitCopyInto(loc, result, emitUnOp(loc, IrUnOp::Neg, magnitude, true), true);
 				}
 				emitVoid(loc, IrJumpPayload{ &mergeBlock });
 
 				_currentBlock = &positiveBlock;
-				emitCopyInto(loc, result, lowerWideMagnitudeToFloat(loc, value, fromType->isVolatile()), true);
+				emitCopyInto(loc, result, lowerWideMagnitudeToFloat(loc, snapshot, false), true);
 				emitVoid(loc, IrJumpPayload{ &mergeBlock });
 
 				_currentBlock = &mergeBlock;
@@ -2043,11 +2054,24 @@ namespace ceresc::ir
 			// and makes `a = b = c` copy from the inner destination.
 			if (node.op() == AssignOp::Assign)
 			{
-				// convertForStore turns a scalar or float source into the two stored words too.
-				IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), targetType);
-				IrValue destAddr = lowerAddress(node.target());
-				emitWideStore(loc, destAddr, value, targetType, targetType->isVolatile());
-				_lastValue = destAddr;
+				// A wide source is copied as its own address (its volatility rides on the loads); a
+				// scalar or float source is converted first - so the DESTINATION's qualifier never
+				// governs the source's reads.
+				const Type* valueType = node.value()->type();
+				if (valueType && valueType->isWideInteger())
+				{
+					IrValue value = lowerExpr(node.value());
+					IrValue destAddr = lowerAddress(node.target());
+					emitWideStore(loc, destAddr, value, valueType, targetType->isVolatile());
+					_lastValue = destAddr;
+				}
+				else
+				{
+					IrValue value = convertForStore(loc, lowerExpr(node.value()), valueType, targetType);
+					IrValue destAddr = lowerAddress(node.target());
+					emitWideStore(loc, destAddr, value, targetType, targetType->isVolatile());
+					_lastValue = destAddr;
+				}
 				return;
 			}
 
@@ -2056,7 +2080,17 @@ namespace ceresc::ir
 			BinaryOp binaryOp = binaryOpForCompoundAssign(node.op());
 			const Type* promotedType = commonArithmeticType(targetType, node.value()->type());
 			IrValue value = lowerArithmetic(loc, binaryOp, promotedType, targetType, node.value()->type(), addr, rhs);
-			emitWideStore(loc, addr, value, promotedType, targetType->isVolatile());
+			// A float promoted type (`long long x; x += 1.5f;`) converts back down to the wide
+			// target, exactly as `x = x + 1.5f;` does - otherwise the store would refuse it.
+			if (promotedType && promotedType->isFloat())
+			{
+				IrValue converted = convertForStore(loc, value, promotedType, targetType);
+				emitWideStore(loc, addr, converted, targetType, targetType->isVolatile());
+			}
+			else
+			{
+				emitWideStore(loc, addr, value, promotedType, targetType->isVolatile());
+			}
 			_lastValue = value;
 			return;
 		}
@@ -2450,16 +2484,24 @@ namespace ceresc::ir
 		if (node.type() && node.type()->isWideInteger())
 		{
 			IrValue resultAddr = wideResultAddr;
+			// One arm: a wide expression is its own address (copied, its volatility on the loads); a
+			// scalar or float one is converted to the wide result type first.
+			auto emitWideArm = [&](support::SourceLocation armLoc, IrValue dest, ast::Expr* arm, const Type* resultType)
+			{
+				const Type* armType = arm->type();
+				if (armType && armType->isWideInteger())
+					emitWideStore(armLoc, dest, lowerExpr(arm), armType, false);
+				else
+					emitWideStore(armLoc, dest, convertForStore(armLoc, lowerExpr(arm), armType, resultType), resultType, false);
+			};
 
 			_currentBlock = &thenBlock;
-			emitWideStore(loc, resultAddr, convertForStore(loc, lowerExpr(node.thenExpr()), node.thenExpr()->type(), node.type()),
-				node.type(), false);
+			emitWideArm(loc, resultAddr, node.thenExpr(), node.type());
 			if (!_currentBlock->isTerminated())
 				emitVoid(loc, IrJumpPayload{ &mergeBlock });
 
 			_currentBlock = &elseBlock;
-			emitWideStore(loc, resultAddr, convertForStore(loc, lowerExpr(node.elseExpr()), node.elseExpr()->type(), node.type()),
-				node.type(), false);
+			emitWideArm(loc, resultAddr, node.elseExpr(), node.type());
 			if (!_currentBlock->isTerminated())
 				emitVoid(loc, IrJumpPayload{ &mergeBlock });
 

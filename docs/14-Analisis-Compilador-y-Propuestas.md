@@ -1312,6 +1312,32 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   (F3.5); un discriminante de `switch` ancho (F9) y un operando ancho de un builtin de una instrucción
   siguen rechazados con E5002.
 
+- **Revisión de `ocr` sobre F3.3** (`2d5ac5a..da1dbfb`): 13 ficheros, 13 hallazgos, **dos altos y tres
+  medios, todos reales, corregidos**:
+  (1) *alto* — al pasar el tipo del **destino** como `fromType` de `emitWideStore` (inicializador,
+  asignación y las dos ramas del ternario, cambios de F3.3), la volatilidad que gobierna las cargas
+  pasó a ser la del destino: un `volatile long long s; long long d = s;` leía `s` con cargas no
+  volátiles, que el optimizador puede eliminar o reenviar. Ahora una fuente ancha se copia como su
+  propia dirección (su volatilidad en las cargas) y solo una fuente escalar o `float` se convierte
+  primero y pasa el tipo del destino.
+  (2) *alto* — el mismo problema en la asignación y en el ternario; corregido con el mismo reparto.
+  (3) *medio* — `long long x = 1; x += 1.5f;` se rechazaba con E5002 (el tipo promovido era `float`)
+  mientras `x = x + 1.5f;` ya bajaba; el camino de asignación compuesta ahora convierte el resultado
+  promovido de vuelta al tipo ancho.
+  (4) *medio* — `(unsigned long long)f` con `f` negativo generaba una rama inalcanzable (la negativa)
+  y un slot de frame de más; un valor negativo a un destino sin signo es UB, así que ahora devuelve la
+  magnitud directamente sin crear ramas.
+  (5) *medio* — un literal `ll`/`LL` fuera de rango en base 16/2 (`0xFFFFFFFFFFFFFFFFLL`) avisaba con
+  W0015, pero C lo admite como `unsigned long long`; el aviso queda restringido a base 10.
+  Uno *bajo* de corrección: una fuente ancha `volatile` convertida a `float` se leía varias veces
+  (prueba de signo + conversión); ahora se lee una sola vez a un temporal. Los bajos de test: el
+  ejemplo `35_int64.c` ejercía los desplazamientos con operandos cuyo término de cruce se perdía
+  (`a << 4` con `a` de palabra baja 2) y `(-1) >> 1` era un shift de `int`, no de 64 bits; ahora usa
+  `0x00000001F0000002LL << 4`, `(-1LL) >> 36`, `(unsigned)(-1LL) >> 36` y un `>>` pequeño sobre
+  `0x0000000100000002 >> 4`, con los tres brazos (0, 1..31, 32..63) cubiertos; el test de codegen
+  reutiliza `countOf` en vez de duplicarlo y cuenta `__cc_div64:`/`div_loop:` en vez de un `pushm` que
+  también emite una función con llamadas; y el test de IR cubre los bordes 0/1/32 de los shifts.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;
