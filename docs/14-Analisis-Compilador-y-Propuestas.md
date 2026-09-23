@@ -1109,6 +1109,16 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   commit de correcciones.
 - **Batch 2** (plegado de autocomparación, builtins `imin`/`imax`/`umin`/`umax`): una rama muerta
   retirada y dos huecos de test cubiertos (la tabla de verdad completa y el caso `float`).
+- **Batch 3** (`O7` llamada de cola, `F4` contrato de ABI, `O12` patrones `min`/`max`/`abs`): un
+  hallazgo alto real, corregido — el plegado `a < b ? a : b` → `imin` descartaba una lectura
+  `volatile` (el ternario lee el operando elegido dos veces, una en la condición y otra en el brazo,
+  y el builtin una sola), así que `exprsEquivalent` ahora rechaza un `NameExpr` volátil. Corregidos
+  además: el flag `tailCalls` se movió a la sección de codegen de `optimization.h` (que es quien lo
+  lee), `tryLowerSelectIdiom` toma su nodo por `const&`, y se añadieron tests de los guards del tail
+  call (llamada indirecta y ensamble en línea), del tail call flotante, del ternario `float`/puntero,
+  de los espejos no estrictos de `abs` y de los operandos `volatile`. Descartado por nimio el
+  hallazgo de que `findTailCall` repite la validación de argumentos del camino de emisión (solo
+  divergen ante IR malformado, que `IrBuilder` no produce).
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (análisis de bucles/dominancia para O3/O15/O11, reasignación de registros

@@ -98,6 +98,13 @@ namespace ceresc::ir
 			if (const auto* x = dynamic_cast<const ast::NameExpr*>(a))
 			{
 				const auto* y = dynamic_cast<const ast::NameExpr*>(b);
+				// A volatile read is observable, and the ternary diamond reads the selected arm a
+				// SECOND time (once in the condition, once in the chosen arm) while the one-instruction
+				// builtin reads each operand once - so folding here would drop an access that
+				// ir_optimizer.h promises is never forwarded or dropped. A NameExpr is the only lvalue
+				// this comparator matches, so refusing it here covers every idiom.
+				if ((x->type() && x->type()->isVolatile()) || (y && y->type() && y->type()->isVolatile()))
+					return false;
 				return y && x->name() == y->name();
 			}
 			if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(a))
@@ -1704,7 +1711,7 @@ namespace ceresc::ir
 		_lastValue = selected ? lowerExpr(selected) : IrValue{};
 	}
 
-	bool IrBuilder::tryLowerSelectIdiom(ast::TernaryExpr& node)
+	bool IrBuilder::tryLowerSelectIdiom(const ast::TernaryExpr& node)
 	{
 		if (!_options.minMaxIdioms)
 			return false;

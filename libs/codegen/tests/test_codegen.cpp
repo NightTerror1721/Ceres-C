@@ -1868,6 +1868,33 @@ TEST(codegen, a_tail_call_restores_the_callee_saved_registers_before_the_jump)
 	CHECK(popm != std::string::npos && jump != std::string::npos && popm < jump);
 }
 
+TEST(codegen, a_float_returning_tail_call_still_jumps)
+{
+	std::string text = atO2("float g(float x); float f(float x) { return g(x); }");
+	CHECK(contains(text, "jp g"));
+	CHECK(!contains(text, "call g"));
+	CHECK(contains(text, "mov f0, f")); // the argument is placed in the float argument register
+}
+
+TEST(codegen, an_indirect_call_is_never_a_tail_call)
+{
+	// The target is a register, not a name: `jp` has nothing to name, so this must stay a call.
+	std::string text = atO2("int f(int (*fn)(int), int x) { return fn(x); }");
+	CHECK(contains(text, "call r"));
+	CHECK(contains(text, "ret"));
+	CHECK(!contains(text, "jp "));
+}
+
+TEST(codegen, an_inline_assembly_call_is_never_a_tail_call)
+{
+	// A `void` function whose body is only `__asm__` is a Call followed by a valueless Return, the
+	// exact shape a tail call matches - but the text is opaque, so it is left alone.
+	std::string text = atO2("void f(void) { __asm__(\"nop\"); }");
+	CHECK(contains(text, "nop"));
+	CHECK(contains(text, "ret"));
+	CHECK(!contains(text, "jp "));
+}
+
 // ---- the callee-saved ABI contract (F4) -------------------------------------------------------
 
 TEST(codegen, the_callee_saved_set_is_the_one_setjmp_saves)

@@ -137,8 +137,38 @@ TEST(ir, the_abs_ternary_lowers_to_one_builtin_and_its_mirror_does_not)
 	CHECK(functionIr("int ab(int a) { return a < 0 ? -a : a; }", "ab", options).find("__builtin_abs") != std::string::npos);
 	CHECK(functionIr("int ab(int a) { return 0 > a ? -a : a; }", "ab", options).find("__builtin_abs") != std::string::npos);
 	CHECK(functionIr("int ab(int a) { return a > 0 ? a : -a; }", "ab", options).find("__builtin_abs") != std::string::npos);
+	// The non-strict mirrors of the same shapes.
+	CHECK(functionIr("int ab(int a) { return a <= 0 ? -a : a; }", "ab", options).find("__builtin_abs") != std::string::npos);
+	CHECK(functionIr("int ab(int a) { return a >= 0 ? a : -a; }", "ab", options).find("__builtin_abs") != std::string::npos);
+	CHECK(functionIr("int ab(int a) { return 0 <= a ? a : -a; }", "ab", options).find("__builtin_abs") != std::string::npos);
 	// `0 > a ? a : -a` selects the negative value when a is negative - that is -abs, not abs.
 	CHECK(functionIr("int na(int a) { return 0 > a ? a : -a; }", "na", options).find("__builtin_abs") == std::string::npos);
+}
+
+TEST(ir, a_float_or_pointer_min_max_keeps_the_diamond)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.minMaxIdioms = true;
+
+	// A float select is not fmin/fmax (NaN and -0.0 make them differ), and a pointer select has no
+	// integer min/max to map to.
+	CHECK(functionIr("float f(float a, float b) { return a < b ? a : b; }", "f", options).find("__builtin_") == std::string::npos);
+	CHECK(functionIr("int* f(int* a, int* b) { return a < b ? a : b; }", "f", options).find("__builtin_") == std::string::npos);
+}
+
+TEST(ir, a_volatile_operand_keeps_the_diamond_so_no_observable_read_is_dropped)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.minMaxIdioms = true;
+
+	// The ternary reads the selected operand a second time (one load per arm), so folding to a
+	// single builtin would drop volatile reads. The fold must decline.
+	std::string text = functionIr("int f(volatile int a, volatile int b) { return a < b ? a : b; }", "f", options);
+	CHECK(text.find("__builtin_") == std::string::npos);
+	usize loads = 0;
+	for (usize at = text.find("load.word.v"); at != std::string::npos; at = text.find("load.word.v", at + 1))
+		++loads;
+	CHECK(loads > 2); // the diamond's two condition loads plus one per arm
 }
 
 TEST(ir, a_non_idiom_ternary_and_side_effecting_operands_keep_the_diamond)

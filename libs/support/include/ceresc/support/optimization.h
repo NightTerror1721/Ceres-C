@@ -60,7 +60,6 @@ namespace ceresc::support
 		bool strengthReduction = true;			// *2^k -> shl, /2^k -> shr/sar, %2^k -> and/bias
 		bool commonSubexpressionElimination = true; // reuse a pure expression already computed in the same block
 		bool blockLayout = true;				// order blocks so a jump to the next one is a fall-through
-		bool tailCalls = true;					// `return f(args)` restores the frame and jumps instead of call+ret
 		bool minMaxIdioms = true;				// `a < b ? a : b` -> imin/umin, `x < 0 ? -x : x` -> abs
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
@@ -70,6 +69,7 @@ namespace ceresc::support
 		bool immediateOperands = true;			// fold a constant operand into addi/ifXX/... directly
 		bool fallthroughBranches = true;		// drop a jump whose target is the next block emitted
 		bool addressFolding = true;				// fold an address computation into the load/store that reads it
+		bool tailCalls = true;					// `return f(args)` restores the frame and jumps instead of call+ret
 
 		// Defined below optimizationFlags(), which it walks to build O0 - see its own note.
 		static OptimizationOptions forLevel(OptimizationLevel level) noexcept;

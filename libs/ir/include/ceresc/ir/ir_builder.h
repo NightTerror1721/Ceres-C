@@ -259,7 +259,7 @@ namespace ceresc::ir
 		// operator, either arm order) becomes imin/umin or imax/umax by the result's own signedness,
 		// and `x < 0 ? -x : x` becomes abs. Only matched when each arm is structurally the
 		// comparison's own operand, so nothing is evaluated that was not already.
-		bool tryLowerSelectIdiom(ast::TernaryExpr& node);
+		bool tryLowerSelectIdiom(const ast::TernaryExpr& node);
 		// Shared by BinaryExpr's own arithmetic operators and AssignExpr's compound-assignment
 		// operators (`+=` and friends desugar to this same lowering) - handles pointer-arithmetic
 		// scaling and the Shr/Sar and isUnsigned choice.
