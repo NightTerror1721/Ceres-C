@@ -1093,7 +1093,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | **hecho** (contrato verificado: `setjmp` en CASM a mano + golden de los máscaras callee-saved) |
 | 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; reconocimiento de patrones `min`/`max`/`abs` **hecho** | — | **hecho** |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | **hecho** |
-| 10 | **O11** — **hecho** el plegado de autocomparación (6 predicados); falta el lattice condicional completo | — | parcial |
+| 10 | **O11** — plegado de autocomparación **y** SCCP (lattice + worklist, aristas tomadas, `switch` constante resuelto) | — | **hecho** |
 | 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — optimizaciones de bucle (LICM, IV-SR) | detección de bucles | pendiente |
