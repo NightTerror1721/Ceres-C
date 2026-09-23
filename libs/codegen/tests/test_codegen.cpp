@@ -1988,7 +1988,10 @@ TEST(codegen, a_recognized_byte_fill_loop_emits_and_calls_the_word_routine)
 	CHECK(contains(text, "call __cc_memset"));     // the loop is a call...
 	CHECK(contains(text, "__cc_memset:"));         // ...to a routine the unit carries itself
 	CHECK(!contains(text, "global __cc_memset:")); // file-level, so two units never collide
-	CHECK(contains(text, "str  [r0], r5"));        // and that routine fills words
+	CHECK(text.find("@text") < text.find("__cc_memset:")); // emitted as code, not data
+	CHECK(contains(text, "str  [r0], r5"));        // the routine fills words...
+	CHECK(contains(text, "ifle r2, 0, .ccm_done")); // ...but a non-positive count fills nothing
+	CHECK(contains(text, "strb [r0], r1"));        // and the alignment/tail path stores bytes
 
 	// With the idiom off the loop stays a loop: a byte store per element, no routine.
 	std::string plain = atO2Without(source, &support::OptimizationOptions::loopIdioms);

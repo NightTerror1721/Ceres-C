@@ -1159,6 +1159,24 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   tests del paso negativo, del caso escala 1 (`char[]`, sin multiplicación) y del apagado en `-Og` /
   encendido en `-Os`, los tres añadidos.
 
+- **Batch 7** (`O15` parte 1, idioma de relleno): 8 ficheros, 8 hallazgos, todos corregidos. **Tres
+  de corrección reales**, los dos primeros miscompilaciones silenciosas: (1) alto — el pase no
+  comprobaba que el contador fuera *no escapado* (a diferencia de IV-SR); si `&i` se guardaba en un
+  puntero `q` y `*q` se leía después del bucle, la reescritura dejaba `i = 0` en vez de `n`. Ahora
+  exige `nonEscaping[counterLocal]`. (2) medio — si el `store` de relleno y el del contador comparten
+  el bloque del *latch* (`while (i < n) { i = i + 1; p[i] = c; }`), el relleno lee el contador ya
+  incrementado y cubre `[1, n+1)`, no `[0, n)`; ahora se exige que el `store` de relleno preceda al
+  del contador. (3) bajo — el preheader se elegía por "un solo sucesor", que un `CondJump` degenerado
+  con ambos brazos iguales también cumple; leer su payload como `IrJumpPayload` con `as<>()` lanzaba
+  dentro de una función `noexcept`. Ahora el terminador se reconstruye siempre como un `Jump` nuevo.
+  Uno de rendimiento: la ruta no alineada de `__cc_memset` se quedaba en el bucle de bytes para todo
+  el rango (igual que el `memset` de la STDLIB); ahora alinea con bytes y cae al bucle de palabras,
+  que es lo que el comentario decía. Los cuatro restantes bajos: el orden del listado de pases en
+  `ir_optimizer.h` no coincidía con el real; faltaba anotar que el bucle muerto solo lo retira
+  `unreachable-block-elimination`; y tests que faltaban (contador no escapado, contador leído tras el
+  bucle, incremento antes del `store`, relleno volátil, cota constante, y las rutas del guardia y del
+  *tail* del propio `__cc_memset`).
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (reconocimiento de idiomas de bucle para O15, que ya cuenta con el
 análisis de bucles; reasignación de registros para O4/O5; ABI ancha para F3; formato de depuración

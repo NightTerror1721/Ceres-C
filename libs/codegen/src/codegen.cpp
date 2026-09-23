@@ -2201,7 +2201,14 @@ namespace ceresc::codegen
 		_emitter.instr("la   r5, 0x01010101");
 		_emitter.instr("mul  r5, r1, r5");         // replicate it into all four bytes
 		_emitter.instr("and  r6, r0, 3");
-		_emitter.instr("ifne r6, 0, .ccm_tail");   // an unaligned destination fills bytes to the edge
+		_emitter.instr("ifeq r6, 0, .ccm_words");  // already aligned: straight to words
+		_emitter.localLabel("ccm_align");
+		_emitter.instr("ifeq r2, 0, .ccm_done");
+		_emitter.instr("strb [r0], r1");
+		_emitter.instr("add  r0, r0, 1");
+		_emitter.instr("sub  r2, r2, 1");
+		_emitter.instr("and  r6, r0, 3");
+		_emitter.instr("ifne r6, 0, .ccm_align"); // bytes to the edge, then fall into the word loop
 		_emitter.localLabel("ccm_words");
 		_emitter.instr("ifbl r2, 4, .ccm_tail");
 		_emitter.instr("str  [r0], r5");

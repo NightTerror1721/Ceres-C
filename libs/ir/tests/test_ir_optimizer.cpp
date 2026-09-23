@@ -665,6 +665,53 @@ TEST(ir_optimizer, loop_idioms_leave_an_unsigned_count_alone)
 	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
+TEST(ir_optimizer, loop_idioms_leave_a_counter_whose_address_escapes_alone)
+{
+	// `&i` escapes into `q` and `*q` reads i == n after the loop; the fill would leave it 0. The
+	// direct-read check cannot see this, so the counter must be non-escaping.
+	std::string_view source =
+		"int g(int); void f(char* p, int n, int c) { int i; int* q = &i; "
+		"for (i = 0; i < n; i = i + 1) { p[i] = c; } g(*q); }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_loop_whose_counter_is_read_after_it_alone)
+{
+	std::string_view source =
+		"int g(int); void f(char* p, int n, int c) { int i; for (i = 0; i < n; i = i + 1) { p[i] = c; } g(i); }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_loop_that_increments_before_storing_alone)
+{
+	// `while (i < n) { i = i + 1; p[i] = c; }` fills [1, n+1), not [0, n): the store reads the
+	// already-incremented counter.
+	std::string_view source =
+		"void f(char* p, int n, int c) { int i = 0; while (i < n) { i = i + 1; p[i] = c; } }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_volatile_fill_alone)
+{
+	std::string_view source = "void f(volatile char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }";
+	support::OptimizationOptions without = fillIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_accept_a_constant_count)
+{
+	// A literal bound is copied in like any other loop-invariant value.
+	std::string_view source = "void f(char* p, int c) { for (int i = 0; i < 8; i = i + 1) { p[i] = c; } }";
+	CHECK(contains(optimizedIr(source, fillIdiomsClean(), "f"), "call __cc_memset"));
+}
+
 // ---- block layout --------------------------------------------------------------------------------
 
 TEST(ir_optimizer, block_layout_emits_a_branch_false_arm_before_its_true_arm)

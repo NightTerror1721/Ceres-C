@@ -3258,6 +3258,7 @@ namespace ceresc::ir
 				return true;
 			};
 
+			std::vector<bool> nonEscaping = collectNonEscapingLocals(function);
 			std::vector<u32> frameAddrLocal = mapFrameAddrTemps(function);
 			auto isLoadOfLocal = [&](IrValue value, u32 wanted) -> bool
 			{
@@ -3334,9 +3335,14 @@ namespace ceresc::ir
 				if (!singleExit)
 					continue;
 
-				// The counter: a non-escaping word local read directly.
+				// The counter: a non-escaping word local read directly. Non-escaping matters: the
+				// counterReadOutside check below only sees a read through the counter's own
+				// FrameAddr, so a read through an escaped pointer to it (`int* q = &i; ... g(*q)`)
+				// would slip past and observe a stale value.
 				u32 counterLocal = ~0u;
 				if (!localReadBy(counterValue, defCount, definer, frameAddrLocal, counterLocal))
+					continue;
+				if (counterLocal >= nonEscaping.size() || !nonEscaping[counterLocal])
 					continue;
 
 				// Exactly two stores to it in the whole function: the zero before the loop and the
@@ -3475,6 +3481,24 @@ namespace ceresc::ir
 				// be wrong. Dominating the latch is exactly "every iteration reaches it".
 				if (fillStoreBlock >= blockCount || !dom[latch].test(fillStoreBlock))
 					continue;
+				// If the fill store shares the latch with the counter's step, it must run first: a
+				// store reading the already-incremented counter (`while (i < n) { i = i + 1; p[i] =
+				// c; }`) fills [1, n+1), not [0, n).
+				if (fillStoreBlock == latch)
+				{
+					std::span<IrInstr* const> lat = blocks[latch]->instrs();
+					usize fillAt = ~usize(0);
+					usize stepAt = ~usize(0);
+					for (usize k = 0; k < lat.size(); ++k)
+					{
+						if (lat[k] == fillStore)
+							fillAt = k;
+						if (lat[k] == stepStore)
+							stepAt = k;
+					}
+					if (fillAt == ~usize(0) || stepAt == ~usize(0) || fillAt > stepAt)
+						continue;
+				}
 
 				// It is a byte store through `base + counter`.
 				const IrStorePayload& fill = fillStore->as<IrStorePayload>();
@@ -3616,20 +3640,18 @@ namespace ceresc::ir
 				rebuilt.reserve(pre.size() + injected.size() + 1);
 				rebuilt.insert(rebuilt.end(), pre.begin(), pre.begin() + static_cast<std::ptrdiff_t>(insertAt));
 				rebuilt.insert(rebuilt.end(), injected.begin(), injected.end());
+				// The old terminator is always replaced, never read: a preheader is chosen on having
+				// a single successor, and a degenerate CondJump with both arms equal has one too, so
+				// it is not necessarily a Jump.
 				if (hasTerminator)
-				{
-					IrInstr* terminator = pre.back();
-					IrJumpPayload jump = terminator->as<IrJumpPayload>();
-					jump.target = branch.falseTarget;
-					rebuilt.push_back(arena.create<IrInstr>(terminator->location(), jump));
-				}
+					rebuilt.push_back(arena.create<IrInstr>(pre.back()->location(), IrJumpPayload{ branch.falseTarget }));
 				else
-				{
 					rebuilt.push_back(arena.create<IrInstr>(loc, IrJumpPayload{ branch.falseTarget }));
-				}
 				blocks[loop.preheader]->replaceInstrs(std::move(rebuilt));
 
 				// The loop is unreachable now; drop it here rather than leave it for the next round.
+				// Respecting the flag is deliberate: with unreachable-block elimination off the user
+				// asked to keep unreachable code, and this dead loop is exactly that.
 				if (options.unreachableBlockElimination)
 					removeUnreachableBlocks(function, options);
 				return true;
