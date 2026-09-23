@@ -155,6 +155,8 @@ TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return a < b; }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; a += 2; return (int)a; }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return (int)(a - b + (a & b) + (a | b) + (a ^ b)); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; bool b = a; return b; }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; long long b = a++; return (int)b; }"), "not supported in generated code"));
 
 	// A wide local's initializer writes both halves, and the high word is the sign extension.
 	std::string text = functionIr("int main() { long long x = 5; return (int)x; }");
@@ -171,6 +173,13 @@ TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; return (int)(a << 1); }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; double d = (double)a; return (int)d; }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = (long long)1.5; return (int)a; }"), "not supported in generated code"));
+	// A float source reaching a wide store through an initializer or assignment (not a cast) is the
+	// same conversion and must be refused at the store, its one chokepoint.
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1.5; return (int)a; }"), "not supported in generated code"));
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; a = 2.5f; return (int)a; }"), "not supported in generated code"));
+	// A wide operand in a float expression means converting the whole value to float (F3.3), not
+	// truncating it to the low word.
+	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; float f = a + 1.5f; return (int)f; }"), "not supported in generated code"));
 
 	// The 64-bit calling convention is F3.4.
 	CHECK(containsMessage(loweringDiagnostics("long long f() { return 0; } int main() { return 0; }"), "not supported in generated code"));
@@ -201,7 +210,8 @@ TEST(ir, a_signed_min_or_max_ternary_lowers_to_one_builtin_when_enabled)
 	CHECK(functionIr("int mn(int a, int b) { return a >= b ? b : a; }", "mn", options).find("__builtin_imin") != std::string::npos);
 }
 
-TEST(ir, an_unsigned_min_or_max_ternary_picks_the_unsigned_builtin){
+TEST(ir, an_unsigned_min_or_max_ternary_picks_the_unsigned_builtin)
+{
 	support::OptimizationOptions options = support::OptimizationOptions::none();
 	options.minMaxIdioms = true;
 

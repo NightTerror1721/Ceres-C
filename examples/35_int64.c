@@ -40,7 +40,9 @@ void putint(int value)
 }
 
 // One 64-bit value, printed as its two 32-bit words. The parameter is a pointer because the 64-bit
-// calling convention is a later phase; the value itself is only ever a local.
+// calling convention is a later phase; the value itself is only ever a local. Reading the inactive
+// union member is the little-endian assumption the whole lowering makes (low word first), so this
+// only prints `halves[0]` as the low word because Ceres stores the low word at offset 0.
 void put64(char* label, long long* value)
 {
     union
@@ -58,6 +60,10 @@ void put64(char* label, long long* value)
     put('\n');
 }
 
+// A file-scope 64-bit object: codegen writes it as `u32[2] = [low, high]`, and reading it back goes
+// through the same two-word load as a local.
+long long globalWide = 0x0000000A0000000BLL;
+
 int main(void)
 {
     // hi = 1, lo = 2: a value that does not fit 32 bits.
@@ -72,13 +78,16 @@ int main(void)
     long long negated = -a;
     long long anded = a & b;
     long long ored = a | b;
+    long long xored = a ^ b;
     long long inverted = ~a;
     put64("a + b", &sum);
     put64("a - b", &difference);
     put64("-a", &negated);
     put64("a & b", &anded);
     put64("a | b", &ored);
+    put64("a ^ b", &xored);
     put64("~a", &inverted);
+    put64("globalWide", &globalWide);
 
     // The carry and borrow that cross the word boundary: a low word of zero is exactly where a
     // negation has to carry into the high word, and `b - a` borrows out of it.
@@ -106,7 +115,7 @@ int main(void)
     // The high half survives a struct field and an array element too.
     struct Pair
     {
-        int tag;
+        int tag; // only here so `value` lands at offset 8 - the wide field's real address
         long long value;
     };
     struct Pair pair;
@@ -118,6 +127,16 @@ int main(void)
     table[1] = b;
     table[2] = table[0] + table[1];
     put64("table[2]", &table[2]);
+
+    // A post-increment's value is the OLD one, and a `bool` sees the whole 64-bit value (the low
+    // word alone would call 0x100000000 false).
+    long long counter = a;
+    long long beforeIncrement = counter++;
+    put64("counter after ++", &counter);        // a + 1 -> 3,1
+    put64("counter++ value", &beforeIncrement); // a -> 2,1
+    putstr("(bool)0x100000000: ");
+    put((bool)0x100000000LL ? '1' : '0');
+    put('\n');
 
     return 0;
 }

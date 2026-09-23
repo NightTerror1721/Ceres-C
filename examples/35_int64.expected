@@ -5,7 +5,9 @@ a - b low=1 high=1
 -a low=-2 high=-2
 a & b low=0 high=0
 a | b low=3 high=1
+a ^ b low=3 high=1
 ~a low=-3 high=-2
+globalWide low=11 high=10
 0x100000000 low=0 high=1
 -0x100000000 low=0 high=-1
 b - a low=-1 high=-2
@@ -15,3 +17,6 @@ a == 0x100000002: 1
 (long long)(-1) < 1: 1
 pair.value low=3 high=1
 table[2] low=3 high=1
+counter after ++ low=3 high=1
+counter++ value low=2 high=1
+(bool)0x100000000: 1

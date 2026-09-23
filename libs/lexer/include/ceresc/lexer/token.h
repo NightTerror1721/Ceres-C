@@ -226,8 +226,9 @@ namespace ceresc::lexer
 		constexpr std::string_view lexeme() const noexcept { return _lexeme; }
 		constexpr TokenValue value() const noexcept { return _value; }
 		constexpr SourceLocation location() const noexcept { return _location; }
-		// True only for an integer literal written with a `u`/`U` suffix (`42u`) - the one suffix that
-		// changes a literal's TYPE rather than its kind, so it has to ride along on the token.
+		// True only for an integer literal written with a `u`/`U` suffix (`42u`) - one of the two
+		// suffixes that change a literal's TYPE rather than its kind (the other is `ll`/`LL`), so it
+		// has to ride along on the token.
 		constexpr bool isUnsigned() const noexcept { return _isUnsigned; }
 		// True for an integer literal written with an `ll`/`LL` suffix (`42ll`, `0xFFull`), which
 		// names the 64-bit type. Paired with isUnsigned() it picks between `long long` and

@@ -104,7 +104,8 @@ namespace ceresc::lexer
 		// C's integer-suffix: at most one `u`/`U` and at most one `ll`/`LL`, in either order. Two
 		// passes is enough for every legal combination (`u`, `ll`, `ull`, `llu`); anything left after
 		// them (a third suffix letter, a lone `l`, `lL` mixed with digits...) is an identifier of its
-		// own and the parser rejects it exactly as before.
+		// own and the parser rejects it exactly as before. The two `l`s must match case, as C's
+		// grammar requires (`ll` or `LL`, never `lL`/`Ll`).
 		for (int pass = 0; pass < 2; ++pass)
 		{
 			if (!isUnsigned && (_cursor.peek() == 'u' || _cursor.peek() == 'U'))
@@ -113,8 +114,8 @@ namespace ceresc::lexer
 				_cursor.advance();
 				continue;
 			}
-			if (!isLongLong && (_cursor.peek() == 'l' || _cursor.peek() == 'L') &&
-				(_cursor.peek(1) == 'l' || _cursor.peek(1) == 'L'))
+			if (!isLongLong && ((_cursor.peek() == 'l' && _cursor.peek(1) == 'l') ||
+				(_cursor.peek() == 'L' && _cursor.peek(1) == 'L')))
 			{
 				isLongLong = true;
 				_cursor.advance();

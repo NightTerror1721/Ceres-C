@@ -1241,6 +1241,27 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   fija a mano, a los tres niveles, el acarreo/préstamo (incluido `-0x100000000`), el signo compartido
   de las comparaciones, un campo de struct, un array y una variable global.
 
+- **Revisión de `ocr` sobre F3.1a+F3.1b** (`eabd092..71ab3d8`): 21 ficheros, 13 hallazgos. **Dos altos
+  y dos medios, todos reales, corregidos**:
+  (1) *alto* — el post-incremento/decremento ancho devolvía el valor NUEVO (`long long b = a++;`
+  dejaba `b == a + 1`): `_lastValue` apuntaba al almacenamiento que el `emitWideStore` acababa de
+  sobrescribir, así que ahora se copian las dos palabras viejas a un temporal antes del store, como
+  ya hacía el camino escalar cargando en un registro.
+  (2) *alto* — `emitWideStore` no rechazaba un origen `float`, y el inicializador y la asignación le
+  pasan el tipo del origen directamente (sin `convertForStore`), de modo que `long long x = 1.5;`
+  reinterpretaba los bits del float como palabra baja; el guardián de `float`→64 bits vive ahora en
+  ese único cuello de botella, que es por donde pasa todo store ancho.
+  (3) *medio* — convertir un ancho a `bool` miraba solo la palabra baja (`bool b = 0x100000000LL` daba
+  falso); ahora es `(low | high) != 0`.
+  (4) *medio* — `toWord()` se aplicaba también a un resultado `float`, truncando en silencio
+  `long long a; float f = a + 1.5f;`; un operando ancho en una expresión `float` es la conversión de
+  F3.3 y ahora se rechaza.
+  Bajos corregidos: el sufijo de caso mezclado `lL`/`Ll` ya no se consume (C exige `ll`/`LL`), tests de
+  la ruta de base (hex/binaria) y del caso mezclado, dos comentarios obsoletos (`token.h`, el e2e), un
+  `{` mal colocado en un test, y el ejemplo `35_int64.c` gana el caso `^`, una variable global ancha,
+  el caso post-incremento (que era el bug (1)), `(bool)0x100000000LL` (el bug (3)) y las notas de orden
+  de bytes y del campo `tag`.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;

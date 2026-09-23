@@ -679,6 +679,16 @@ namespace ceresc::ir
 	void IrBuilder::emitWideStore(support::SourceLocation loc, IrValue destAddr, IrValue value,
 		const Type* fromType, bool isVolatile)
 	{
+		// A float source is F3.3's conversion, refused rather than reinterpreted. This is the one
+		// chokepoint every wide store flows through (initializer, assignment, ternary, inc-dec), so
+		// the guard has to live here and not only in convertForStore - those paths pass the source's
+		// own type straight in.
+		if (fromType && fromType->isFloat())
+		{
+			rejectWideFeature(loc, "a float-to-64-bit conversion");
+			return;
+		}
+
 		if (fromType && fromType->isWideInteger())
 		{
 			// A wide source is already the address of the eight bytes: read and write them as two
@@ -1249,6 +1259,15 @@ namespace ceresc::ir
 				rejectWideFeature(loc, "a 64-bit-to-float conversion");
 				return value;
 			}
+			// ...except to bool, where C asks whether the WHOLE 64-bit value is non-zero: the low
+			// word alone cannot answer that (`bool b = 0x100000000LL;` is true).
+			if (toType && toType->isBool())
+			{
+				bool isVolatile = fromType->isVolatile();
+				IrValue low = loadWideWord(loc, value, false, isVolatile);
+				IrValue high = loadWideWord(loc, value, true, isVolatile);
+				return emitUnOp(loc, IrUnOp::ToBool, emitBinOp(loc, IrBinOp::Or, low, high, true));
+			}
 			value = emitLoad(loc, value, IrMemSize::Word, false, toType && toType->isSigned());
 			fromType = nullptr;
 		}
@@ -1308,7 +1327,15 @@ namespace ceresc::ir
 
 		// A scalar result with a wide operand - a pointer offset (`p + wide`), a shift amount
 		// (`int << wide`) - converts that operand to a word first, exactly as C converts it to
-		// `int`. A wide result never reaches here (the dispatch above caught it).
+		// `int`. A wide result never reaches here (the dispatch above caught it). A FLOAT result
+		// with a wide operand is different: C converts the whole 64-bit value to float, which is
+		// F3.3, so refuse it rather than truncate to the low word.
+		bool wideOperand = (lhsType && lhsType->isWideInteger()) || (rhsType && rhsType->isWideInteger());
+		if (wideOperand && resultType && resultType->isFloat())
+		{
+			rejectWideFeature(loc, "a 64-bit operand in a float expression");
+			return lhsVal;
+		}
 		lhsVal = toWord(loc, lhsVal, lhsType);
 		rhsVal = toWord(loc, rhsVal, rhsType);
 
@@ -1655,11 +1682,17 @@ namespace ceresc::ir
 				if (type && type->isWideInteger())
 				{
 					IrValue addr = lowerAddress(node.operand());
+					bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
+					// A post form's value is the OLD one, so snapshot it before the store overwrites
+					// it - `long long a = 5; long long b = a++;` has to leave `b == 5`. The scalar
+					// path below gets this for free by loading into a register.
+					IrValue oldValue = isPre ? IrValue{} : makeWideValue(loc,
+						loadWideWord(loc, addr, false, type->isVolatile()),
+						loadWideWord(loc, addr, true, type->isVolatile()));
 					IrValue newValue = lowerWideArithmetic(loc, isIncrement ? BinaryOp::Add : BinaryOp::Sub,
 						type, type, &Type::Int, addr, emitConstInt(loc, 1));
 					emitWideStore(loc, addr, newValue, type, type->isVolatile());
-					bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
-					_lastValue = isPre ? newValue : addr; // a post-inc's value is the old one, still in place
+					_lastValue = isPre ? newValue : oldValue;
 					return;
 				}
 				bool isFloat = type && type->isFloat();

@@ -254,9 +254,10 @@ TEST(lexer, the_u_and_ll_suffixes_combine_in_either_order)
 {
 	support::DiagnosticEngine diagnostics;
 	support::StringPool pool;
-	Lexer lexer("1ull 2llu 3ULL 4LLU 5uLL 6llU", testSourceId(), diagnostics, pool);
+	// Decimal, hex and binary all route through the same suffix scanner, so all three are checked.
+	Lexer lexer("1ull 2llu 3ULL 4LLU 5uLL 6llU 0xFFull 0b101LLU", testSourceId(), diagnostics, pool);
 
-	for (u64 expected : { u64(1), u64(2), u64(3), u64(4), u64(5), u64(6) })
+	for (u64 expected : { u64(1), u64(2), u64(3), u64(4), u64(5), u64(6), u64(255), u64(5) })
 	{
 		Token t = lexer.next();
 		CHECK(t.isLiteralInt());
@@ -265,6 +266,26 @@ TEST(lexer, the_u_and_ll_suffixes_combine_in_either_order)
 		CHECK_EQ(t.integralValue(), expected);
 	}
 	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, the_two_ls_of_an_ll_suffix_must_match_case)
+{
+	// C's integer-suffix grammar is `ll` or `LL`, never `lL`/`Ll`; a mismatched pair is not consumed,
+	// so the number stays an `int` and the leftover letters are an identifier the parser rejects.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("1lL 2Ll", testSourceId(), diagnostics, pool);
+
+	for (u64 expected : { u64(1), u64(2) })
+	{
+		Token number = lexer.next();
+		CHECK(number.isLiteralInt());
+		CHECK(!number.isLongLong());
+		CHECK_EQ(number.integralValue(), expected);
+
+		Token identifier = lexer.next();
+		CHECK(identifier.isIdentifier());
+	}
 }
 
 TEST(lexer, a_single_l_suffix_is_not_consumed)

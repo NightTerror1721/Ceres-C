@@ -1451,8 +1451,8 @@ TEST(e2e, a_capped_float_width_computes_as_the_32_bit_type_it_really_is)
 	// `double`/`long double` name an f64 this machine does not have, so they are the 32-bit type
 	// under another spelling (docs/06-Known-Limitations.md). What that has to mean at run time is
 	// that mixing the two spellings changes nothing at all. (`long long` used to share this test;
-	// it is a real 8-byte type now and its lowering is F3.1b, so the IR suite pins the guard that
-	// refuses it until then.)
+	// it is a real 8-byte type now - F3.1b lowers it, and the IR suite pins the guards that still
+	// refuse the 64-bit operations F3.2-F3.4 have yet to add.)
 	runsTheSameAtEveryLevel("capped_float_types",
 		// And the program says once, with a pragma, that it knows - which is what that pragma is
 		// for and keeps this suite's output about what it ran rather than about what it wrote.
