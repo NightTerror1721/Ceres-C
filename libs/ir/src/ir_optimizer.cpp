@@ -3705,6 +3705,592 @@ namespace ceresc::ir
 			return false;
 		}
 
+		// ---- pass: loop idiom recognition (byte search) -------------------------------------------------
+		//
+		// `while (s[i] != 0) i++;` (a hand-written strlen) and `for (i = 0; i < n; i++) if (s[i] ==
+		// c) break;` (a hand-written memchr) scan one byte at a time. This pass recognizes each and
+		// replaces it with a call to a word-at-a-time routine the back end emits - `__cc_strlen` and
+		// `__cc_memchr_index` - that stops at the first zero byte / matching byte. The counter is the
+		// result (the length, or the index of the match or n), so the routine's return value is
+		// stored into the counter's slot before control leaves the loop.
+		//
+		// Unlike fill/copy this does NOT require a single exit: the memchr loop leaves through its
+		// `break` as well as its bound. What it requires is that every way out merges at the one
+		// block that reads the counter, so storing the result there is enough.
+		//
+		// The counter is the same non-escaping, zero-initialized, +1-stepped word local the fill and
+		// copy passes look for; what is new is that it is READ after the loop (it is the result) and
+		// that no byte is stored - a search loop has no side effect at all.
+
+		bool lowerSearchIdioms(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		{
+			if (!options.loopIdioms)
+				return false;
+
+			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+			const usize blockCount = blocks.size();
+			const usize tempCount = function.tempCount();
+			if (blockCount < 2 || tempCount < 2)
+				return false;
+
+			std::unordered_map<const BasicBlock*, usize> indexOf;
+			for (usize i = 0; i < blockCount; ++i)
+				indexOf.emplace(blocks[i].get(), i);
+
+			std::vector<std::vector<usize>> predecessors(blockCount);
+			std::vector<std::vector<usize>> successors(blockCount);
+			for (usize i = 0; i < blockCount; ++i)
+			{
+				for (BasicBlock* successor : successorsOf(function, i))
+				{
+					auto it = indexOf.find(successor);
+					if (it == indexOf.end())
+						continue;
+					successors[i].push_back(it->second);
+					predecessors[it->second].push_back(i);
+				}
+			}
+
+			std::vector<u32> defCount(tempCount, 0);
+			std::vector<usize> defBlock(tempCount, ~usize(0));
+			std::vector<IrInstr*> definer(tempCount, nullptr);
+			for (usize i = 0; i < blockCount; ++i)
+			{
+				for (IrInstr* instr : blocks[i]->instrs())
+				{
+					if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
+					{
+						++defCount[result.id];
+						defBlock[result.id] = i;
+						definer[result.id] = instr;
+					}
+				}
+			}
+
+			std::vector<BlockSet> dom = computeDominators(blockCount, predecessors);
+			std::vector<NaturalLoop> loops = findNaturalLoops(blockCount, predecessors, successors, dom);
+
+			std::unordered_map<u32, ConstValue> constants = collectConstants(function);
+			auto intConstant = [&](IrValue value, i64& out) -> bool
+			{
+				if (!value.isValid())
+					return false;
+				auto it = constants.find(value.id);
+				if (it == constants.end() || it->second.isFloat)
+					return false;
+				out = it->second.intValue;
+				return true;
+			};
+
+			std::vector<bool> nonEscaping = collectNonEscapingLocals(function);
+			std::vector<u32> frameAddrLocal = mapFrameAddrTemps(function);
+			auto isLoadOfLocal = [&](IrValue value, u32 wanted) -> bool
+			{
+				u32 local = ~0u;
+				return localReadBy(value, defCount, definer, frameAddrLocal, local) && local == wanted;
+			};
+
+			for (const NaturalLoop& loop : loops)
+			{
+				if (loop.preheader == ~usize(0))
+					continue;
+
+				// The header's only predecessor inside the loop, if it has exactly one: the unique
+				// latch.
+				usize latch = ~usize(0);
+				{
+					usize inLoopPreds = 0;
+					for (usize p : predecessors[loop.header])
+					{
+						if (!loop.blocks[p])
+							continue;
+						++inLoopPreds;
+						latch = p;
+					}
+					if (inLoopPreds != 1)
+						continue;
+				}
+
+				// The header ends in `cmp != 0`, the shape lowerCondition() emits for `while (...)`.
+				std::span<IrInstr* const> headerInstrs = blocks[loop.header]->instrs();
+				if (headerInstrs.empty() || headerInstrs.back()->opcode() != IrOpcode::CondJump)
+					continue;
+				const IrCondJumpPayload& branch = headerInstrs.back()->as<IrCondJumpPayload>();
+				if (branch.isFloat || branch.isUnsigned || branch.predicate != IrCmpPredicate::Ne)
+					continue;
+				i64 zeroValue = 0;
+				if (!intConstant(branch.rhs, zeroValue) || zeroValue != 0)
+					continue;
+				IrValue cmpResult = branch.lhs;
+				if (!cmpResult.isValid() || cmpResult.id >= tempCount || defCount[cmpResult.id] != 1)
+					continue;
+				const IrInstr* cmpDef = definer[cmpResult.id];
+				if (!cmpDef || cmpDef->opcode() != IrOpcode::Cmp)
+					continue;
+				const IrCmpPayload& cmp = cmpDef->as<IrCmpPayload>();
+				if (cmp.isFloat || cmp.isUnsigned)
+					continue;
+
+				auto exitIt = indexOf.find(branch.falseTarget);
+				auto bodyIt = indexOf.find(branch.trueTarget);
+				if (exitIt == indexOf.end() || bodyIt == indexOf.end())
+					continue;
+				usize exitIndex = exitIt->second;
+				if (loop.blocks[exitIndex] || !loop.blocks[bodyIt->second])
+					continue;
+
+				// local -> is a search counter: a non-escaping word local whose only two stores are
+				// a zero in the preheader and a `+ 1` in the unique latch.
+				std::vector<bool> isCounter(function.localCount(), false);
+				std::vector<const IrInstr*> stepStoreOf(function.localCount(), nullptr);
+				for (u32 local = 0; local < function.localCount(); ++local)
+				{
+					if (local >= nonEscaping.size() || !nonEscaping[local])
+						continue;
+					const IrLocalSlot& slot = function.localSlots()[local];
+					if (slot.isFloat || slot.isVolatile || slot.sizeInBytes != 4)
+						continue;
+
+					const IrInstr* inLoop = nullptr;
+					usize inLoopBlock = ~usize(0);
+					const IrInstr* outside = nullptr;
+					usize outsideBlock = ~usize(0);
+					bool bad = false;
+					for (usize b = 0; b < blockCount && !bad; ++b)
+					{
+						for (const IrInstr* instr : blocks[b]->instrs())
+						{
+							if (instr->opcode() != IrOpcode::Store)
+								continue;
+							IrValue address = instr->as<IrStorePayload>().address;
+							if (!address.isValid() || address.id >= frameAddrLocal.size() || frameAddrLocal[address.id] != local)
+								continue;
+							if (loop.blocks[b])
+							{
+								if (inLoop)
+								{
+									bad = true;
+									break;
+								}
+								inLoop = instr;
+								inLoopBlock = b;
+							}
+							else
+							{
+								if (outside)
+								{
+									bad = true;
+									break;
+								}
+								outside = instr;
+								outsideBlock = b;
+							}
+						}
+					}
+					if (bad || !inLoop || !outside || inLoopBlock != latch || outsideBlock != loop.preheader)
+						continue;
+					const IrStorePayload& stored = inLoop->as<IrStorePayload>();
+					if (stored.isFloat || stored.isVolatile || stored.size != IrMemSize::Word)
+						continue;
+					i64 initValue = 0;
+					if (!intConstant(outside->as<IrStorePayload>().value, initValue) || initValue != 0)
+						continue;
+					IrValue updated = stored.value;
+					if (!updated.isValid() || updated.id >= tempCount || defCount[updated.id] != 1)
+						continue;
+					const IrInstr* updateDef = definer[updated.id];
+					if (!updateDef || updateDef->opcode() != IrOpcode::BinOp)
+						continue;
+					const IrBinOpPayload& update = updateDef->as<IrBinOpPayload>();
+					if (update.isFloat || update.op != IrBinOp::Add)
+						continue;
+					IrValue stepValue{};
+					if (isLoadOfLocal(update.lhs, local))
+						stepValue = update.rhs;
+					else if (isLoadOfLocal(update.rhs, local))
+						stepValue = update.lhs;
+					else
+						continue;
+					i64 step = 0;
+					if (!intConstant(stepValue, step) || step != 1)
+						continue;
+					isCounter[local] = true;
+					stepStoreOf[local] = inLoop;
+				}
+
+				// The base of `scannedByte`, which must be a byte read of `base + counter`.
+				u32 counterLocal = ~0u;
+				IrValue base{};
+				auto scannedByteBase = [&](IrValue value) -> IrValue
+				{
+					if (!value.isValid() || value.id >= tempCount || defCount[value.id] != 1)
+						return IrValue{};
+					const IrInstr* def = definer[value.id];
+					if (!def || def->opcode() != IrOpcode::Load)
+						return IrValue{};
+					const IrLoadPayload& load = def->as<IrLoadPayload>();
+					if (load.isFloat || load.isVolatile || load.size != IrMemSize::Byte)
+						return IrValue{};
+					IrValue addr = load.address;
+					if (!addr.isValid() || addr.id >= tempCount || defCount[addr.id] != 1)
+						return IrValue{};
+					const IrInstr* addrDef = definer[addr.id];
+					if (!addrDef || addrDef->opcode() != IrOpcode::BinOp)
+						return IrValue{};
+					const IrBinOpPayload& add = addrDef->as<IrBinOpPayload>();
+					if (add.isFloat || add.op != IrBinOp::Add)
+						return IrValue{};
+					if (isLoadOfLocal(add.lhs, counterLocal))
+						return add.rhs;
+					if (isLoadOfLocal(add.rhs, counterLocal))
+						return add.lhs;
+					return IrValue{};
+				};
+
+				IrValue bound{};
+				IrValue searchByte{};
+				bool bounded = false;
+
+				if (cmp.predicate == IrCmpPredicate::Lt)
+				{
+					// `for (i = 0; i < n; i++) if (s[i] == c) break;` - the counter is compared
+					// directly against the bound; the scanned byte is in the body's `break` test.
+					u32 local = ~0u;
+					if (!localReadBy(cmp.lhs, defCount, definer, frameAddrLocal, local))
+						continue;
+					if (local >= isCounter.size() || !isCounter[local])
+						continue;
+					counterLocal = local;
+					bound = cmp.rhs;
+					bounded = true;
+				}
+				else if (cmp.predicate == IrCmpPredicate::Ne)
+				{
+					// `while (s[i] != 0) i++;` - the header tests the scanned byte against zero.
+					IrValue scanned = cmp.lhs;
+					if (!scanned.isValid() || scanned.id >= tempCount || defCount[scanned.id] != 1)
+						continue;
+					const IrInstr* scannedDef = definer[scanned.id];
+					if (!scannedDef || scannedDef->opcode() != IrOpcode::Load)
+						continue;
+					const IrLoadPayload& load = scannedDef->as<IrLoadPayload>();
+					if (load.isFloat || load.isVolatile || load.size != IrMemSize::Byte)
+						continue;
+					IrValue addr = load.address;
+					if (!addr.isValid() || addr.id >= tempCount || defCount[addr.id] != 1)
+						continue;
+					const IrInstr* addrDef = definer[addr.id];
+					if (!addrDef || addrDef->opcode() != IrOpcode::BinOp)
+						continue;
+					const IrBinOpPayload& add = addrDef->as<IrBinOpPayload>();
+					if (add.isFloat || add.op != IrBinOp::Add)
+						continue;
+					u32 local = ~0u;
+					if (localReadBy(add.lhs, defCount, definer, frameAddrLocal, local)
+						&& local < isCounter.size() && isCounter[local])
+					{
+						counterLocal = local;
+						base = add.rhs;
+					}
+					else if (localReadBy(add.rhs, defCount, definer, frameAddrLocal, local)
+						&& local < isCounter.size() && isCounter[local])
+					{
+						counterLocal = local;
+						base = add.lhs;
+					}
+					else
+						continue;
+				}
+				else
+					continue;
+
+				// The exit: the header's false target, and it has to read the counter - the result.
+				bool exitReadsCounter = false;
+				for (const IrInstr* instr : blocks[exitIndex]->instrs())
+				{
+					if (instr->opcode() != IrOpcode::Load)
+						continue;
+					IrValue address = instr->as<IrLoadPayload>().address;
+					if (address.isValid() && address.id < frameAddrLocal.size() && frameAddrLocal[address.id] == counterLocal)
+						exitReadsCounter = true;
+				}
+				if (!exitReadsCounter)
+					continue;
+
+				if (bounded)
+				{
+					// Exactly one edge leaves the loop besides the header's, it is the `break`, and
+					// it merges with the header's exit (directly or through a one-jump trampoline).
+					usize foundFrom = ~usize(0);
+					usize foundTarget = ~usize(0);
+					bool exitsFine = true;
+					for (usize b = 0; b < blockCount && exitsFine; ++b)
+					{
+						if (!loop.blocks[b] || b == loop.header)
+							continue;
+						for (usize s : successors[b])
+						{
+							if (loop.blocks[s])
+								continue;
+							if (s != exitIndex)
+							{
+								std::span<IrInstr* const> trampoline = blocks[s]->instrs();
+								if (trampoline.size() != 1 || trampoline[0]->opcode() != IrOpcode::Jump)
+								{
+									exitsFine = false;
+									break;
+								}
+								auto targetIt = indexOf.find(trampoline[0]->as<IrJumpPayload>().target);
+								if (targetIt == indexOf.end() || targetIt->second != exitIndex)
+								{
+									exitsFine = false;
+									break;
+								}
+							}
+							if (foundFrom != ~usize(0))
+							{
+								exitsFine = false;
+								break;
+							}
+							foundFrom = b;
+							foundTarget = s;
+						}
+					}
+					if (!exitsFine || foundFrom == ~usize(0))
+						continue;
+
+					// The `break` must be `s[i] == c`, with `s[i]` a byte read of `base + counter`.
+					std::span<IrInstr* const> fromInstrs = blocks[foundFrom]->instrs();
+					if (fromInstrs.empty() || fromInstrs.back()->opcode() != IrOpcode::CondJump)
+						continue;
+					const IrCondJumpPayload& foundBranch = fromInstrs.back()->as<IrCondJumpPayload>();
+					if (foundBranch.isFloat || foundBranch.isUnsigned || foundBranch.predicate != IrCmpPredicate::Ne)
+						continue;
+					i64 foundZero = 0;
+					if (!intConstant(foundBranch.rhs, foundZero) || foundZero != 0)
+						continue;
+					IrValue eqResult = foundBranch.lhs;
+					if (!eqResult.isValid() || eqResult.id >= tempCount || defCount[eqResult.id] != 1)
+						continue;
+					const IrInstr* eqDef = definer[eqResult.id];
+					if (!eqDef || eqDef->opcode() != IrOpcode::Cmp)
+						continue;
+					const IrCmpPayload& eq = eqDef->as<IrCmpPayload>();
+					if (eq.isFloat || eq.isUnsigned || eq.predicate != IrCmpPredicate::Eq)
+						continue;
+					if (foundBranch.trueTarget != blocks[foundTarget].get())
+						continue;
+					IrValue candidateBase = scannedByteBase(eq.lhs);
+					if (candidateBase.isValid())
+					{
+						base = candidateBase;
+						searchByte = eq.rhs;
+					}
+					else
+					{
+						candidateBase = scannedByteBase(eq.rhs);
+						if (!candidateBase.isValid())
+							continue;
+						base = candidateBase;
+						searchByte = eq.lhs;
+					}
+				}
+				else
+				{
+					// A strlen scan has a single exit: the header's false edge is the only one.
+					bool singleExit = true;
+					for (usize b = 0; b < blockCount && singleExit; ++b)
+					{
+						if (!loop.blocks[b])
+							continue;
+						for (usize s : successors[b])
+							if (!loop.blocks[s] && (b != loop.header || s != exitIndex))
+							{
+								singleExit = false;
+								break;
+							}
+					}
+					if (!singleExit)
+						continue;
+				}
+
+				// A search loop has no side effect at all: the only store is the counter's own step,
+				// and everything else is pure.
+				bool effectsFine = true;
+				for (usize b = 0; b < blockCount && effectsFine; ++b)
+				{
+					if (!loop.blocks[b])
+						continue;
+					for (const IrInstr* instr : blocks[b]->instrs())
+					{
+						if (instr == stepStoreOf[counterLocal])
+							continue;
+						if (isTerminatorInstr(*instr))
+							continue;
+						if (instr->opcode() == IrOpcode::Store || !isPure(*instr))
+						{
+							effectsFine = false;
+							break;
+						}
+					}
+				}
+				if (!effectsFine)
+					continue;
+
+				// Nothing the loop defines may be read after it.
+				bool escapes = false;
+				for (usize b = 0; b < blockCount && !escapes; ++b)
+				{
+					if (loop.blocks[b])
+						continue;
+					for (const IrInstr* instr : blocks[b]->instrs())
+						forEachOperand(*instr, [&](IrValue value)
+						{
+							if (!value.isValid() || value.id >= tempCount)
+								return;
+							usize db = defBlock[value.id];
+							if (db < blockCount && loop.blocks[db])
+								escapes = true;
+						});
+				}
+				if (escapes)
+					continue;
+
+				const support::SourceLocation loc = blocks[loop.header]->instrs().back()->location();
+
+				// A temporary holding the operand's value, defined before the loop. Reuses a value
+				// already available there; copies in a literal; re-reads a direct frame load (of any
+				// width - the searched byte is a byte load) or re-forms a FrameAddr/GlobalAddr.
+				std::vector<IrInstr*> injected;
+				auto materialize = [&](IrValue value) -> IrValue
+				{
+					if (!value.isValid() || value.id >= tempCount)
+						return IrValue{};
+					if (defCount[value.id] == 1)
+					{
+						usize db = defBlock[value.id];
+						if (db < blockCount && !loop.blocks[db] && dom[loop.preheader].test(db))
+							return value;
+					}
+					auto constantIt = constants.find(value.id);
+					if (constantIt != constants.end())
+					{
+						IrValue fresh = function.newTemp();
+						injected.push_back(makeConst(arena, loc, fresh, constantIt->second));
+						return fresh;
+					}
+					if (defCount[value.id] == 1)
+					{
+						const IrInstr* def = definer[value.id];
+						if (def && def->opcode() == IrOpcode::Load)
+						{
+							const IrLoadPayload& load = def->as<IrLoadPayload>();
+							if (!load.isFloat && !load.isVolatile && load.address.isValid()
+								&& load.address.id < frameAddrLocal.size() && frameAddrLocal[load.address.id] != ~0u)
+							{
+								IrValue slot = function.newTemp();
+								IrFrameAddrPayload frame;
+								frame.result = slot;
+								frame.localIndex = frameAddrLocal[load.address.id];
+								injected.push_back(arena.create<IrInstr>(loc, frame));
+								IrValue loaded = function.newTemp();
+								IrLoadPayload fresh = load;
+								fresh.result = loaded;
+								fresh.address = slot;
+								injected.push_back(arena.create<IrInstr>(loc, fresh));
+								return loaded;
+							}
+						}
+						if (def && def->opcode() == IrOpcode::FrameAddr)
+						{
+							IrValue fresh = function.newTemp();
+							IrFrameAddrPayload frame;
+							frame.result = fresh;
+							frame.localIndex = def->as<IrFrameAddrPayload>().localIndex;
+							injected.push_back(arena.create<IrInstr>(loc, frame));
+							return fresh;
+						}
+						if (def && def->opcode() == IrOpcode::GlobalAddr)
+						{
+							IrValue fresh = function.newTemp();
+							IrGlobalAddrPayload global;
+							global.result = fresh;
+							global.name = def->as<IrGlobalAddrPayload>().name;
+							injected.push_back(arena.create<IrInstr>(loc, global));
+							return fresh;
+						}
+					}
+					return IrValue{};
+				};
+
+				IrValue destination = materialize(base);
+				if (!destination.isValid())
+					continue;
+				IrValue second{};
+				IrValue third{};
+				if (bounded)
+				{
+					second = materialize(searchByte);
+					third = materialize(bound);
+					if (!second.isValid() || !third.isValid())
+						continue;
+				}
+
+				IrParamPayload first;
+				first.value = destination;
+				injected.push_back(arena.create<IrInstr>(loc, first));
+				if (bounded)
+				{
+					IrParamPayload secondParam;
+					secondParam.value = second;
+					injected.push_back(arena.create<IrInstr>(loc, secondParam));
+					IrParamPayload thirdParam;
+					thirdParam.value = third;
+					injected.push_back(arena.create<IrInstr>(loc, thirdParam));
+				}
+
+				IrValue result = function.newTemp();
+				IrCallPayload call;
+				call.callee = bounded ? "__cc_memchr_index" : "__cc_strlen";
+				call.argCount = bounded ? 3 : 1;
+				call.hasResult = true;
+				call.result = result;
+				injected.push_back(arena.create<IrInstr>(loc, call));
+
+				// The counter is the result: store the routine's return into its slot, so the exit
+				// block reads the length / index instead of the value the loop would have counted to.
+				IrValue counterAddress = function.newTemp();
+				IrFrameAddrPayload counterFrame;
+				counterFrame.result = counterAddress;
+				counterFrame.localIndex = counterLocal;
+				injected.push_back(arena.create<IrInstr>(loc, counterFrame));
+				IrStorePayload counterStore;
+				counterStore.size = IrMemSize::Word;
+				counterStore.address = counterAddress;
+				counterStore.value = result;
+				injected.push_back(arena.create<IrInstr>(loc, counterStore));
+
+				// Insert before the preheader's terminator and send it to the exit.
+				std::span<IrInstr* const> pre = blocks[loop.preheader]->instrs();
+				const bool hasTerminator = !pre.empty() && isTerminatorInstr(*pre.back());
+				usize insertAt = hasTerminator ? pre.size() - 1 : pre.size();
+				std::vector<IrInstr*> rebuilt;
+				rebuilt.reserve(pre.size() + injected.size() + 1);
+				rebuilt.insert(rebuilt.end(), pre.begin(), pre.begin() + static_cast<std::ptrdiff_t>(insertAt));
+				rebuilt.insert(rebuilt.end(), injected.begin(), injected.end());
+				if (hasTerminator)
+					rebuilt.push_back(arena.create<IrInstr>(pre.back()->location(), IrJumpPayload{ branch.falseTarget }));
+				else
+					rebuilt.push_back(arena.create<IrInstr>(loc, IrJumpPayload{ branch.falseTarget }));
+				blocks[loop.preheader]->replaceInstrs(std::move(rebuilt));
+
+				if (options.unreachableBlockElimination)
+					removeUnreachableBlocks(function, options);
+				return true;
+			}
+			return false;
+		}
+
 		// ---- pass: dead code elimination -------------------------------------------------------------
 
 		bool eliminateDeadCode(IrFunction& function, const OptimizationOptions& options,
@@ -4332,6 +4918,7 @@ namespace ceresc::ir
 				changed |= removeUnreachableBlocks(*function, options);
 				changed |= hoistLoopInvariants(*function, options);
 				changed |= lowerLoopIdioms(*function, arena, options);
+				changed |= lowerSearchIdioms(*function, arena, options);
 				changed |= strengthReduceInductionVariables(*function, arena, options);
 				changed |= layoutBlocks(*function, options);
 				changed |= eliminateDeadCode(*function, options, pureFunctions);

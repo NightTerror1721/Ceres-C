@@ -2019,3 +2019,24 @@ TEST(codegen, a_recognized_byte_copy_loop_emits_the_overlap_safe_word_routine)
 
 	CHECK(!contains(atO2Without(source, &support::OptimizationOptions::loopIdioms), "__cc_memcpy"));
 }
+
+TEST(codegen, recognized_search_loops_emit_and_call_their_word_routines)
+{
+	std::string_view strlenSource = "int f(char* s) { int i = 0; while (s[i] != 0) { i = i + 1; } return i; }";
+	std::string text = atO2(strlenSource);
+	CHECK(contains(text, "call __cc_strlen"));
+	CHECK(contains(text, "__cc_strlen:"));
+	CHECK(!contains(text, "global __cc_strlen:"));
+	CHECK(contains(text, "0x80808080")); // the zero-byte test the routine scans with
+
+	std::string_view memchrSource =
+		"int f(char* s, int n, char c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] == c) break; } return i; }";
+	std::string memchrText = atO2(memchrSource);
+	CHECK(contains(memchrText, "call __cc_memchr_index"));
+	CHECK(contains(memchrText, "__cc_memchr_index:"));
+	CHECK(!contains(memchrText, "global __cc_memchr_index:"));
+
+	// With the idiom off both stay loops.
+	CHECK(!contains(atO2Without(strlenSource, &support::OptimizationOptions::loopIdioms), "__cc_strlen"));
+	CHECK(!contains(atO2Without(memchrSource, &support::OptimizationOptions::loopIdioms), "__cc_memchr_index"));
+}

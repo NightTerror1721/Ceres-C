@@ -1097,7 +1097,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
-| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | parcial (relleno y copia hechos; búsqueda pendiente) |
+| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **hecho** (relleno, copia y búsqueda a nivel de bucle) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
@@ -1189,9 +1189,9 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   bytes.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
-son proyectos de varios días (reconocimiento de idiomas de bucle para O15, que ya cuenta con el
-análisis de bucles; reasignación de registros para O4/O5; ABI ancha para F3; formato de depuración
-para F8; serialización de IR para F13).
+son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
+O4/O5; `#line`/`_Pragma` para F12; ABI ancha para F3; formato de depuración para F8; serialización
+de IR para F13).
 
 **O3 se partió igual que F6.** El LICM ya está: detección de bucles naturales (aristas de retroceso
 sobre un árbol de dominancia) y elevación de cargas/cálculos invariantes al preheader. Un bucle que
@@ -1240,10 +1240,22 @@ equivalente —`d <= s`, o rangos disjuntos— y cae a una copia hacia delante p
 solape con `d > s`; un contador con signo ≤ 0 no copia nada. `examples/33_loop_copy.c` fija a mano
 los tres casos (disjunto, solape `d > s`, solape `d < s`) a los tres niveles.
 
-Queda la **búsqueda** (`while (*s) s++;`/`strlen`, `strcmp`, `memchr`, `strchr`), que necesita la
-misma infraestructura de rutina emitida pero un reconocimiento distinto: esos bucles tienen varias
-salidas (encontrado/no encontrado) y su resultado es el contador o un puntero leído tras el bucle, y
-la comparación usa la prueba palabra a palabra `(w - 0x01010101) & ~w & 0x80808080`.
+**La búsqueda también está** (`lowerSearchIdioms`, mismo pase y flag). Dos formas de bucle:
+`while (s[i] != 0) i++;` (un `strlen` a mano) se baja a `__cc_strlen`, y `for (i = 0; i < n; i++) if
+(s[i] == c) break;` (un `memchr` a mano) a `__cc_memchr_index`; ambas rutinas las emite el back end
+y escanean palabra a palabra con la prueba `(w - 0x01010101) & ~w & 0x80808080` (y, para `memchr`, un
+`xor` previo con `c` replicado). El contador *es* el resultado (la longitud, o el índice de la
+coincidencia o `n`), así que el retorno de la rutina se guarda en su slot antes de salir del bucle.
+A diferencia de relleno/copia, la búsqueda **no** exige una sola salida: el bucle de `memchr` sale
+por el `break` y por la cota, y el pase solo exige que todas las salidas confluyan en el bloque que
+lee el contador. Un bucle de búsqueda no tiene ningún efecto (ni un `store` salvo el del contador),
+y `examples/34_loop_search.c` fija a mano seis casos (longitud, desplazamiento, encontrado/no
+encontrado, cota corta) a los tres niveles.
+
+Queda fuera de O15 lo que es **reconocimiento de función completa**, no de bucle: `strcpy`, `strcmp`
+y `strchr` de la STDLIB devuelven un puntero o una diferencia y salen con `return` desde dentro del
+bucle, así que su semántica no es "el contador es el resultado" y necesitaría otro pase (y un
+guardían distinto). El nivel de bucle —relleno, copia y búsqueda— queda cerrado.
 
 **F6 se partió en dos.** El *flexible array member* es autocontenido (parser, layout, `sizeof`,
 acceso) y ya está hecho. `alloca`/VLA no lo son: el compilador direcciona todo el frame como

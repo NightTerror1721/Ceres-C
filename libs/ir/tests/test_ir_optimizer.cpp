@@ -583,7 +583,7 @@ TEST(ir_optimizer, induction_strength_reduction_leaves_a_scaled_index_alone)
 // the fill value is narrowed (`narrow.byte`) or read as a byte, which only becomes loop invariant
 // once LICM hoists it - so, like induction-variable strength reduction, the two are enabled
 // together. DCE and unreachable-block elimination clean up the loop the call replaces.
-support::OptimizationOptions fillIdiomsClean()
+support::OptimizationOptions loopIdiomsClean()
 {
 	support::OptimizationOptions options = support::OptimizationOptions::none();
 	options.loopInvariantMotion = true;
@@ -596,11 +596,11 @@ support::OptimizationOptions fillIdiomsClean()
 TEST(ir_optimizer, loop_idioms_turn_a_byte_fill_loop_into_a_call_to_the_emitted_routine)
 {
 	std::string_view source = "void f(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
 
 	CHECK(contains(optimizedIr(source, without, "f"), "store.byte"));            // the loop is there
-	std::string after = optimizedIr(source, fillIdiomsClean(), "f");
+	std::string after = optimizedIr(source, loopIdiomsClean(), "f");
 	CHECK(contains(after, "call __cc_memset"));                                  // ...and is gone
 	CHECK(!contains(after, "store.byte"));
 }
@@ -609,9 +609,9 @@ TEST(ir_optimizer, loop_idioms_leave_a_word_fill_alone)
 {
 	// A `int*` fill stores words, which the byte routine cannot do.
 	std::string_view source = "void f(int* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_loop_that_does_not_start_at_zero_alone)
@@ -619,9 +619,9 @@ TEST(ir_optimizer, loop_idioms_leave_a_loop_that_does_not_start_at_zero_alone)
 	// The call fills `n` bytes from the base, which is only the same as the loop when the counter
 	// starts at 0.
 	std::string_view source = "void f(char* p, int n, int c) { for (int i = 1; i < n; i = i + 1) { p[i] = c; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_loop_with_a_break_alone)
@@ -629,9 +629,9 @@ TEST(ir_optimizer, loop_idioms_leave_a_loop_with_a_break_alone)
 	// A `break` is a second way out: filling the whole range would fill past where the loop stopped.
 	std::string_view source =
 		"void f(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; if (i == 3) break; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_conditional_fill_alone)
@@ -640,9 +640,9 @@ TEST(ir_optimizer, loop_idioms_leave_a_conditional_fill_alone)
 	// the latch - run on every iteration - for the rewrite to be sound.
 	std::string_view source =
 		"void f(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { if (i % 2) { p[i] = c; } } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_loop_that_calls_alone)
@@ -650,9 +650,9 @@ TEST(ir_optimizer, loop_idioms_leave_a_loop_that_calls_alone)
 	// The call would drop whatever the loop body's own call does.
 	std::string_view source =
 		"int g(void); void f(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; g(); } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_an_unsigned_count_alone)
@@ -660,9 +660,9 @@ TEST(ir_optimizer, loop_idioms_leave_an_unsigned_count_alone)
 	// The emitted routine treats a non-positive signed count as zero bytes; an unsigned count must
 	// fill exactly `n`, which is a different routine.
 	std::string_view source = "void f(char* p, unsigned n, int c) { for (unsigned i = 0; i < n; i = i + 1) { p[i] = c; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_counter_whose_address_escapes_alone)
@@ -672,18 +672,18 @@ TEST(ir_optimizer, loop_idioms_leave_a_counter_whose_address_escapes_alone)
 	std::string_view source =
 		"int g(int); void f(char* p, int n, int c) { int i; int* q = &i; "
 		"for (i = 0; i < n; i = i + 1) { p[i] = c; } g(*q); }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_loop_whose_counter_is_read_after_it_alone)
 {
 	std::string_view source =
 		"int g(int); void f(char* p, int n, int c) { int i; for (i = 0; i < n; i = i + 1) { p[i] = c; } g(i); }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_loop_that_increments_before_storing_alone)
@@ -692,34 +692,34 @@ TEST(ir_optimizer, loop_idioms_leave_a_loop_that_increments_before_storing_alone
 	// already-incremented counter.
 	std::string_view source =
 		"void f(char* p, int n, int c) { int i = 0; while (i < n) { i = i + 1; p[i] = c; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_volatile_fill_alone)
 {
 	std::string_view source = "void f(volatile char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_accept_a_constant_count)
 {
 	// A literal bound is copied in like any other loop-invariant value.
 	std::string_view source = "void f(char* p, int c) { for (int i = 0; i < 8; i = i + 1) { p[i] = c; } }";
-	CHECK(contains(optimizedIr(source, fillIdiomsClean(), "f"), "call __cc_memset"));
+	CHECK(contains(optimizedIr(source, loopIdiomsClean(), "f"), "call __cc_memset"));
 }
 
 TEST(ir_optimizer, loop_idioms_turn_a_byte_copy_loop_into_a_call_to_the_emitted_routine)
 {
 	std::string_view source = "void f(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
 
 	CHECK(contains(optimizedIr(source, without, "f"), "store.byte")); // the loop is there
-	std::string after = optimizedIr(source, fillIdiomsClean(), "f");
+	std::string after = optimizedIr(source, loopIdiomsClean(), "f");
 	CHECK(contains(after, "call __cc_memcpy"));                        // ...and is a copy
 	CHECK(!contains(after, "store.byte"));
 }
@@ -730,17 +730,72 @@ TEST(ir_optimizer, loop_idioms_leave_a_copy_with_a_shifted_source_alone)
 	// counter, so it is neither a copy nor a fill.
 	std::string_view source =
 		"void f(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i + 1]; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 TEST(ir_optimizer, loop_idioms_leave_a_word_copy_alone)
 {
 	std::string_view source = "void f(int* d, int* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }";
-	support::OptimizationOptions without = fillIdiomsClean();
+	support::OptimizationOptions without = loopIdiomsClean();
 	without.loopIdioms = false;
-	CHECK_EQ(optimizedIr(source, fillIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_turn_a_strlen_scan_into_a_call_to_the_emitted_routine)
+{
+	std::string_view source = "int f(char* s) { int i = 0; while (s[i] != 0) { i = i + 1; } return i; }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+
+	CHECK(contains(optimizedIr(source, without, "f"), "br.")); // the scan loop is there
+	std::string after = optimizedIr(source, loopIdiomsClean(), "f");
+	CHECK(contains(after, "call __cc_strlen"));
+	CHECK(!contains(after, "br.")); // ...and is gone
+}
+
+TEST(ir_optimizer, loop_idioms_turn_a_bounded_search_into_a_call_to_the_emitted_routine)
+{
+	std::string_view source =
+		"int f(char* s, int n, char c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] == c) break; } return i; }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+
+	CHECK(contains(optimizedIr(source, without, "f"), "br.")); // the scan loop is there
+	std::string after = optimizedIr(source, loopIdiomsClean(), "f");
+	CHECK(contains(after, "call __cc_memchr_index"));
+	CHECK(!contains(after, "br.")); // ...and is gone
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_search_with_a_non_equality_test_alone)
+{
+	// `if (s[i] > c) break;` finds the first byte ABOVE c, which the memchr routine cannot answer.
+	std::string_view source =
+		"int f(char* s, int n, char c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] > c) break; } return i; }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_search_whose_result_nothing_reads_alone)
+{
+	// With the counter never read, there is nothing for the routine's return to feed; the scan is
+	// pointless and is left as it is.
+	std::string_view source =
+		"void f(char* s, int n, char c) { for (int i = 0; i < n; i = i + 1) { if (s[i] == c) break; } }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_word_search_alone)
+{
+	std::string_view source =
+		"int f(int* s, int n, int c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] == c) break; } return i; }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
 // ---- block layout --------------------------------------------------------------------------------

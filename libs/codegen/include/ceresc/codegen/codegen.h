@@ -420,6 +420,8 @@ namespace ceresc::codegen
 		// call site asked for one.
 		bool _usesMemset = false;
 		bool _usesMemcpy = false;
+		bool _usesStrlen = false;
+		bool _usesMemchrIndex = false;
 		// Emits every loop-idiom routine a call site asked for, at the end of `@text`.
 		void emitLoopIdiomRoutines();
 

@@ -1045,6 +1045,10 @@ namespace ceresc::codegen
 					_usesMemset = true; // the routine is emitted at the end of @text, not linked in
 				if (p.callee == "__cc_memcpy")
 					_usesMemcpy = true;
+				if (p.callee == "__cc_strlen")
+					_usesStrlen = true;
+				if (p.callee == "__cc_memchr_index")
+					_usesMemchrIndex = true;
 				if (!p.inlineAsm.empty())
 				{
 					// The author's own text, a line at a time: a line ending in ':' is a label and stands at the left
@@ -2282,6 +2286,86 @@ namespace ceresc::codegen
 			_emitter.localLabel("ccm2_done");
 			_emitter.instr("ret");
 		}
+
+		// The strlen scan's word-at-a-time routine: the number of bytes before the terminator. It
+		// walks bytes until the pointer is word-aligned, then tests a word at a time for a zero byte
+		// with ((w - 0x01010101) & ~w & 0x80808080), and finishes the word holding the terminator a
+		// byte at a time.
+		if (_usesStrlen)
+		{
+			_emitter.raw("// emitted because a strlen-style scan was recognized (docs/14 O15)");
+			_emitter.label("__cc_strlen");
+			_emitter.instr("mov  r1, r0");
+			_emitter.localLabel("csl_align");
+			_emitter.instr("and  r2, r1, 3");
+			_emitter.instr("ifeq r2, 0, .csl_words");
+			_emitter.instr("ldrb r2, [r1]");
+			_emitter.instr("ifeq r2, 0, .csl_done");
+			_emitter.instr("add  r1, r1, 1");
+			_emitter.instr("jp   .csl_align");
+			_emitter.localLabel("csl_words");
+			_emitter.instr("la   r3, 0x01010101");
+			_emitter.instr("la   r4, 0x80808080");
+			_emitter.localLabel("csl_wloop");
+			_emitter.instr("ldr  r2, [r1]");
+			_emitter.instr("sub  r5, r2, r3");
+			_emitter.instr("not  r6, r2");
+			_emitter.instr("and  r5, r5, r6");
+			_emitter.instr("and  r5, r5, r4");
+			_emitter.instr("ifne r5, 0, .csl_bytes"); // the terminator is in this word
+			_emitter.instr("add  r1, r1, 4");
+			_emitter.instr("jp   .csl_wloop");
+			_emitter.localLabel("csl_bytes");
+			_emitter.instr("ldrb r2, [r1]");
+			_emitter.instr("ifeq r2, 0, .csl_done");
+			_emitter.instr("add  r1, r1, 1");
+			_emitter.instr("jp   .csl_bytes");
+			_emitter.localLabel("csl_done");
+			_emitter.instr("sub  r0, r1, r0"); // length = end - start
+			_emitter.instr("ret");
+		}
+
+		// The memchr scan's word-at-a-time routine: the index of the first byte equal to `c`, or n.
+		// A word is tested for a `c` byte by xoring it with c repeated four times first, so a
+		// matching byte becomes zero, and then running the zero-byte test on the result.
+		if (_usesMemchrIndex)
+		{
+			_emitter.raw("// emitted because a memchr-style scan was recognized (docs/14 O15)");
+			_emitter.label("__cc_memchr_index");
+			_emitter.instr("and  r1, r1, 255");
+			_emitter.instr("mov  r7, r0");             // the base, for the index at the end
+			_emitter.instr("la   r3, 0x01010101");
+			_emitter.instr("mul  r5, r1, r3");         // c replicated into all four bytes
+			_emitter.instr("la   r4, 0x80808080");
+			_emitter.localLabel("cmi_words");
+			_emitter.instr("ifbl r2, 4, .cmi_bytes");  // fewer than four bytes left
+			_emitter.instr("and  r6, r0, 3");
+			_emitter.instr("ifne r6, 0, .cmi_bytes");  // unaligned: bytes only
+			_emitter.instr("ldr  r6, [r0]");
+			_emitter.instr("xor  r6, r6, r5");         // a byte equal to c is now zero
+			_emitter.instr("not  r1, r6");
+			_emitter.instr("sub  r6, r6, r3");
+			_emitter.instr("and  r6, r6, r1");
+			_emitter.instr("and  r6, r6, r4");
+			_emitter.instr("ifne r6, 0, .cmi_bytes");  // find it a byte at a time
+			_emitter.instr("add  r0, r0, 4");
+			_emitter.instr("sub  r2, r2, 4");
+			_emitter.instr("jp   .cmi_words");
+			_emitter.localLabel("cmi_bytes");
+			_emitter.instr("ifeq r2, 0, .cmi_none");
+			_emitter.instr("ldrb r6, [r0]");
+			_emitter.instr("and  r1, r5, 255");        // c, in case the word loop clobbered r1
+			_emitter.instr("ifeq r6, r1, .cmi_found");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("jp   .cmi_bytes");
+			_emitter.localLabel("cmi_found");
+			_emitter.instr("sub  r0, r0, r7");         // index of the match
+			_emitter.instr("ret");
+			_emitter.localLabel("cmi_none");
+			_emitter.instr("sub  r0, r0, r7");         // == n: nothing matched
+			_emitter.instr("ret");
+		}
 	}
 
 	void CodeGen::emitJumpTables()
@@ -2421,6 +2505,8 @@ namespace ceresc::codegen
 		_nextJumpTableId = 0;
 		_usesMemset = false;
 		_usesMemcpy = false;
+		_usesStrlen = false;
+		_usesMemchrIndex = false;
 
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the
