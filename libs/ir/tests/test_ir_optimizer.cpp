@@ -680,6 +680,7 @@ TEST(ir_optimizer, inlining_splices_a_function_that_calls_another_one)
 		"int add(int a, int b) { return a + b; } int twice(int x) { return add(x, x); } int main() { return twice(3); }",
 		options);
 	CHECK(!contains(text, "call twice"));
+	CHECK(!contains(text, "call add"));
 }
 
 TEST(ir_optimizer, inlining_splices_a_function_with_control_flow_into_its_caller)
@@ -705,6 +706,18 @@ TEST(ir_optimizer, inlining_leaves_a_function_with_inline_assembly_alone)
 	std::string mainIr = optimizedIr(
 		"void xs(void) { __asm__(\".spot:\\n\\tnop\"); } int main(void) { xs(); return 0; }", options, "main");
 	CHECK(contains(mainIr, "call xs"));
+}
+
+TEST(ir_optimizer, inlining_declines_a_callee_that_falls_off_the_end_for_a_used_result)
+{
+	// `helper` has a path with a bare `ret` (no value) because its body can fall off the end, and
+	// main reads the result: the call cannot be replaced by a copy of an invalid value.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.inlining = true;
+
+	std::string text = optimizedIr(
+		"int helper(int c) { if (c) return 1; } int main(int argc) { return helper(argc); }", options);
+	CHECK(contains(text, "call helper"));
 }
 
 TEST(ir_optimizer, inlining_is_off_at_O1)

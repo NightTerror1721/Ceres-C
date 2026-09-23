@@ -1887,17 +1887,6 @@ namespace ceresc::ir
 			}
 		}
 
-		// The block that followed `block` in emission order, which is where it fell through to when
-		// it had no terminator of its own.
-		BasicBlock* nextBlockAfter(const IrFunction& function, const BasicBlock& block)
-		{
-			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
-			for (usize i = 0; i + 1 < blocks.size(); ++i)
-				if (blocks[i].get() == &block)
-					return blocks[i + 1].get();
-			return nullptr;
-		}
-
 		// A callee worth splicing: any shape of control flow (several blocks, calls to other
 		// functions), short enough to be worth copying, and not the entry point - `main` is never
 		// called from anywhere in the first place, and codegen gives it a different epilogue
@@ -2186,18 +2175,32 @@ namespace ceresc::ir
 			}
 			for (const auto& calleeBlock : callee.blocks())
 				for (const IrInstr* instr : calleeBlock->instrs())
-					if (instr->opcode() == IrOpcode::Return && instr->as<IrReturnPayload>().hasValue)
+				{
+					if (instr->opcode() != IrOpcode::Return)
+						continue;
+					const IrReturnPayload& ret = instr->as<IrReturnPayload>();
+					if (!ret.hasValue)
 					{
-						IrValue value = instr->as<IrReturnPayload>().value;
-						if (!value.isValid() || value.id >= defined.size() || !defined[value.id])
+						// A body that falls off the end gets a bare `ret` even in an `int` function
+						// (IrBuilder closes the last block that way). A call site that reads the result
+						// cannot be served by a path that produces none, so decline it.
+						if (call.hasResult)
 							return false;
+						continue;
 					}
+					if (!ret.value.isValid() || ret.value.id >= defined.size() || !defined[ret.value.id])
+						return false;
+				}
 
-			// Where the block fell through to before the call was replaced - captured now, because
-			// the fresh blocks below are appended and would otherwise become its successor.
-			BasicBlock* originalNext = nextBlockAfter(caller, block);
+			// The single-block fast path only handles a body that ends in a Return; a single block
+			// ending in any other terminator (say `lbl: goto lbl;`) falls through to the general path.
+			const bool singleBlockReturns = callee.blocks().size() == 1 &&
+				!callee.blocks().front()->instrs().empty() &&
+				callee.blocks().front()->instrs().back()->opcode() == IrOpcode::Return;
 
-			// ---- no failure is possible past this point; allocate and commit ------------------------
+			// Everything past this point allocates in the caller and must not fail. Every block is
+			// terminated (IrBuilder guarantees it, and `isInlinable` checks the last one), so a
+			// caller's tail always ends in its own terminator - no fall-through has to be repaired.
 			//
 			// Every callee slot - parameters first, then its own locals - gets a fresh slot in the
 			// caller's frame, keeping its volatile/register/restrict properties so the accesses through
@@ -2225,11 +2228,9 @@ namespace ceresc::ir
 			// adjacency is what lets constant folding and load forwarding fold the result away (the
 			// `add(3,4)` -> 7 case), which the general path's extra continuation block would break.
 			std::span<const std::unique_ptr<BasicBlock>> calleeBlocks = callee.blocks();
-			if (calleeBlocks.size() == 1)
+			if (singleBlockReturns)
 			{
 				const BasicBlock& only = *calleeBlocks.front();
-				if (only.instrs().empty() || only.instrs().back()->opcode() != IrOpcode::Return)
-					return false; // an unterminated single block cannot be spliced
 				std::vector<IrInstr*> rewritten;
 				rewritten.reserve(original.size() + 2 * callee.paramCount());
 				for (usize i = 0; i < callIndex - call.argCount; ++i)
@@ -2274,13 +2275,11 @@ namespace ceresc::ir
 			head.push_back(arena.create<IrInstr>(callLoc, IrJumpPayload{ entryCopy }));
 			block.replaceInstrs(std::move(head));
 
-			// The continuation: the caller's own instructions after the call. They are no longer
-			// adjacent to the block that came before, so a fall-through has to become a real jump.
+			// The continuation: the caller's own instructions after the call. Every block ends in a
+			// terminator (IrBuilder's own invariant), so this always ends in one too.
 			std::vector<IrInstr*> tail;
 			for (usize i = callIndex + 1; i < original.size(); ++i)
 				tail.push_back(original[i]);
-			if ((tail.empty() || !isTerminatorInstr(*tail.back())) && originalNext)
-				tail.push_back(arena.create<IrInstr>(callLoc, IrJumpPayload{ originalNext }));
 			continuation->replaceInstrs(std::move(tail));
 
 			// Every callee block, copied in place. A Return becomes (optional) a copy of the result
