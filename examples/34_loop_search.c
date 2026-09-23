@@ -17,6 +17,8 @@
 //   find(text, 10, 'g') = 6
 //   find(text, 10, 'z') = 10   (not found: the bound n)
 //   find(text,  4, 'g') = 4    (not found within the first four bytes)
+//   find(text,  0, 'a') = 0    (a zero bound)
+//   find(text, -1, 'a') = 0    (a negative bound)
 //
 //     ceresc examples/34_loop_search.c --run
 
@@ -75,6 +77,10 @@ int main(void)
     putint(find(text, 10, 'z'));
     put('\n');
     putint(find(text, 4, 'g'));
+    put('\n');
+    putint(find(text, 0, 'a')); // a zero bound: nothing is searched
+    put('\n');
+    putint(find(text, -1, 'a')); // a negative bound: the same
     put('\n');
 
     return 0;

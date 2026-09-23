@@ -2334,36 +2334,46 @@ namespace ceresc::codegen
 			_emitter.label("__cc_memchr_index");
 			_emitter.instr("and  r1, r1, 255");
 			_emitter.instr("mov  r7, r0");             // the base, for the index at the end
+			_emitter.instr("ifle r2, 0, .cmi_none");   // a signed count <= 0 matches nothing
 			_emitter.instr("la   r3, 0x01010101");
 			_emitter.instr("mul  r5, r1, r3");         // c replicated into all four bytes
 			_emitter.instr("la   r4, 0x80808080");
-			_emitter.localLabel("cmi_words");
-			_emitter.instr("ifbl r2, 4, .cmi_bytes");  // fewer than four bytes left
 			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifne r6, 0, .cmi_bytes");  // unaligned: bytes only
+			_emitter.instr("ifeq r6, 0, .cmi_words");  // already aligned: straight to words
+			_emitter.localLabel("cmi_align");
+			_emitter.instr("ifeq r2, 0, .cmi_none");
+			_emitter.instr("ldrb r6, [r0]");
+			_emitter.instr("and  r1, r5, 255");
+			_emitter.instr("ifeq r6, r1, .cmi_found");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("and  r6, r0, 3");
+			_emitter.instr("ifne r6, 0, .cmi_align"); // bytes to the edge, then fall into the word loop
+			_emitter.localLabel("cmi_words");
+			_emitter.instr("ifbl r2, 4, .cmi_tail");   // fewer than four bytes left
 			_emitter.instr("ldr  r6, [r0]");
 			_emitter.instr("xor  r6, r6, r5");         // a byte equal to c is now zero
 			_emitter.instr("not  r1, r6");
 			_emitter.instr("sub  r6, r6, r3");
 			_emitter.instr("and  r6, r6, r1");
 			_emitter.instr("and  r6, r6, r4");
-			_emitter.instr("ifne r6, 0, .cmi_bytes");  // find it a byte at a time
+			_emitter.instr("ifne r6, 0, .cmi_tail");   // find it a byte at a time
 			_emitter.instr("add  r0, r0, 4");
 			_emitter.instr("sub  r2, r2, 4");
 			_emitter.instr("jp   .cmi_words");
-			_emitter.localLabel("cmi_bytes");
+			_emitter.localLabel("cmi_tail");
 			_emitter.instr("ifeq r2, 0, .cmi_none");
 			_emitter.instr("ldrb r6, [r0]");
 			_emitter.instr("and  r1, r5, 255");        // c, in case the word loop clobbered r1
 			_emitter.instr("ifeq r6, r1, .cmi_found");
 			_emitter.instr("add  r0, r0, 1");
 			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("jp   .cmi_bytes");
+			_emitter.instr("jp   .cmi_tail");
 			_emitter.localLabel("cmi_found");
 			_emitter.instr("sub  r0, r0, r7");         // index of the match
 			_emitter.instr("ret");
 			_emitter.localLabel("cmi_none");
-			_emitter.instr("sub  r0, r0, r7");         // == n: nothing matched
+			_emitter.instr("sub  r0, r0, r7");         // == n (or 0 when nothing was scanned)
 			_emitter.instr("ret");
 		}
 	}

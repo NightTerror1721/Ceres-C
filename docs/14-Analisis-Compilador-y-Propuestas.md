@@ -1188,6 +1188,21 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   cabeza que alinean a ambos y cae al bucle de palabras, y solo las desalineaciones distintas van a
   bytes.
 
+- **Batch 9** (`O15` parte 3, búsqueda): 7 ficheros, 4 hallazgos, todos corregidos. **Dos críticos,
+  ambos miscompilaciones silenciosas**: (1) `__cc_memchr_index` no tenía el guardián de contador no
+  positivo; como `ifbl` es sin signo, un `n` negativo entraba al bucle de palabras y leía fuera del
+  búfer (`for (i = 0; i < n; i++)` devuelve 0 para `n <= 0`). (2) la forma `strlen` se reconocía por
+  el `Cmp` interno del header sin comprobar contra qué se comparaba, así que `while (s[i] != c)` (un
+  "busca el primer `c`" a mano) se bajaba a `__cc_strlen` y devolvía la longitud en vez del índice.
+  Uno medio: `searchByte` se tomaba sin restricción de anchura, pero la rutina trunca a 8 bits y
+  compara el byte del array extendido a cero; un `int c` sin cast comparado a ancho de palabra no es
+  equivalente (bucle y rutina discrepan para `c` fuera de rango o ≥ 128). Ahora se exige que el valor
+  sea de un byte y de la misma signedness que el elemento (o un literal en su rango). Uno de
+  rendimiento: `__cc_memchr_index` se quedaba en bytes para todo el rango si la base estaba
+  desalineada; ahora alinea con bytes y cae al bucle de palabras. Tests de regresión para los dos
+  críticos y para el ancho, más los casos `n = 0` y `n < 0` en el ejemplo —que de hecho cazaron un
+  fallo del propio arreglo: el guardián saltaba a `.cmi_none` antes de que `r7` tuviera la base.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; ABI ancha para F3; formato de depuración para F8; serialización

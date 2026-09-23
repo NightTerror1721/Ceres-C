@@ -2035,6 +2035,8 @@ TEST(codegen, recognized_search_loops_emit_and_call_their_word_routines)
 	CHECK(contains(memchrText, "call __cc_memchr_index"));
 	CHECK(contains(memchrText, "__cc_memchr_index:"));
 	CHECK(!contains(memchrText, "global __cc_memchr_index:"));
+	CHECK(contains(memchrText, "ifle r2, 0, .cmi_none")); // a non-positive bound matches nothing
+	CHECK(contains(memchrText, "cmi_align"));             // and an unaligned base still gets words
 
 	// With the idiom off both stay loops.
 	CHECK(!contains(atO2Without(strlenSource, &support::OptimizationOptions::loopIdioms), "__cc_strlen"));

@@ -789,6 +789,27 @@ TEST(ir_optimizer, loop_idioms_leave_a_search_whose_result_nothing_reads_alone)
 	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
 }
 
+TEST(ir_optimizer, loop_idioms_leave_a_scan_that_stops_at_a_nonzero_value_alone)
+{
+	// `while (s[i] != c)` stops at `c`, not at a NUL; lowering it to `__cc_strlen` would return the
+	// string length instead of the index of `c`.
+	std::string_view source = "int f(char* s, char c) { int i = 0; while (s[i] != c) { i = i + 1; } return i; }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, loop_idioms_leave_a_search_against_a_word_value_alone)
+{
+	// `int c` is compared at word width against a sign-extended byte, which the routine's truncated,
+	// zero-extended byte compare does not reproduce; the pass must decline rather than mis-match.
+	std::string_view source =
+		"int f(char* s, int n, int c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] == c) break; } return i; }";
+	support::OptimizationOptions without = loopIdiomsClean();
+	without.loopIdioms = false;
+	CHECK_EQ(optimizedIr(source, loopIdiomsClean(), "f"), optimizedIr(source, without, "f"));
+}
+
 TEST(ir_optimizer, loop_idioms_leave_a_word_search_alone)
 {
 	std::string_view source =

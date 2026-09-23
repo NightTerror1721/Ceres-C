@@ -3918,10 +3918,10 @@ namespace ceresc::ir
 					stepStoreOf[local] = inLoop;
 				}
 
-				// The base of `scannedByte`, which must be a byte read of `base + counter`.
+				// The base of a byte read of `base + counter`, and whether that byte is signed.
 				u32 counterLocal = ~0u;
 				IrValue base{};
-				auto scannedByteBase = [&](IrValue value) -> IrValue
+				auto scannedByteBase = [&](IrValue value, bool& isSigned) -> IrValue
 				{
 					if (!value.isValid() || value.id >= tempCount || defCount[value.id] != 1)
 						return IrValue{};
@@ -3931,6 +3931,7 @@ namespace ceresc::ir
 					const IrLoadPayload& load = def->as<IrLoadPayload>();
 					if (load.isFloat || load.isVolatile || load.size != IrMemSize::Byte)
 						return IrValue{};
+					isSigned = load.isSigned;
 					IrValue addr = load.address;
 					if (!addr.isValid() || addr.id >= tempCount || defCount[addr.id] != 1)
 						return IrValue{};
@@ -3967,6 +3968,11 @@ namespace ceresc::ir
 				else if (cmp.predicate == IrCmpPredicate::Ne)
 				{
 					// `while (s[i] != 0) i++;` - the header tests the scanned byte against zero.
+					// The compared value must BE zero: `while (s[i] != c)` stops at `c`, not at a
+					// NUL, and `__cc_strlen` would give the wrong answer.
+					i64 compared = 0;
+					if (!intConstant(cmp.rhs, compared) || compared != 0)
+						continue;
 					IrValue scanned = cmp.lhs;
 					if (!scanned.isValid() || scanned.id >= tempCount || defCount[scanned.id] != 1)
 						continue;
@@ -4080,7 +4086,8 @@ namespace ceresc::ir
 						continue;
 					if (foundBranch.trueTarget != blocks[foundTarget].get())
 						continue;
-					IrValue candidateBase = scannedByteBase(eq.lhs);
+					bool scannedSigned = false;
+					IrValue candidateBase = scannedByteBase(eq.lhs, scannedSigned);
 					if (candidateBase.isValid())
 					{
 						base = candidateBase;
@@ -4088,12 +4095,39 @@ namespace ceresc::ir
 					}
 					else
 					{
-						candidateBase = scannedByteBase(eq.rhs);
+						candidateBase = scannedByteBase(eq.rhs, scannedSigned);
 						if (!candidateBase.isValid())
 							continue;
 						base = candidateBase;
 						searchByte = eq.lhs;
 					}
+
+					// The routine truncates the search byte to 8 bits and compares it zero-extended
+					// against the array byte, so the loop and the routine only agree when the
+					// compared value is byte-width with the same signedness as the scanned element
+					// (or a literal in the element's range). An `int c` compared without a cast
+					// would otherwise match a byte the loop never could.
+					bool widthFine = false;
+					i64 literal = 0;
+					if (intConstant(searchByte, literal))
+						widthFine = scannedSigned ? (literal >= -128 && literal <= 127) : (literal >= 0 && literal <= 255);
+					else if (searchByte.isValid() && searchByte.id < tempCount && defCount[searchByte.id] == 1)
+					{
+						const IrInstr* def = definer[searchByte.id];
+						if (def && def->opcode() == IrOpcode::Load)
+						{
+							const IrLoadPayload& load = def->as<IrLoadPayload>();
+							widthFine = !load.isFloat && load.size == IrMemSize::Byte && load.isSigned == scannedSigned;
+						}
+						else if (def && def->opcode() == IrOpcode::UnOp)
+						{
+							const IrUnOpPayload& un = def->as<IrUnOpPayload>();
+							widthFine = un.op == IrUnOp::Narrow && un.narrowSize == IrMemSize::Byte
+								&& (!un.isUnsigned) == scannedSigned;
+						}
+					}
+					if (!widthFine)
+						continue;
 				}
 				else
 				{
