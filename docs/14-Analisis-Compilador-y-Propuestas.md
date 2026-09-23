@@ -1132,6 +1132,19 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `arrayElementHasFlexibleArrayMember`), y `E3099`/`E3100`/`E3101` faltaban en el catálogo de
   `docs/11-Diagnostics.md`.
 
+- **Batch 5** (`O3` LICM): 4 ficheros, 4 hallazgos, todos corregidos (severidad baja). Dos de
+  mantenibilidad: `atO2Without` duplicaba `without()` en los tests de codegen (ahora la reusa), y la
+  justificación del orden "de dentro hacia fuera" de los bucles era falsa (`invariant()` rechaza
+  cualquier operando definido en el bucle, incluido un preheader interior, así que el orden no cambia
+  nada; se retiró el `sort` y se corrigió el comentario). Uno de rendimiento real: `Const` no era
+  elevable, así que `a * 2` en un bucle no se elevaba porque el `2` lo materializa `IrBuilder` dentro
+  del bucle; ahora una constante literal definida en el bucle es invariante y se eleva **junto con**
+  la instrucción que la lee. Eso, a su vez, rompió el plegado `cmp; const 0; br.ne` del que depende
+  la fusión comparación-rama de codegen (el cero se separaba de la rama), así que la elevación de
+  constantes es **a demanda**: solo se mueve una constante cuando otra instrucción elevada la
+  necesita, y una constante que alimenta una rama nunca se mueve. Se añadieron tests para el caso de
+  la constante literal, la exclusión de `FloatToInt` y el bucle con llamada.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (análisis de bucles/dominancia para O15, reasignación de registros
 para O4/O5, ABI ancha para F3, formato de depuración para F8, serialización de IR para F13).

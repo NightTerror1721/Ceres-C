@@ -415,6 +415,35 @@ TEST(ir_optimizer, licm_does_not_hoist_a_load_of_a_local_the_loop_writes)
 	CHECK(text.find("load.word", header) != std::string::npos);
 }
 
+TEST(ir_optimizer, licm_hoists_an_invariant_computation_that_uses_a_literal)
+{
+	// IrBuilder materializes `2` in the loop body, so the multiply's operand is a Const defined in
+	// the loop. Const is hoistable (it has no operands), which is what lets the multiply follow.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::loopInvariantMotion);
+	std::string text = optimizedIr(
+		"int f(int n, int a) { int t = 0; for (int i = 0; i < n; i = i + 1) { t = t + a * 2; } return t; }",
+		options, "f");
+	usize mul = text.find("mul");
+	usize header = text.find("L1:");
+	CHECK(mul != std::string::npos && header != std::string::npos);
+	CHECK(mul < header);
+}
+
+TEST(ir_optimizer, licm_does_not_hoist_a_float_to_int_conversion)
+{
+	// The conversion is undefined when its operand is out of range, so speculating it could turn a
+	// conversion the loop never executed into undefined behaviour. Its operand's load moves out, the
+	// conversion does not.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::loopInvariantMotion);
+	std::string text = optimizedIr(
+		"int f(int n, float x) { int t = 0; for (int i = 0; i < n; i = i + 1) { t = t + (int)x; } return t; }",
+		options, "f");
+	usize ftoi = text.find("ftoi");
+	usize header = text.find("L1:");
+	CHECK(ftoi != std::string::npos && header != std::string::npos);
+	CHECK(ftoi > header);
+}
+
 TEST(ir_optimizer, licm_leaves_a_loop_that_calls_alone)
 {
 	// A value hoisted out of a loop stays live for the whole loop, so it would be live across any

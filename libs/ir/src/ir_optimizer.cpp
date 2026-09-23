@@ -2305,14 +2305,16 @@ namespace ceresc::ir
 
 			std::vector<u32> defCount(tempCount, 0);
 			std::vector<usize> defBlock(tempCount, ~usize(0));
+			std::vector<IrInstr*> definer(tempCount, nullptr);
 			for (usize i = 0; i < blockCount; ++i)
 			{
-				for (const IrInstr* instr : blocks[i]->instrs())
+				for (IrInstr* instr : blocks[i]->instrs())
 				{
 					if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
 					{
 						++defCount[result.id];
 						defBlock[result.id] = i;
+						definer[result.id] = instr;
 					}
 				}
 			}
@@ -2324,6 +2326,20 @@ namespace ceresc::ir
 			// same on every iteration) - see the load case in the hoist test below.
 			std::vector<bool> nonEscaping = collectNonEscapingLocals(function);
 			std::vector<u32> frameAddrLocal = mapFrameAddrTemps(function);
+
+			// The constants a branch reads. codegen's cmp-branch fusion (codegen.cpp) collapses the
+			// `cmp; const 0; br.ne` shape lowerCondition() emits, and it requires that zero to be the
+			// instruction immediately before the branch - so hoisting it would break the fusion and
+			// materialize every condition. Such a constant is therefore left where it is.
+			std::vector<bool> usedByCondJump(tempCount, false);
+			for (const auto& block : blocks)
+				for (const IrInstr* instr : block->instrs())
+					if (instr->opcode() == IrOpcode::CondJump)
+						forEachOperand(*instr, [&](IrValue value)
+						{
+							if (value.isValid() && value.id < tempCount)
+								usedByCondJump[value.id] = true;
+						});
 
 			// Every natural loop, merged by header (a header with two latches is one loop).
 			std::vector<NaturalLoop> loops;
@@ -2383,14 +2399,10 @@ namespace ceresc::ir
 				}
 			}
 
-			// Innermost first, so a value hoisted into an inner preheader can be hoisted further by
-			// an enclosing loop in the same pass.
-			std::sort(loops.begin(), loops.end(), [](const NaturalLoop& a, const NaturalLoop& b)
-			{
-				return std::count(a.blocks.begin(), a.blocks.end(), true) <
-					std::count(b.blocks.begin(), b.blocks.end(), true);
-			});
-
+			// The loops are processed in the order they were discovered. Order does not change what
+			// gets hoisted: `invariant()` rejects an operand defined anywhere inside the loop being
+			// processed, including a block an inner loop already hoisted into, so a value the inner
+			// loop moved to its preheader is not re-hoisted by the enclosing one either way.
 			bool changedAtAll = false;
 			for (const NaturalLoop& loop : loops)
 			{
@@ -2462,16 +2474,20 @@ namespace ceresc::ir
 				// A temporary is invariant when it is defined outside the loop by a single
 				// definition that dominates the preheader, or when it is itself being hoisted. A
 				// second definition makes the value ambiguous (this IR is not SSA), so it is not
-				// hoisted over.
+				// hoisted over. A literal CONSTANT defined in the loop is invariant too - its value
+				// is the same everywhere - and is hoisted along with whatever reads it, but only when
+				// that read is hoisted: a constant feeding a branch has to stay adjacent to it for
+				// codegen's cmp-branch fusion, so a candidate that needs one is declined instead.
 				auto invariant = [&](IrValue value, const std::unordered_set<u32>& hoisted)
 				{
 					if (!value.isValid() || value.id >= tempCount)
 						return true;
 					if (hoisted.contains(value.id))
 						return true;
-					if (definedInLoop[value.id])
-						return false;
-					return defCount[value.id] == 1 && dom[loop.preheader].test(defBlock[value.id]);
+					if (!definedInLoop[value.id])
+						return defCount[value.id] == 1 && dom[loop.preheader].test(defBlock[value.id]);
+					const IrInstr* def = definer[value.id];
+					return def && def->opcode() == IrOpcode::Const && defCount[value.id] == 1 && !usedByCondJump[value.id];
 				};
 
 				std::unordered_set<u32> hoisted;
@@ -2493,14 +2509,35 @@ namespace ceresc::ir
 								continue; // hoisting would extend its live range past the loop
 							if (defCount[result.id] != 1 || !hoistable(*instr))
 								continue;
+							// The loop-defined constants this instruction reads, which have to move
+							// with it so they are defined in the preheader too.
+							std::vector<IrInstr*> neededConsts;
 							bool allInvariant = true;
 							forEachOperand(*instr, [&](IrValue value)
 							{
 								if (!invariant(value, hoisted))
+								{
 									allInvariant = false;
+									return;
+								}
+								if (value.isValid() && value.id < tempCount && definedInLoop[value.id] && !hoisted.contains(value.id))
+								{
+									if (usedOutsideLoop[value.id])
+									{
+										allInvariant = false; // moving it would extend its live range past the loop
+										return;
+									}
+									neededConsts.push_back(definer[value.id]);
+								}
 							});
 							if (!allInvariant)
 								continue;
+							for (IrInstr* constant : neededConsts)
+							{
+								IrValue constantResult = resultOf(*constant);
+								if (hoisted.insert(constantResult.id).second)
+									order.push_back(constant);
+							}
 							hoisted.insert(result.id);
 							order.push_back(instr);
 							progress = true;

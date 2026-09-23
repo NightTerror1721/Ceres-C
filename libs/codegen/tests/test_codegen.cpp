@@ -52,27 +52,6 @@ namespace
 		return result;
 	}
 
-	std::string atO0(std::string_view source)
-	{
-		return generateCasm(source, support::OptimizationOptions::forLevel(support::OptimizationLevel::O0));
-	}
-
-	std::string atO2(std::string_view source)
-	{
-		return generateCasm(source, support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
-	}
-
-	// -O2 with one pass switched off. The register-allocation tests below use it to keep LICM from
-	// hoisting the very loop-carried loads they are written to place: LICM is a real optimization
-	// (it is what turns `s + a + b + c` in a loop into a single add), and it changes what the
-	// allocator sees, so a test of the allocator has to name the pipeline it is testing.
-	std::string atO2Without(std::string_view source, bool support::OptimizationOptions::* flag)
-	{
-		support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
-		options.*flag = false;
-		return generateCasm(source, options);
-	}
-
 	// One optimization at a time, on top of -O0 - what pins a single peephole's effect without the
 	// rest of the pipeline reshaping the output around it.
 	support::OptimizationOptions only(bool support::OptimizationOptions::* flag)
@@ -90,6 +69,25 @@ namespace
 		support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
 		options.*flag = false;
 		return options;
+	}
+
+	std::string atO0(std::string_view source)
+	{
+		return generateCasm(source, support::OptimizationOptions::forLevel(support::OptimizationLevel::O0));
+	}
+
+	std::string atO2(std::string_view source)
+	{
+		return generateCasm(source, support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
+	}
+
+	// -O2 with one pass switched off. The register-allocation tests below use it to keep LICM from
+	// hoisting the very loop-carried loads they are written to place: LICM is a real optimization
+	// (it is what turns `s + a + b + c` in a loop into a single add), and it changes what the
+	// allocator sees, so a test of the allocator has to name the pipeline it is testing.
+	std::string atO2Without(std::string_view source, bool support::OptimizationOptions::* flag)
+	{
+		return generateCasm(source, without(flag));
 	}
 
 	bool contains(std::string_view haystack, std::string_view needle)
