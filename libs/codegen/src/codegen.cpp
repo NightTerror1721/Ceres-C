@@ -2238,8 +2238,8 @@ namespace ceresc::codegen
 			_emitter.label("__cc_memcpy");
 			_emitter.instr("ifle r2, 0, .ccm2_done");  // a signed count <= 0 copies nothing
 			_emitter.instr("ifbe r0, r1, .ccm2_fast"); // d <= s: a forward copy is always safe
-			_emitter.instr("add  r5, r1, r2");
-			_emitter.instr("ifae r0, r5, .ccm2_fast"); // d >= s + n: the ranges are disjoint
+			_emitter.instr("sub  r5, r0, r1");         // d > s here, so d - s cannot wrap
+			_emitter.instr("ifae r5, r2, .ccm2_fast"); // d - s >= n: the ranges are disjoint
 			_emitter.localLabel("ccm2_slow");          // d > s and overlapping: faithful byte copy
 			_emitter.instr("ifeq r2, 0, .ccm2_done");
 			_emitter.instr("ldrb r5, [r1]");
@@ -2249,9 +2249,20 @@ namespace ceresc::codegen
 			_emitter.instr("sub  r2, r2, 1");
 			_emitter.instr("jp   .ccm2_slow");
 			_emitter.localLabel("ccm2_fast");
-			_emitter.instr("or   r5, r0, r1");
-			_emitter.instr("and  r5, r5, 3");
-			_emitter.instr("ifne r5, 0, .ccm2_tail");  // either pointer unaligned: bytes only
+			_emitter.instr("xor  r6, r0, r1");
+			_emitter.instr("and  r6, r6, 3");
+			_emitter.instr("ifne r6, 0, .ccm2_tail");  // different misalignments: bytes only
+			_emitter.instr("and  r6, r0, 3");
+			_emitter.instr("ifeq r6, 0, .ccm2_words"); // both already aligned
+			_emitter.localLabel("ccm2_align");         // same misalignment: align both with bytes
+			_emitter.instr("ifeq r2, 0, .ccm2_done");
+			_emitter.instr("ldrb r6, [r1]");
+			_emitter.instr("strb [r0], r6");
+			_emitter.instr("add  r0, r0, 1");
+			_emitter.instr("add  r1, r1, 1");
+			_emitter.instr("sub  r2, r2, 1");
+			_emitter.instr("and  r6, r0, 3");
+			_emitter.instr("ifne r6, 0, .ccm2_align"); // now both word-aligned: fall into the word loop
 			_emitter.localLabel("ccm2_words");
 			_emitter.instr("ifbl r2, 4, .ccm2_tail");
 			_emitter.instr("ldr  r5, [r1]");

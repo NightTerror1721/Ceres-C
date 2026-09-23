@@ -2014,7 +2014,8 @@ TEST(codegen, a_recognized_byte_copy_loop_emits_the_overlap_safe_word_routine)
 	CHECK(contains(text, "ldr  r5, [r1]"));   // words are copied...
 	CHECK(contains(text, "ccm2_slow"));       // ...except where overlap makes a byte copy necessary
 	CHECK(contains(text, "ifbe r0, r1"));     // d <= s: forward is safe
-	CHECK(contains(text, "ifae r0, r5"));     // d >= s + n: disjoint
+	CHECK(contains(text, "ifae r5, r2"));     // d - s >= n: disjoint
+	CHECK(contains(text, "ccm2_align"));      // same misalignment: align both, then words
 
 	CHECK(!contains(atO2Without(source, &support::OptimizationOptions::loopIdioms), "__cc_memcpy"));
 }

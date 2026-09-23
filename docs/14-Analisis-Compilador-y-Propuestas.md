@@ -1177,6 +1177,17 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   bucle, incremento antes del `store`, relleno volátil, cota constante, y las rutas del guardia y del
   *tail* del propio `__cc_memset`).
 
+- **Batch 8** (`O15` parte 2, copia): 7 ficheros, 2 hallazgos, ambos corregidos (severidad baja). Uno
+  real aunque raro: la prueba de no-solape de `__cc_memcpy` calculaba `s + n`, que da la vuelta a 32
+  bits si el rango origen acaba en lo alto del espacio de direcciones; entonces `ifae d, s+n` daba por
+  disjuntos unos rangos que se solapan y se tomaba la copia por palabras, perdiendo la repetición de
+  bytes que define el bucle C. Ahora se compara `d - s >= n`, que no desborda porque en ese punto
+  `d > s`. El otro, de rendimiento: `__cc_memcpy` se iba a bytes si *cualquiera* de los punteros
+  estaba desalineado, perdiendo la palabra a palabra en el caso común de dos punteros con la **misma**
+  desalineación (`copy_bytes(b + 2, src + 2, n)`); ahora, cuando `(d ^ s) & 3 == 0`, copia los bytes de
+  cabeza que alinean a ambos y cae al bucle de palabras, y solo las desalineaciones distintas van a
+  bytes.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (reconocimiento de idiomas de bucle para O15, que ya cuenta con el
 análisis de bucles; reasignación de registros para O4/O5; ABI ancha para F3; formato de depuración
