@@ -326,7 +326,7 @@ These are the codes a `#pragma warning(...)` can name.
 | Code | Means |
 | --- | --- |
 | `E5001` | A compound assignment to a `struct` that reached lowering. |
-| `E5002` | A 64-bit operation that is not lowered yet: multiplication, division, remainder, a shift, a `float`↔`long long` conversion, a 64-bit switch discriminant, or a 64-bit value crossing a function boundary. 64-bit add/sub/bitwise/comparisons/assignment all work — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `E5002` | A 64-bit operation that is not lowered yet: a shift, a `float`↔`long long` conversion, a 64-bit switch discriminant, or a 64-bit value crossing a function boundary. 64-bit add/sub/mul/div/mod, bitwise, comparisons and assignment all work — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 
 ## Related pages
 

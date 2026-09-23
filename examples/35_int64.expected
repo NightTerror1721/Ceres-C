@@ -11,6 +11,13 @@ globalWide low=11 high=10
 0x100000000 low=0 high=1
 -0x100000000 low=0 high=-1
 b - a low=-1 high=-2
+a * b low=2 high=1
+big * big low=4 high=4
+a / 5 low=858993459 high=0
+a % 5 low=3 high=0
+-a / 5 low=-858993459 high=-1
+-a % 5 low=-3 high=-1
+(unsigned)a / 3 low=1431655766 high=0
 a < a + b: 1
 a == 0x100000002: 1
 (unsigned)(-1) > 1: 1

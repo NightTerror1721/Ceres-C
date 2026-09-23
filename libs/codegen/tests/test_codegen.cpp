@@ -2042,3 +2042,24 @@ TEST(codegen, recognized_search_loops_emit_and_call_their_word_routines)
 	CHECK(!contains(atO2Without(strlenSource, &support::OptimizationOptions::loopIdioms), "__cc_strlen"));
 	CHECK(!contains(atO2Without(memchrSource, &support::OptimizationOptions::loopIdioms), "__cc_memchr_index"));
 }
+
+TEST(codegen, a_64_bit_division_emits_and_calls_the_divmod_routine)
+{
+	// F3.2: `/` and `%` on a 64-bit value lower to a call to the compiler's own `__cc_div64`, whose
+	// body is emitted at the end of `@text` (file-level, so two units never collide).
+	std::string text = generateCasm("int main() { long long a = 100, b = 7; return (int)(a / b); }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O0));
+	CHECK(contains(text, "call __cc_div64"));
+	CHECK(contains(text, "__cc_div64:"));
+	CHECK(!contains(text, "global __cc_div64:"));
+	CHECK(contains(text, "pushm 0x0F00")); // the callee-saved pair it borrows
+	CHECK(contains(text, "div_loop"));
+	CHECK(contains(text, "sbc  r5, r5, r11")); // the cross-word borrow
+
+	// A remainder calls the same routine; a program that never divides never carries it.
+	std::string modText = generateCasm("int main() { long long a = 100, b = 7; return (int)(a % b); }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O0));
+	CHECK(contains(modText, "call __cc_div64"));
+	CHECK(!contains(generateCasm("int main() { long long a = 3, b = 4; return (int)(a * b); }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O0)), "__cc_div64"));
+}

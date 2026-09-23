@@ -1102,7 +1102,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
-| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b hechas** (tipo, layout, literales, representación y aritmética básica); F3.2–F3.5 pendientes |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2 hechas** (tipo, layout, literales, representación, aritmética y mul/div/mod); F3.3–F3.5 pendientes |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
 
@@ -1261,6 +1261,23 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `{` mal colocado en un test, y el ejemplo `35_int64.c` gana el caso `^`, una variable global ancha,
   el caso post-incremento (que era el bug (1)), `(bool)0x100000000LL` (el bug (3)) y las notas de orden
   de bytes y del campo `tag`.
+
+- **F3.2** (multiplicación, división y módulo de 64 bits): el producto completo se compone de las
+  piezas de 32 bits —`lo = low32(al*bl)`, `hi = high32(al*bl) + low32(ah*bl) + low32(al*bh)`— usando
+  el `mul` de 32 bits y el builtin `mulhu` (que ya existía de F1); el patrón de bits bajo de un
+  producto con signo es el mismo que el sin signo, así que no hace falta `imulh`. La **división y el
+  módulo** sí necesitan una rutina: un bucle restaurador de desplazamiento y resta de 64 pasos, que
+  `codegen` emite **una sola vez** al final de `@text` cuando una división aparece (el mismo mecanismo
+  de rutina emitida de O15, con etiquetas *file-level* privadas). El IRBuilder baja `a / b` y `a % b`
+  a una llamada a `__cc_div64` con `dest`, `&a`, `&b` y `firmado` (cuatro punteros/enteros, porque la
+  ABI de 64 bits es F3.4); la rutina deja el cociente en `[dest]` y el resto en `[dest+8]`, así que
+  `/` y `%` comparten una sola llamada. Usa la cadena de acarreo de la ISA (`adc`/`sbc`) para el
+  doble-carry y la resta entre palabras, convierte a magnitud y reaplica los signos al final (división
+  truncada hacia cero de C), y `pushm 0x0F00`/`popm` salvan r8-r11. Un divisor cero (UB en C) guarda
+  cero en vez de dar 64 vueltas. `examples/35_int64.c` fija a mano producto pequeño y grande, `/` y
+  `%` con y sin signo, y un cociente negativo; además se validó contra una referencia de Python con
+  ~1700 casos aleatorios a los tres niveles (sin incluir en el repo, por ser un banco de pruebas).
+  Siguen fuera de F3 los desplazamientos y las conversiones con `float` (F3.3) y la ABI ancha (F3.4).
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para

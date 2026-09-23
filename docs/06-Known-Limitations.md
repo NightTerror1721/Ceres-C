@@ -81,6 +81,10 @@ end handles it with no new IR opcode. That covers:
 - **load/store/copy/assignment**, through a variable, a struct field, an array element or a global;
 - **`+`, `-`**, with the carry/borrow crossing the word boundary (`Cmp` supplies the flag — there is
   no `ADDC` in the IR), and the bitwise **`&`, `|`, `^`, `~`** and unary **`-`**;
+- **`*`, `/`, `%`**: a product composes from the 32-bit `mul` and the unsigned multiply-high
+  (`MULH`), and a division or remainder calls the compiler's own `__cc_div64` — a restoring
+  shift-subtract loop the back end emits once, at the end of `@text`, only when a site asks for it.
+  The quotient and the remainder share the call, signed and unsigned both;
 - **comparisons** (`==`, `!=`, `<`, `<=`, `>`, `>=`), signed or unsigned, comparing the high words
   first and the low words unsigned;
 - `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition, and an `int`↔`long long`
@@ -88,17 +92,19 @@ end handles it with no new IR opcode. That covers:
 
 What is **not** implemented yet, and is refused with `E5002` rather than silently truncated:
 
-- **multiplication, division and remainder** (F3.2 — `MULH`/`IMULH` and an emitted `__cc_div64`);
 - **shifts by 0..63** and the **`float`↔`long long`** conversions (F3.3);
 - **passing or returning a 64-bit value** across a function boundary (F3.4 — the two-register
   calling convention). A wide *local* is fine; a wide parameter, return or call argument is not.
 
 ```c
 long long  a = 0x0000000100000002LL;  /* fine */
-a + 1;  a < b;  a & 0xFF;            /* fine: 64-bit arithmetic and comparisons */
-a * 2;  a / 2;  a << 1;              /* error[E5002]: not lowered yet */
+a + 1;  a * 2;  a / 3;  a % 3;  a < b;  /* fine: 64-bit arithmetic and comparisons */
+a << 1;  (double)a;                  /* error[E5002]: not lowered yet */
 long long  f(long long v);           /* error[E5002]: no 64-bit calling convention yet */
 ```
+
+A zero **divisor** in a 64-bit `/` or `%` is undefined in C, and the emitted routine stores zero
+rather than looping — the 32-bit instructions trap instead (see the division-by-zero note below).
 
 The two types that name a wide **float** are still capped, because there is no f64 register to give
 them: `double` and `long double` are spellings of `float`, and the parser says so:

@@ -98,6 +98,24 @@ int main(void)
     put64("-0x100000000", &negatedPower);
     put64("b - a", &borrowed);
 
+    // Multiplication composes from the 32-bit multiply and multiply-high; division and remainder
+    // call the compiler's own `__cc_div64`, a restoring shift-subtract loop. Signed division
+    // truncates toward zero and the remainder takes the dividend's sign, as C requires.
+    long long product = a * b;
+    long long bigProduct = 0x0000000100000002LL * 0x0000000100000002LL;
+    long long quotient = a / 5;
+    long long remainder = a % 5;
+    long long negatedQuotient = -a / 5;
+    long long negatedRemainder = -a % 5;
+    long long unsignedQuotient = (unsigned long long)a / 3ULL;
+    put64("a * b", &product);
+    put64("big * big", &bigProduct);
+    put64("a / 5", &quotient);
+    put64("a % 5", &remainder);
+    put64("-a / 5", &negatedQuotient);
+    put64("-a % 5", &negatedRemainder);
+    put64("(unsigned)a / 3", &unsignedQuotient);
+
     // The high word carries the comparison: signed and unsigned disagree on `-1`.
     putstr("a < a + b: ");
     put(a < a + b ? '1' : '0');

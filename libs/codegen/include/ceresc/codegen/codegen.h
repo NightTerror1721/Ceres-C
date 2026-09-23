@@ -422,8 +422,10 @@ namespace ceresc::codegen
 		bool _usesMemcpy = false;
 		bool _usesStrlen = false;
 		bool _usesMemchrIndex = false;
-		// Emits every loop-idiom routine a call site asked for, at the end of `@text`.
-		void emitLoopIdiomRoutines();
+		// F3.2: a 64-bit division/remainder site calls the compiler's own `__cc_div64`.
+		bool _usesDiv64 = false;
+		// Emits every compiler-carried routine a call site asked for, at the end of `@text`.
+		void emitEmittedRoutines();
 
 		// True while generating an `__interrupt` handler. Two things change, and both follow from the
 		// same fact: a handler is not called, it preempts. It ends in `iret`, which pops the flags and

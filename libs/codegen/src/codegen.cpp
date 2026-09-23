@@ -1049,6 +1049,8 @@ namespace ceresc::codegen
 					_usesStrlen = true;
 				if (p.callee == "__cc_memchr_index")
 					_usesMemchrIndex = true;
+				if (p.callee == "__cc_div64")
+					_usesDiv64 = true; // a 64-bit division/remainder site (F3.2)
 				if (!p.inlineAsm.empty())
 				{
 					// The author's own text, a line at a time: a line ending in ':' is a label and stands at the left
@@ -2215,7 +2217,7 @@ namespace ceresc::codegen
 		}
 	}
 
-	void CodeGen::emitLoopIdiomRoutines()
+	void CodeGen::emitEmittedRoutines()
 	{
 		// The byte-fill loop's word-at-a-time routine (ir_optimizer.cpp's lowerLoopIdioms). A leaf
 		// with no frame: it uses r0-r7 only and returns nothing, so it is just `ret`. The counter is
@@ -2401,6 +2403,96 @@ namespace ceresc::codegen
 			_emitter.instr("sub  r0, r0, r7");         // == n (or 0 when nothing was scanned)
 			_emitter.instr("ret");
 		}
+
+		// A 64-bit division or remainder (ir_builder.cpp's lowerWideArithmetic, F3.2). The operands
+		// travel as pointers because the 64-bit calling convention is F3.4: `dest` receives the
+		// quotient at +0 and the remainder at +8, `aPtr`/`bPtr` are the two operands' addresses and
+		// r3 is 1 for a signed operation. The restoring shift-subtract loop runs 64 times; `adc`/
+		// `sbc` do the cross-word shift and subtract, which is exactly what the ISA's carry chain is
+		// for. Signed operands are turned into magnitudes first and the signs reapplied at the end,
+		// C's truncating division (`-7 / 2 == -3`, `-7 % 2 == -1`). A zero divisor (undefined in C)
+		// stores zero rather than looping. r8-r11 are callee-saved, so `pushm`/`popm` bracket them.
+		if (_usesDiv64)
+		{
+			_emitter.raw("// emitted because a 64-bit division or remainder was lowered (docs/14 F3.2)");
+			_emitter.label("__cc_div64");
+			_emitter.instr("pushm 0x0F00");            // r8-r11 are the callee-saved pair
+			_emitter.instr("ldr  r8,  [r1]");          // dividend low
+			_emitter.instr("ldr  r9,  [r1 + 4]");      // dividend high
+			_emitter.instr("ldr  r10, [r2]");          // divisor low
+			_emitter.instr("ldr  r11, [r2 + 4]");      // divisor high
+			_emitter.instr("or   r12, r10, r11");
+			_emitter.instr("ifne r12, 0, .div_nonzero");
+			_emitter.instr("li   r12, 0");             // /0 is UB in C: store zero instead of looping
+			_emitter.instr("str  [r0], r12");
+			_emitter.instr("str  [r0 + 4], r12");
+			_emitter.instr("str  [r0 + 8], r12");
+			_emitter.instr("str  [r0 + 12], r12");
+			_emitter.instr("popm 0x0F00");
+			_emitter.instr("ret");
+			_emitter.localLabel("div_nonzero");
+			_emitter.instr("mov  r1, r3");             // r1 = isSigned, captured before r3 is reused
+			_emitter.instr("li   r2, 0");              // negRem
+			_emitter.instr("li   r3, 0");              // negQuot
+			_emitter.instr("ifeq r1, 0, .div_mag");
+			_emitter.instr("shr  r2, r9, 31");         // negRem = sign of the dividend
+			_emitter.instr("xor  r3, r9, r11");
+			_emitter.instr("shr  r3, r3, 31");         // negQuot = sign(a) ^ sign(b)
+			_emitter.instr("ifge r9, 0, .div_dsign");  // dividend >= 0: leave it
+			_emitter.instr("not  r8, r8");
+			_emitter.instr("not  r9, r9");
+			_emitter.instr("add  r8, r8, 1");
+			_emitter.instr("adc  r9, r9, 0");
+			_emitter.localLabel("div_dsign");
+			_emitter.instr("ifge r11, 0, .div_mag");   // divisor >= 0: leave it
+			_emitter.instr("not  r10, r10");
+			_emitter.instr("not  r11, r11");
+			_emitter.instr("add  r10, r10, 1");
+			_emitter.instr("adc  r11, r11, 0");
+			_emitter.localLabel("div_mag");
+			_emitter.instr("li   r4, 0");              // remainder = 0
+			_emitter.instr("li   r5, 0");
+			_emitter.instr("li   r6, 0");              // quotient = 0
+			_emitter.instr("li   r7, 0");
+			_emitter.instr("li   r12, 64");
+			_emitter.localLabel("div_loop");
+			_emitter.instr("shr  r1, r9, 31");         // the dividend's top bit
+			_emitter.instr("shl  r4, r4, 1");          // remainder <<= 1, carry = its old bit 31
+			_emitter.instr("adc  r5, r5, r5");
+			_emitter.instr("or   r4, r4, r1");         // bring the dividend's top bit in
+			_emitter.instr("shl  r8, r8, 1");          // dividend <<= 1
+			_emitter.instr("adc  r9, r9, r9");
+			_emitter.instr("shl  r6, r6, 1");          // quotient <<= 1
+			_emitter.instr("adc  r7, r7, r7");
+			_emitter.instr("ifbl r5, r11, .div_nosub");  // remainder < divisor, unsigned, high first
+			_emitter.instr("ifab r5, r11, .div_sub");
+			_emitter.instr("ifbl r4, r10, .div_nosub");
+			_emitter.localLabel("div_sub");
+			_emitter.instr("sub  r4, r4, r10");
+			_emitter.instr("sbc  r5, r5, r11");
+			_emitter.instr("or   r6, r6, 1");
+			_emitter.localLabel("div_nosub");
+			_emitter.instr("sub  r12, r12, 1");
+			_emitter.instr("ifne r12, 0, .div_loop");
+			_emitter.instr("ifeq r3, 0, .div_qpos");   // quotients are negative only when one sign was
+			_emitter.instr("not  r6, r6");
+			_emitter.instr("not  r7, r7");
+			_emitter.instr("add  r6, r6, 1");
+			_emitter.instr("adc  r7, r7, 0");
+			_emitter.localLabel("div_qpos");
+			_emitter.instr("ifeq r2, 0, .div_rpos");   // the remainder takes the dividend's sign
+			_emitter.instr("not  r4, r4");
+			_emitter.instr("not  r5, r5");
+			_emitter.instr("add  r4, r4, 1");
+			_emitter.instr("adc  r5, r5, 0");
+			_emitter.localLabel("div_rpos");
+			_emitter.instr("str  [r0], r6");
+			_emitter.instr("str  [r0 + 4], r7");
+			_emitter.instr("str  [r0 + 8], r4");
+			_emitter.instr("str  [r0 + 12], r5");
+			_emitter.instr("popm 0x0F00");
+			_emitter.instr("ret");
+		}
 	}
 
 	void CodeGen::emitJumpTables()
@@ -2542,6 +2634,7 @@ namespace ceresc::codegen
 		_usesMemcpy = false;
 		_usesStrlen = false;
 		_usesMemchrIndex = false;
+		_usesDiv64 = false;
 
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the
@@ -2663,7 +2756,7 @@ namespace ceresc::codegen
 
 		// The compiler's own runtime routines, if any call site asked for one - still inside `@text`,
 		// after every function.
-		emitLoopIdiomRoutines();
+		emitEmittedRoutines();
 
 		// Jump tables go in their own `@rodata` block after all the code: their entries name block
 		// labels, which only exist once the function they belong to has been emitted.

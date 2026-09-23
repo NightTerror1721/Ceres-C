@@ -166,10 +166,7 @@ TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
 
 TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
 {
-	// Each is F3.2/F3.3/F3.4 and must be refused rather than miscompiled.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2, b = 3; return (int)(a * b); }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2, b = 3; return (int)(a / b); }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2, b = 3; return (int)(a % b); }"), "not supported in generated code"));
+	// Shifts and float conversions are F3.3 and must be refused rather than miscompiled.
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; return (int)(a << 1); }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 2; double d = (double)a; return (int)d; }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = (long long)1.5; return (int)a; }"), "not supported in generated code"));
@@ -184,6 +181,20 @@ TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
 	// The 64-bit calling convention is F3.4.
 	CHECK(containsMessage(loweringDiagnostics("long long f() { return 0; } int main() { return 0; }"), "not supported in generated code"));
 	CHECK(containsMessage(loweringDiagnostics("int f(long long v) { return 0; } int main() { return 0; }"), "not supported in generated code"));
+}
+
+TEST(ir, the_64_bit_mul_div_mod_lower_to_the_symbol_and_the_emitted_routine)
+{
+	// F3.2: a 64-bit multiply composes from the 32-bit mul and the unsigned multiply-high; a divide
+	// or remainder calls the compiler's own `__cc_div64`.
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 3, b = 4; return (int)(a * b); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 12, b = 4; return (int)(a / b); }"), "not supported in generated code"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 12, b = 5; return (int)(a % b); }"), "not supported in generated code"));
+
+	std::string mul = functionIr("int main() { long long a = 3, b = 4; return (int)(a * b); }");
+	CHECK(mul.find("__builtin_mulhu") != std::string::npos);
+	CHECK(functionIr("int main() { long long a = 12, b = 4; return (int)(a / b); }").find("call __cc_div64") != std::string::npos);
+	CHECK(functionIr("int main() { long long a = 12, b = 5; return (int)(a % b); }").find("call __cc_div64") != std::string::npos);
 }
 
 TEST(ir, a_64_bit_value_works_in_a_ternary_and_as_an_index)

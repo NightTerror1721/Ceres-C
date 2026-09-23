@@ -723,33 +723,39 @@ namespace ceresc::ir
 	IrValue IrBuilder::lowerWideArithmetic(support::SourceLocation loc, BinaryOp op, const Type* resultType,
 		const Type* lhsType, const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
 	{
-		switch (op)
+		// Shifts are F3.3; everything else here is a two-word computation.
+		if (op == BinaryOp::Shl || op == BinaryOp::Shr)
 		{
-			case BinaryOp::Add:
-			case BinaryOp::Sub:
-			case BinaryOp::BitAnd:
-			case BinaryOp::BitOr:
-			case BinaryOp::BitXor:
-				break;
-			case BinaryOp::Mul:
-				rejectWideFeature(loc, "64-bit multiplication");
-				return lhsVal;
-			case BinaryOp::Div:
-				rejectWideFeature(loc, "64-bit division");
-				return lhsVal;
-			case BinaryOp::Mod:
-				rejectWideFeature(loc, "64-bit modulo");
-				return lhsVal;
-			case BinaryOp::Shl:
-			case BinaryOp::Shr:
-				rejectWideFeature(loc, "64-bit shift");
-				return lhsVal;
-			default:
-				return lhsVal; // comparisons/logical never reach lowerArithmetic()
+			rejectWideFeature(loc, "64-bit shift");
+			return lhsVal;
 		}
 
 		IrValue a = materializeWide(loc, lhsVal, lhsType);
 		IrValue b = materializeWide(loc, rhsVal, rhsType);
+
+		// Division and remainder are the one operation with no composed-in-IR form worth writing:
+		// a restoring shift-subtract loop over 64 bits. It is emitted once, as CASM, at the end of
+		// @text (codegen's emitEmittedRoutines), and called with the two operands' addresses and the
+		// result's address - a pair of 32-bit pointers each, so no 64-bit calling convention is
+		// needed. The routine leaves the quotient at `dest` and the remainder at `dest + 8`.
+		if (op == BinaryOp::Div || op == BinaryOp::Mod)
+		{
+			IrValue dest = emitFrameAddr(loc, newStructTempSlot(16));
+			IrValue signedFlag = emitConstInt(loc, (resultType && !resultType->isSigned()) ? 0 : 1);
+			// The Params must sit immediately before the Call (codegen reads them back by position),
+			// and `dest` is allocated before them so nothing is emitted in between.
+			emitVoid(loc, IrParamPayload{ dest, false, false });
+			emitVoid(loc, IrParamPayload{ a, false, false });
+			emitVoid(loc, IrParamPayload{ b, false, false });
+			emitVoid(loc, IrParamPayload{ signedFlag, false, false });
+			IrCallPayload payload;
+			payload.callee = "__cc_div64";
+			payload.hasResult = false;
+			payload.argCount = 4;
+			emitVoid(loc, payload);
+			return op == BinaryOp::Div ? dest : offsetAddress(loc, dest, 8);
+		}
+
 		bool aVolatile = lhsType && lhsType->isVolatile();
 		bool bVolatile = rhsType && rhsType->isVolatile();
 		IrValue aLow = loadWideWord(loc, a, false, aVolatile);
@@ -780,6 +786,22 @@ namespace ceresc::ir
 				high = emitBinOp(loc, IrBinOp::Sub, highDiff, borrow, true);
 				break;
 			}
+			case BinaryOp::Mul:
+			{
+				// The full 64-bit product from the 32-bit pieces:
+				//   lo = low32(al*bl)
+				//   hi = high32(al*bl) + low32(ah*bl) + low32(al*bh)   (mod 2^32)
+				// The low 64 bits of a signed product are the same bit pattern as the unsigned one
+				// (two's complement), so the cross terms use the unsigned multiply-high.
+				IrValue lowProduct = emitBinOp(loc, IrBinOp::Mul, aLow, bLow, true);
+				IrValue highProduct = emitBuiltin(loc, ast::Builtin::MulhUnsigned, aLow, bLow);
+				IrValue crossHighLow = emitBinOp(loc, IrBinOp::Mul, aHigh, bLow, true);
+				IrValue crossLowHigh = emitBinOp(loc, IrBinOp::Mul, aLow, bHigh, true);
+				IrValue highSum = emitBinOp(loc, IrBinOp::Add, highProduct, crossHighLow, true);
+				high = emitBinOp(loc, IrBinOp::Add, highSum, crossLowHigh, true);
+				low = lowProduct;
+				break;
+			}
 			case BinaryOp::BitAnd:
 				low = emitBinOp(loc, IrBinOp::And, aLow, bLow, true);
 				high = emitBinOp(loc, IrBinOp::And, aHigh, bHigh, true);
@@ -793,7 +815,7 @@ namespace ceresc::ir
 				high = emitBinOp(loc, IrBinOp::Xor, aHigh, bHigh, true);
 				break;
 			default:
-				break;
+				return lhsVal; // comparisons/logical never reach lowerArithmetic()
 		}
 		return makeWideValue(loc, low, high);
 	}
