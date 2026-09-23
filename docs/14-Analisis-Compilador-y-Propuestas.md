@@ -1097,7 +1097,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
-| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | pendiente |
+| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | parcial (relleno hecho; copia y búsqueda pendientes) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
@@ -1188,6 +1188,25 @@ ambos pases comparten; es el único cambio que toca al LICM, y sus tests y golde
 recorrido inverso desde un índice no nulo) con valores calculados a mano, corriendo a los tres
 niveles. Medido sobre el caso stride 12, el cuerpo pasa de `mul` + `add` + carga a una sola carga,
 con el `add` de avance movido al latch: una instrucción menos por iteración y sin multiplicación.
+
+**O15 empezó por el idioma de relleno.** `lowerFillIdioms` (`-floop-idioms`, ON en O1/Os, OFF en O0
+y en `-Og`) reconoce `for (i = 0; i < n; i++) p[i] = c;` —contador local no escapado y de palabra,
+inicializado a 0 antes del bucle y sumado 1 en el *latch* único; `n` y `c` invariantes; un único
+`store` de byte, no volátil, a través de `base + i`; una sola salida, la rama falsa del header— y lo
+sustituye por una llamada a `__cc_memset`, una rutina que **emite el propio compilador** al final del
+`@text` de la unidad (nunca se enlaza de la biblioteca, así que un programa que usa el idioma siempre
+la tiene y uno que no, no paga nada). La rutina es un símbolo *file-level* (privado), así que dos
+unidades que usen el idioma llevan cada una su copia y el enlazador no ve duplicados; rellena palabra
+a palabra una vez alineado el destino, con cola de bytes, y trata un contador con signo ≤ 0 como cero
+bytes, que es lo que hacía el `for`. El reconocimiento es deliberadamente estrecho (nada de `break`,
+de llamadas, de comparación sin signo ni de contadores que no empiecen en 0) y se apoya en el LICM
+para elevar `c`, que llega estrechado; los cinco casos negativos están cubiertos por tests.
+`examples/32_loop_fill.c` fija la salida a mano a los tres niveles, incluido el caso `n = 0`.
+
+Queda la mitad grande de O15: los idiomas de **copia** (`d[i] = s[i]`) y de **búsqueda**
+(`while (*s) s++;`, `strcmp`, `memchr`), que necesitan la misma infraestructura de rutina emitida
+pero una rutina más compleja (copia con origen y destino desalineados, y la prueba palabra a palabra
+`(w - 0x01010101) & ~w & 0x80808080`).
 
 **F6 se partió en dos.** El *flexible array member* es autocontenido (parser, layout, `sizeof`,
 acceso) y ya está hecho. `alloca`/VLA no lo son: el compilador direcciona todo el frame como

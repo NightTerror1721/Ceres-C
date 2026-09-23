@@ -1977,3 +1977,26 @@ TEST(codegen, the_min_max_idiom_flag_off_keeps_the_branch_diamond)
 	CHECK(!contains(text, "imin"));
 	CHECK(contains(text, "ifls"));
 }
+
+// ---- loop idiom recognition (O15) --------------------------------------------------------------
+
+TEST(codegen, a_recognized_byte_fill_loop_emits_and_calls_the_word_routine)
+{
+	std::string_view source = "void f(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }";
+
+	std::string text = atO2(source);
+	CHECK(contains(text, "call __cc_memset"));     // the loop is a call...
+	CHECK(contains(text, "__cc_memset:"));         // ...to a routine the unit carries itself
+	CHECK(!contains(text, "global __cc_memset:")); // file-level, so two units never collide
+	CHECK(contains(text, "str  [r0], r5"));        // and that routine fills words
+
+	// With the idiom off the loop stays a loop: a byte store per element, no routine.
+	std::string plain = atO2Without(source, &support::OptimizationOptions::loopIdioms);
+	CHECK(!contains(plain, "__cc_memset"));
+	CHECK(contains(plain, "strb "));
+}
+
+TEST(codegen, the_emitted_routine_is_not_present_when_no_loop_asks_for_it)
+{
+	CHECK(!contains(atO2("int f(int a) { return a + 1; }"), "__cc_memset"));
+}

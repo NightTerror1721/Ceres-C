@@ -1041,6 +1041,8 @@ namespace ceresc::codegen
 			case IrOpcode::Call:
 			{
 				const auto& p = instr.as<IrCallPayload>();
+				if (p.callee == "__cc_memset")
+					_usesMemset = true; // the routine is emitted at the end of @text, not linked in
 				if (!p.inlineAsm.empty())
 				{
 					// The author's own text, a line at a time: a line ending in ':' is a label and stands at the left
@@ -2182,6 +2184,40 @@ namespace ceresc::codegen
 		}
 	}
 
+	void CodeGen::emitLoopIdiomRoutines()
+	{
+		if (!_usesMemset)
+			return;
+
+		// The byte-fill loop's word-at-a-time routine (ir_optimizer.cpp's lowerFillIdioms). A leaf
+		// with no frame: it uses r0-r7 only and returns nothing, so it is just `ret`. The counter is
+		// signed, so a non-positive `n` fills nothing - exactly what the `for (i = 0; i < n; i++)`
+		// it replaces did. File-level (no `global`), so each unit carries its own copy and two units
+		// that both use the idiom never collide at link time.
+		_emitter.raw("// emitted because a byte-fill loop was recognized (docs/14 O15)");
+		_emitter.label("__cc_memset");
+		_emitter.instr("ifle r2, 0, .ccm_done");   // a signed count <= 0 fills nothing
+		_emitter.instr("and  r1, r1, 255");        // keep only the low byte of the fill value
+		_emitter.instr("la   r5, 0x01010101");
+		_emitter.instr("mul  r5, r1, r5");         // replicate it into all four bytes
+		_emitter.instr("and  r6, r0, 3");
+		_emitter.instr("ifne r6, 0, .ccm_tail");   // an unaligned destination fills bytes to the edge
+		_emitter.localLabel("ccm_words");
+		_emitter.instr("ifbl r2, 4, .ccm_tail");
+		_emitter.instr("str  [r0], r5");
+		_emitter.instr("add  r0, r0, 4");
+		_emitter.instr("sub  r2, r2, 4");
+		_emitter.instr("jp   .ccm_words");
+		_emitter.localLabel("ccm_tail");
+		_emitter.instr("ifeq r2, 0, .ccm_done");
+		_emitter.instr("strb [r0], r1");
+		_emitter.instr("add  r0, r0, 1");
+		_emitter.instr("sub  r2, r2, 1");
+		_emitter.instr("jp   .ccm_tail");
+		_emitter.localLabel("ccm_done");
+		_emitter.instr("ret");
+	}
+
 	void CodeGen::emitJumpTables()
 	{
 		// A second `@rodata` block, after every function's `@text`, so the block labels each entry
@@ -2317,6 +2353,7 @@ namespace ceresc::codegen
 		_nextInitializerStringId = 0;
 		_jumpTables.clear();
 		_nextJumpTableId = 0;
+		_usesMemset = false;
 
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the
@@ -2435,6 +2472,10 @@ namespace ceresc::codegen
 			else
 				_diagnostics.error(DiagId::MissingDeclarationForFunction, {}, "internal error: no declaration found for generated function '{}'", function->name());
 		}
+
+		// The compiler's own runtime routines, if any call site asked for one - still inside `@text`,
+		// after every function.
+		emitLoopIdiomRoutines();
 
 		// Jump tables go in their own `@rodata` block after all the code: their entries name block
 		// labels, which only exist once the function they belong to has been emitted.
