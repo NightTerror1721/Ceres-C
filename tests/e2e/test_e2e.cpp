@@ -1053,6 +1053,23 @@ TEST(e2e, a_parameter_displaced_by_a_register_local_does_not_land_on_another_par
 		"42");
 }
 
+TEST(e2e, a_displaced_parameter_does_not_clobber_a_wide_parameters_high_arrival_register)
+{
+	// A 64-bit parameter arrives as a consecutive register PAIR (r1/r2 here), and the prologue reads
+	// BOTH words before it settles the pair. A displaced narrow parameter must not be homed on the
+	// high word: reserving only the pair's first register let `a` land on r2, and its `mov r2, r0`
+	// overwrote `w`'s high word, so the returned high half was 1 instead of 0.
+	runsTheSameAtEveryLevel("wide_arrival_pair_preserved",
+		"long long f(int a, long long w, int b) {"
+		"    register int p = a, q = b, r = a, s = b, t = a;"
+		"    int k = 0;"
+		"    while (k < a) { p = p + 1; q = q + 1; r = r + 1; s = s + 1; t = t + 1; k = k + 1; }"
+		"    return w + p + q + r + s + t + a + b;"
+		"}"
+		"int main() { long long r = f(1, 2LL, 3); return 42 + (int)(r >> 32); }",
+		"", 42);
+}
+
 // ---- composite memory: arrays, pointers and structs (Fase 7) -----------------------------------
 //
 // The phase's own deliverables and exit criterion: `suma_array`, a function that fills and reads a

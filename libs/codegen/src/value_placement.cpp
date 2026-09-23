@@ -14,6 +14,9 @@ namespace ceresc::codegen
 		constexpr u32 kInvalidLocal = ~0u;
 		// The "no such position" sentinel for the cross-block pass's emission-order scan.
 		constexpr usize kNoPosition = ~0ull;
+		// Argument registers per bank (r0-r3 / f0-f3) - the ABI's four, shared with assignArgSlots()
+		// in frame_layout.cpp. Named so the arrival-register reservation below stays in sync with it.
+		constexpr u32 kArgRegisterCount = 4;
 
 		// r6/r7/r12 are caller-saved and free in any function; r0-r3 additionally in one that calls
 		// nothing, since nothing will clobber them (they are only the ARGUMENT registers on the way
@@ -324,14 +327,26 @@ namespace ceresc::codegen
 		// registers never being handed a value at a call site (codegen.cpp). A `register` local
 		// may still take an argument register; it only forces the parameter it displaces to some
 		// other register (or a frame slot), never onto another parameter's arrival.
-		std::vector<bool> intArrivalReserved(4, false);
-		std::vector<bool> floatArrivalReserved(4, false);
+		std::vector<bool> intArrivalReserved(kArgRegisterCount, false);
+		std::vector<bool> floatArrivalReserved(kArgRegisterCount, false);
 		for (u32 i = 0; i < function.paramCount(); ++i)
 		{
-			if (_paramArrival[i].kind == ArgSlotKind::IntReg && _paramArrival[i].index < 4)
-				intArrivalReserved[_paramArrival[i].index] = true;
-			else if (_paramArrival[i].kind == ArgSlotKind::FloatReg && _paramArrival[i].index < 4)
-				floatArrivalReserved[_paramArrival[i].index] = true;
+			const ArgSlot& arrival = _paramArrival[i];
+			std::vector<bool>* reserved = nullptr;
+			if (arrival.kind == ArgSlotKind::IntReg)
+				reserved = &intArrivalReserved;
+			else if (arrival.kind == ArgSlotKind::FloatReg)
+				reserved = &floatArrivalReserved;
+			if (reserved == nullptr)
+				continue;
+			if (arrival.index < kArgRegisterCount)
+				(*reserved)[arrival.index] = true;
+			// A wide (64-bit) parameter arrives as a consecutive register PAIR, and the prologue
+			// reads BOTH words (codegen.cpp's `bankReg(index + 1)`) before it settles the pair, so
+			// the high register is an arrival too - reserve it, or a displaced narrow parameter
+			// could be homed there and clobber the high word first.
+			if (arrival.wide && arrival.index + 1 < kArgRegisterCount)
+				(*reserved)[arrival.index + 1] = true;
 		}
 		auto takeRegisterAvoiding = [](std::vector<u32>& pool, u32 wanted, const std::vector<bool>& reserved) -> std::optional<u32>
 		{

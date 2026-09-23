@@ -1416,7 +1416,24 @@ TEST(codegen, a_displaced_parameter_is_not_homed_on_another_parameters_arrival_r
 	std::string prologue = casm.substr(0, casm.find(".L0:"));
 	CHECK(contains(prologue, "str [sp + __frame_f.slot0], r0")); // `a` displaced to a slot
 	CHECK(contains(prologue, "str [sp + __frame_f.slot1], r1")); // `b` displaced to a slot
-	CHECK(!contains(prologue, "mov "));                          // neither landed on r2/r3
+	CHECK(!contains(prologue, "mov r2, r0"));                    // `a` did not land on `c`'s arrival
+	CHECK(!contains(prologue, "mov r3, r1"));                    // `b` did not land on `d`'s arrival
+}
+
+TEST(codegen, a_wide_parameters_high_arrival_register_is_reserved_too)
+{
+	// A 64-bit parameter arrives as a consecutive register PAIR (r1/r2 here) and the prologue reads
+	// both words before settling it, so the HIGH register is an arrival as well. A displaced narrow
+	// parameter homed on r2 would `mov r2, arrived` over the high word first.
+	std::string casm = atO2(
+		"long long f(int a, long long w, int b) {"
+		"    register int p = a, q = b, r = a, s = b, t = a;"
+		"    int k = 0;"
+		"    while (k < a) { p = p + 1; q = q + 1; r = r + 1; s = s + 1; t = t + 1; k = k + 1; }"
+		"    return w + p + q + r + s + t + a + b;"
+		"}");
+	std::string prologue = casm.substr(0, casm.find(".L0:"));
+	CHECK(!contains(prologue, "mov r2, r0")); // `a` did not land on `w`'s high word
 }
 
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)

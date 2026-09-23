@@ -1417,6 +1417,18 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `a_parameter_displaced_by_a_register_local_does_not_land_on_another_parameters_arrival_register`
   (e2e: devolvía 26 en vez de 42 a O1/O2).
 
+  **Revisión de `ocr` sobre el arreglo** (`d997b48`): 3 ficheros, 3 hallazgos, **uno medio real y
+  corregido**: la reserva marcaba solo el PRIMER registro de la pareja de llegada de un parámetro
+  ancho (`long long` llega en `r1/r2`), pero el prólogo lee las dos palabras antes de asentarlo, así
+  que un parámetro estrecho desbancado podía caer en la palabra alta y su `mov r2, r0` la pisaba
+  antes de tiempo (devolvía la mitad alta de `w` como 1 en vez de 0); ahora se reserva la pareja
+  entera (`arrival.index + 1` acotado por el banco), con el test e2e
+  `a_displaced_parameter_does_not_clobber_a_wide_parameters_high_arrival_register` y el de codegen
+  `a_wide_parameters_high_arrival_register_is_reserved_too`. Bajos corregidos: el tamaño de banco
+  era un `4` literal en tres sitios (ahora `kArgRegisterCount`, compartido conceptualmente con
+  `assignArgSlots`), y la aserción de codegen prohibía cualquier `mov` en el prólogo (frágil); ahora
+  comprueba los dos movimientos peligrosos concretos.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;
