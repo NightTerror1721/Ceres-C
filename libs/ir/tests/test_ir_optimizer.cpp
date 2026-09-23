@@ -227,6 +227,11 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	// Block layout is an ordinary O1 optimization, so it is off at O0 by construction.
 	CHECK(o1.blockLayout);
 	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).blockLayout);
+
+	// The conditional-constant pass is an ordinary O1 optimization too, and -Og keeps it: resolving
+	// a branch makes the code easier to follow, not harder.
+	CHECK(o1.conditionalConstants && og.conditionalConstants);
+	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).conditionalConstants);
 }
 
 // ---- self-comparison folding ---------------------------------------------------------------------
@@ -282,6 +287,83 @@ TEST(ir_optimizer, an_if_on_a_self_comparison_takes_its_branch)
 		support::OptimizationOptions::forLevel(support::OptimizationLevel::O1), "f");
 	CHECK(contains(text, "const 1"));
 	CHECK(!contains(text, "const 0")); // the impossible arm is gone
+}
+
+// ---- sparse conditional constant propagation (SCCP) ----------------------------------------------
+
+TEST(ir_optimizer, sccp_resolves_a_constant_switch_to_its_taken_case)
+{
+	// A dense switch lowers to a jump table, which the ordinary constant folder cannot reach: it
+	// folds comparisons, and a table dispatch is not one. The conditional lattice knows the
+	// discriminant is 3, so the whole table collapses to a jump into the case-3 body.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.conditionalConstants = true;
+	options.jumpTables = true;
+
+	std::string text = optimizedIr(
+		"int f() { switch (3) { case 1: return 11; case 2: return 22; case 3: return 33; case 4: return 44; case 5: return 55; } return 0; }",
+		options, "f");
+	CHECK(!contains(text, "tbl.jmp"));
+	CHECK(contains(text, "jmp L3")); // the case-3 block
+	CHECK(contains(text, "const 33"));
+}
+
+TEST(ir_optimizer, sccp_resolves_a_switch_whose_discriminant_it_computes)
+{
+	// `1 + 2` is not a Const instruction, so collectConstants() would not see it - the lattice folds
+	// the add itself and still resolves the table. Value folding is left to the constant folder, so
+	// the `add` instruction survives here (dead-code elimination would take it) - what matters is
+	// that the dispatch is a direct jump.
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.conditionalConstants = true;
+	options.jumpTables = true;
+
+	std::string text = optimizedIr(
+		"int f() { switch (1 + 2) { case 1: return 11; case 2: return 22; case 3: return 33; case 4: return 44; case 5: return 55; } return 0; }",
+		options, "f");
+	CHECK(contains(text, "add"));
+	CHECK(!contains(text, "tbl.jmp"));
+	CHECK(contains(text, "jmp L3"));
+}
+
+TEST(ir_optimizer, sccp_resolves_a_branch_on_a_constant)
+{
+	support::OptimizationOptions options = only(&support::OptimizationOptions::conditionalConstants);
+	std::string text = optimizedIr("int f() { if (3 < 4) return 1; return 0; }", options, "f");
+	CHECK(!contains(text, "br."));
+	CHECK(contains(text, "jmp L1"));
+	CHECK(contains(text, "const 1"));
+}
+
+TEST(ir_optimizer, sccp_plus_unreachable_elimination_drops_the_dead_arm)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.conditionalConstants = true;
+	options.unreachableBlockElimination = true;
+
+	std::string text = optimizedIr("int f() { if (3 < 4) return 1; return 0; }", options, "f");
+	CHECK(!contains(text, "br."));
+	CHECK(!contains(text, "L2:")); // the `return 0` block the resolved branch left unreachable
+	CHECK(contains(text, "const 1"));
+}
+
+TEST(ir_optimizer, sccp_leaves_a_division_by_zero_alone)
+{
+	// The lattice folds `2 - 2` to 0 so it can see the divisor, but a division by zero has no
+	// compile-time value (the VM traps rather than producing one), so the div must survive.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::conditionalConstants);
+	std::string text = optimizedIr("int f() { return 8 / (2 - 2); }", options, "f");
+	CHECK(contains(text, "div"));
+}
+
+TEST(ir_optimizer, sccp_does_not_resolve_a_branch_on_a_twice_defined_temporary)
+{
+	// The ternary writes one shared result temporary on both arms (IrBuilder's own shape), so that
+	// temporary has two definitions and is not SSA. Were the lattice to keep the first arm's
+	// constant, the branch below would resolve to that arm and miscompile; it must stay.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::conditionalConstants);
+	std::string text = optimizedIr("int f(int a) { if (a ? 1 : 0) return 10; return 20; }", options, "f");
+	CHECK(contains(text, "br."));
 }
 
 // ---- block layout --------------------------------------------------------------------------------

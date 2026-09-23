@@ -515,6 +515,361 @@ namespace ceresc::ir
 			return changed;
 		}
 
+		// ---- pass: sparse conditional constant propagation (SCCP) --------------------------------------
+		//
+		// foldFunction() folds constants, but it is not aware of which way a branch goes: it treats a
+		// branch whose condition is known as any other fold, and it never asks what that means for the
+		// blocks on the other side. That is what this pass adds, with the classic SCCP lattice and
+		// worklist:
+		//
+		//   - every temporary gets a lattice value: Undefined (nothing known yet), Constant(v), or
+		//     Overdefined (provably not a constant). A temporary defined more than once is Overdefined
+		//     from the start, because this IR is deliberately not SSA - it reuses ids across the arms
+		//     of a ternary or a materialized boolean.
+		//   - the entry block is executable; a terminator marks its successor edges executable as soon
+		//     as its condition is known: only the taken one when Constant, both when Overdefined, and
+		//     neither while Undefined (the terminator is re-evaluated when an operand's lattice moves).
+		//   - a worklist re-evaluates every instruction that reads a temporary whose lattice changed.
+		//
+		// The payoff is a branch on a known constant becoming a jump to the taken arm, and - the case
+		// foldFunction cannot reach at all, because a switch dispatch is a TableJump and not a
+		// comparison - a constant switch collapsing straight to its matching case. Unreachable-block
+		// elimination then drops whatever those resolved branches left behind.
+		//
+		// Value folding itself is left to foldFunction(), which runs first in the round and already
+		// turns an all-constant BinOp/UnOp/Cmp into a Const; the lattice only folds them so it can
+		// know a branch condition. A Copy is deliberately not rewritten either - propagateCopies()
+		// exists to erase it, and folding one into a Const here would hide the copy from that pass.
+
+		struct SccpLattice
+		{
+			enum class Kind : u8 { Undefined, Constant, Overdefined };
+
+			Kind kind = Kind::Undefined;
+			ConstValue constant;
+		};
+
+		bool propagateConditionalConstants(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		{
+			if (!options.conditionalConstants)
+				return false;
+
+			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+			const usize blockCount = blocks.size();
+			const usize tempCount = function.tempCount();
+			if (blockCount == 0)
+				return false;
+
+			// How many times each temporary is defined, and which block each instruction lives in.
+			// Only a temporary with exactly one definition can be a constant - see the note above.
+			std::vector<u32> defCount(tempCount, 0);
+			std::unordered_map<const IrInstr*, usize> instrBlock;
+			std::unordered_map<const BasicBlock*, usize> blockIndex;
+			for (usize bi = 0; bi < blockCount; ++bi)
+			{
+				blockIndex.emplace(blocks[bi].get(), bi);
+				for (const IrInstr* instr : blocks[bi]->instrs())
+				{
+					instrBlock.emplace(instr, bi);
+					if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
+						++defCount[result.id];
+				}
+			}
+
+			// Which instructions read each temporary - so a change in its lattice re-evaluates them.
+			std::vector<std::vector<IrInstr*>> users(tempCount);
+			for (const auto& block : blocks)
+				for (IrInstr* instr : block->instrs())
+					forEachOperand(*instr, [&](IrValue value)
+					{
+						if (value.isValid() && value.id < tempCount)
+							users[value.id].push_back(instr);
+					});
+
+			std::vector<SccpLattice> lattice(tempCount);
+			for (usize t = 0; t < tempCount; ++t)
+				if (defCount[t] != 1)
+					lattice[t].kind = SccpLattice::Kind::Overdefined;
+
+			std::vector<bool> executable(blockCount, false);
+			std::vector<IrInstr*> worklist;
+			std::unordered_set<const IrInstr*> queued;
+			auto enqueue = [&](IrInstr* instr)
+			{
+				if (instr && queued.insert(instr).second)
+					worklist.push_back(instr);
+			};
+
+			auto isTerminator = [](const IrInstr& instr)
+			{
+				switch (instr.opcode())
+				{
+					case IrOpcode::Jump:
+					case IrOpcode::CondJump:
+					case IrOpcode::TableJump:
+					case IrOpcode::Return:
+						return true;
+					default:
+						return false;
+				}
+			};
+
+			// Marks a block executable (once) and queues its instructions. An unterminated block
+			// falls through to the next one, exactly as successorsOf() reads the CFG.
+			auto makeExecutable = [&](usize start)
+			{
+				usize bi = start;
+				while (bi < blockCount && !executable[bi])
+				{
+					executable[bi] = true;
+					std::span<IrInstr* const> instrs = blocks[bi]->instrs();
+					for (IrInstr* instr : instrs)
+						enqueue(instr);
+					if (!instrs.empty() && isTerminator(*instrs.back()))
+						break;
+					++bi;
+				}
+			};
+
+			SccpLattice overdefined;
+			overdefined.kind = SccpLattice::Kind::Overdefined;
+			auto latticeOf = [&](IrValue value) -> SccpLattice
+			{
+				if (!value.isValid() || value.id >= tempCount)
+					return overdefined;
+				return lattice[value.id];
+			};
+
+			auto constant = [](const ConstValue& value)
+			{
+				SccpLattice result;
+				result.kind = SccpLattice::Kind::Constant;
+				result.constant = value;
+				return result;
+			};
+
+			auto evalBinOp = [&](const IrBinOpPayload& p) -> SccpLattice
+			{
+				const SccpLattice lhs = latticeOf(p.lhs);
+				const SccpLattice rhs = latticeOf(p.rhs);
+				if (lhs.kind == SccpLattice::Kind::Overdefined || rhs.kind == SccpLattice::Kind::Overdefined)
+					return overdefined;
+				if (lhs.kind == SccpLattice::Kind::Undefined || rhs.kind == SccpLattice::Kind::Undefined)
+					return SccpLattice{};
+				if (std::optional<ConstValue> folded = foldBinOp(p, lhs.constant, rhs.constant))
+					return constant(*folded);
+				return overdefined; // e.g. division by zero: the VM's result is not a compile-time constant
+			};
+
+			auto evalUnOp = [&](const IrUnOpPayload& p) -> SccpLattice
+			{
+				const SccpLattice operand = latticeOf(p.operand);
+				if (operand.kind == SccpLattice::Kind::Overdefined)
+					return overdefined;
+				if (operand.kind == SccpLattice::Kind::Undefined)
+					return SccpLattice{};
+				if (std::optional<ConstValue> folded = foldUnOp(p, operand.constant))
+					return constant(*folded);
+				return overdefined;
+			};
+
+			auto evalCmp = [&](const IrCmpPayload& p) -> SccpLattice
+			{
+				// `x OP x` is a constant for an integer x whatever the operand's lattice says - the
+				// two reads name the same value. A float is excluded because NaN makes it false.
+				if (!p.isFloat && p.lhs.isValid() && p.lhs == p.rhs)
+					return constant(ConstValue{ false, selfComparisonTruth(p.predicate) ? 1 : 0, 0.0f });
+				const SccpLattice lhs = latticeOf(p.lhs);
+				const SccpLattice rhs = latticeOf(p.rhs);
+				if (lhs.kind == SccpLattice::Kind::Overdefined || rhs.kind == SccpLattice::Kind::Overdefined)
+					return overdefined;
+				if (lhs.kind == SccpLattice::Kind::Undefined || rhs.kind == SccpLattice::Kind::Undefined)
+					return SccpLattice{};
+				if (std::optional<bool> result = evaluatePredicate(p.predicate, p.isUnsigned, p.isFloat, lhs.constant, rhs.constant))
+					return constant(ConstValue{ false, *result ? 1 : 0, 0.0f });
+				return overdefined;
+			};
+
+			auto resolveCondition = [&](IrCmpPredicate predicate, bool isUnsigned, bool isFloat, IrValue lhs, IrValue rhs)
+				-> std::optional<bool>
+			{
+				if (!isFloat && lhs.isValid() && lhs == rhs)
+					return selfComparisonTruth(predicate);
+				const SccpLattice l = latticeOf(lhs);
+				const SccpLattice r = latticeOf(rhs);
+				if (l.kind != SccpLattice::Kind::Constant || r.kind != SccpLattice::Kind::Constant)
+					return std::nullopt;
+				return evaluatePredicate(predicate, isUnsigned, isFloat, l.constant, r.constant);
+			};
+
+			auto enqueueUsers = [&](IrValue result)
+			{
+				if (!result.isValid() || result.id >= tempCount)
+					return;
+				for (IrInstr* user : users[result.id])
+					enqueue(user);
+			};
+
+			auto joinResult = [&](IrValue result, const SccpLattice& value)
+			{
+				if (!result.isValid() || result.id >= tempCount)
+					return;
+				SccpLattice& slot = lattice[result.id];
+				if (slot.kind == SccpLattice::Kind::Overdefined || value.kind == SccpLattice::Kind::Undefined)
+					return;
+				if (value.kind == SccpLattice::Kind::Overdefined)
+				{
+					slot.kind = SccpLattice::Kind::Overdefined;
+					enqueueUsers(result);
+					return;
+				}
+				if (slot.kind == SccpLattice::Kind::Undefined)
+				{
+					slot = value;
+					enqueueUsers(result);
+					return;
+				}
+				// Already Constant: a conflicting value would mean this temporary is not one.
+				if (slot.constant.isFloat != value.constant.isFloat || slot.constant.intValue != value.constant.intValue ||
+					slot.constant.floatValue != value.constant.floatValue)
+				{
+					slot.kind = SccpLattice::Kind::Overdefined;
+					enqueueUsers(result);
+				}
+			};
+
+			auto evaluate = [&](IrInstr* instr)
+			{
+				auto blockIt = instrBlock.find(instr);
+				if (blockIt == instrBlock.end() || !executable[blockIt->second])
+					return;
+
+				auto mark = [&](BasicBlock* target)
+				{
+					if (auto it = blockIndex.find(target); it != blockIndex.end())
+						makeExecutable(it->second);
+				};
+
+				switch (instr->opcode())
+				{
+					case IrOpcode::Const:
+					{
+						const auto& p = instr->as<IrConstPayload>();
+						joinResult(p.result, constant(ConstValue{ p.isFloat, p.intValue, p.floatValue }));
+						break;
+					}
+					case IrOpcode::BinOp: joinResult(instr->as<IrBinOpPayload>().result, evalBinOp(instr->as<IrBinOpPayload>())); break;
+					case IrOpcode::UnOp: joinResult(instr->as<IrUnOpPayload>().result, evalUnOp(instr->as<IrUnOpPayload>())); break;
+					case IrOpcode::Cmp: joinResult(instr->as<IrCmpPayload>().result, evalCmp(instr->as<IrCmpPayload>())); break;
+					case IrOpcode::Copy: joinResult(instr->as<IrCopyPayload>().result, latticeOf(instr->as<IrCopyPayload>().source)); break;
+					case IrOpcode::Jump: mark(instr->as<IrJumpPayload>().target); break;
+					case IrOpcode::CondJump:
+					{
+						const auto& p = instr->as<IrCondJumpPayload>();
+						if (p.trueTarget == p.falseTarget)
+						{
+							mark(p.trueTarget); // the condition is irrelevant when both arms land together
+							break;
+						}
+						if (std::optional<bool> taken = resolveCondition(p.predicate, p.isUnsigned, p.isFloat, p.lhs, p.rhs))
+							mark(*taken ? p.trueTarget : p.falseTarget);
+						else if (latticeOf(p.lhs).kind == SccpLattice::Kind::Overdefined ||
+							latticeOf(p.rhs).kind == SccpLattice::Kind::Overdefined)
+						{
+							mark(p.trueTarget);
+							mark(p.falseTarget);
+						}
+						break;
+					}
+					case IrOpcode::TableJump:
+					{
+						const auto& p = instr->as<IrTableJumpPayload>();
+						const SccpLattice discriminant = latticeOf(p.discriminant);
+						if (discriminant.kind == SccpLattice::Kind::Undefined)
+							break;
+						if (discriminant.kind == SccpLattice::Kind::Overdefined)
+						{
+							for (u32 i = 0; i < p.entryCount; ++i)
+								mark(p.targets[i]);
+							mark(p.defaultTarget);
+							break;
+						}
+						// The runtime computes `discriminant - low` in 32 bits and compares it
+						// unsigned against entryCount (codegen.cpp), so mirror that exactly.
+						u32 index = static_cast<u32>(discriminant.constant.intValue) - static_cast<u32>(p.low);
+						mark(index < p.entryCount ? p.targets[index] : p.defaultTarget);
+						break;
+					}
+					default:
+						if (IrValue result = resultOf(*instr); result.isValid())
+							joinResult(result, overdefined);
+						break;
+				}
+			};
+
+			makeExecutable(0);
+			while (!worklist.empty())
+			{
+				IrInstr* instr = worklist.back();
+				worklist.pop_back();
+				queued.erase(instr);
+				evaluate(instr);
+			}
+
+			// Only terminators are rewritten here: a branch on a known constant becomes a jump, and a
+			// switch on a known constant becomes a jump straight to the matching case. Unreachable
+			// blocks are left to removeUnreachableBlocks(), which reads the CFG these rewrites leave.
+			bool changed = false;
+			for (usize bi = 0; bi < blockCount; ++bi)
+			{
+				if (!executable[bi])
+					continue;
+				const auto& block = blocks[bi];
+				std::vector<IrInstr*> rewritten;
+				rewritten.reserve(block->instrs().size());
+				bool blockChanged = false;
+
+				for (IrInstr* instr : block->instrs())
+				{
+					IrInstr* replacement = nullptr;
+					if (instr->opcode() == IrOpcode::CondJump)
+					{
+						const auto& p = instr->as<IrCondJumpPayload>();
+						if (std::optional<bool> taken = resolveCondition(p.predicate, p.isUnsigned, p.isFloat, p.lhs, p.rhs))
+							replacement = arena.create<IrInstr>(instr->location(), IrJumpPayload{ *taken ? p.trueTarget : p.falseTarget });
+					}
+					else if (instr->opcode() == IrOpcode::TableJump)
+					{
+						const auto& p = instr->as<IrTableJumpPayload>();
+						const SccpLattice discriminant = latticeOf(p.discriminant);
+						if (discriminant.kind == SccpLattice::Kind::Constant)
+						{
+							u32 index = static_cast<u32>(discriminant.constant.intValue) - static_cast<u32>(p.low);
+							BasicBlock* target = index < p.entryCount ? p.targets[index] : p.defaultTarget;
+							replacement = arena.create<IrInstr>(instr->location(), IrJumpPayload{ target });
+						}
+					}
+
+					if (replacement)
+					{
+						rewritten.push_back(replacement);
+						blockChanged = true;
+					}
+					else
+					{
+						rewritten.push_back(instr);
+					}
+				}
+
+				if (blockChanged)
+				{
+					block->replaceInstrs(std::move(rewritten));
+					changed = true;
+				}
+			}
+			return changed;
+		}
+
 		// ---- pass: strength reduction ------------------------------------------------------------------
 		//
 		// A multiplication, division or remainder by a compile-time CONSTANT POWER OF TWO is one
@@ -2420,6 +2775,7 @@ namespace ceresc::ir
 				// runs until nothing moves rather than trying to get the order exactly right.
 				bool changed = false;
 				changed |= foldFunction(*function, arena, options);
+				changed |= propagateConditionalConstants(*function, arena, options);
 				changed |= reduceStrength(*function, arena, options);
 				changed |= forwardLoads(*function, arena, options);
 				changed |= forwardRestrictLoads(*function, arena, options);
