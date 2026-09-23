@@ -1386,6 +1386,16 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   del retorno, alcanzables solo con asignación de registros), y se corrigió el mojibake (`Â§`→`§`,
   `Ã±`→`ñ`) que una edición anterior había introducido en `ir_builder.cpp` y `test_codegen.cpp`.
 
+- **Corrección de la llamada de cola con una dirección de local** (la destapó la construcción de la
+  STDLIB para F3.5): `return g(&s)` se convertía en llamada de cola, pero el `leave` del epílogo
+  reclama el frame del llamador y el argumento `&s` apunta dentro de él, así que el callee leía y
+  escribía pila ya liberada (un cuelgue en `test_disk_fs` de la STDLIB a `-O1`, donde `go` devolvía
+  `vformat(&s, ...)`). `findTailCall` ya rechazaba un argumento que fuera a la pila saliente; ahora
+  rechaza también cualquier argumento que sea, o derive de, un `FrameAddr` (`argReferencesFrame()`:
+  marca los temporales de `FrameAddr` y propaga por `Copy`/`BinOp`/`UnOp`, que es la aritmética de
+  `&s->campo`; una `Load` de esa dirección es un VALOR y corta la propagación). Cubierto por
+  `a_call_passing_the_address_of_a_local_is_not_a_tail_call`.
+
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
 O4/O5; `#line`/`_Pragma` para F12; representación y ABI ancha de F3, que ya tiene su mitad de tipos;

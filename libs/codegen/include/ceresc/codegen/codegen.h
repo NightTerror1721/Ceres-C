@@ -279,6 +279,8 @@ namespace ceresc::codegen
 		//   - a direct call to a named function (an indirect target or inline asm is left alone);
 		//   - every argument fits in an argument register, so no outgoing stack word has to be
 		//     written into the caller's frame after `leave` would have destroyed it;
+		//   - no argument is the address of a caller local (or derives from one): `leave` reclaims
+		//     the frame, so such a pointer would dangle. See argReferencesFrame();
 		//   - the call's result is read only by the Return, and the two agree on the bank;
 		//   - not `main` (its Return is the shutdown sequence, not a `ret`) and not an interrupt
 		//     handler (its Return is an `iret`).
@@ -286,6 +288,11 @@ namespace ceresc::codegen
 		// `ret`, and marks the Return consumed. The `jp` needs no return address of its own: the
 		// caller's own return address is already where the callee's `ret` will pop it.
 		const ir::IrReturnPayload* findTailCall(std::span<ir::IrInstr* const> instrs, usize index) const;
+
+		// True when any Param in `params` passes a temporary that is, or derives from, a FrameAddr -
+		// the test findTailCall() uses to refuse a tail call whose argument would point into the
+		// frame `leave` is about to reclaim.
+		bool argReferencesFrame(std::span<ir::IrInstr* const> params) const;
 
 		// ---- address folding (Fase 7) -----------------------------------------------------------
 

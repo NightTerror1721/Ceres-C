@@ -1850,6 +1850,27 @@ TEST(codegen, a_call_whose_result_is_used_is_not_a_tail_call)
 	CHECK(contains(text, "call g"));
 }
 
+TEST(codegen, a_call_passing_the_address_of_a_local_is_not_a_tail_call)
+{
+	// F3.4 exposed this: a tail call `leave`s first, reclaiming the caller's frame; an argument that
+	// points INTO that frame (`&s`, or a `&s->field` derived from it) would dangle. The call must
+	// stay ordinary so the frame is still alive while the callee uses the pointer.
+	std::string addr = atO2("int g(void* p); int f(void) { int s = 5; return g(&s); }");
+	CHECK(contains(addr, "call g"));
+	CHECK(!contains(addr, "jp g"));
+
+	// A field address (a FrameAddr plus an offset) is just as dangling.
+	std::string field = atO2(
+		"struct S { int a; int b; }; int g(int* p);"
+		"int f(void) { struct S s; s.a = 1; return g(&s.b); }");
+	CHECK(contains(field, "call g"));
+	CHECK(!contains(field, "jp g"));
+
+	// But a call that passes an ordinary value is still a tail call.
+	std::string value = atO2("int g(int x); int f(int n) { return g(n); }");
+	CHECK(contains(value, "jp g"));
+}
+
 TEST(codegen, a_call_with_a_stack_argument_is_not_a_tail_call)
 {
 	// The fifth argument would live in the outgoing area of a frame `leave` has already destroyed.

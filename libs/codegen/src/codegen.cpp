@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <bit>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 // See codegen.h for where values live (ValuePlacement decides, this file emits) and for the four
@@ -653,7 +654,50 @@ namespace ceresc::codegen
 			if (slot.kind == ArgSlotKind::Stack)
 				return nullptr;
 
+		// A tail call `leave`s first, which reclaims the caller's frame. An argument that is the
+		// address of a local in that frame (or derives from one, `&s->field`) would then point at
+		// reclaimed stack - the callee writes and reads through it after the frame is gone. Refuse
+		// the call when any argument value transitively derives from a FrameAddr.
+		if (argReferencesFrame(instrs.subspan(index - call.argCount, call.argCount)))
+			return nullptr;
+
 		return &ret;
+	}
+
+	// True when any of `params` is, or derives from, the address of a frame local: mark every
+	// temporary defined by a FrameAddr, then propagate through the address arithmetic (Copy, BinOp,
+	// UnOp) that a `&s->field` produces. A Load of such an address yields a VALUE, not an address,
+	// so it stops the propagation - which is exactly the distinction that matters here.
+	bool CodeGen::argReferencesFrame(std::span<IrInstr* const> params) const
+	{
+		std::unordered_set<u32> frameDerived;
+		for (const auto& block : _function->blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				bool derived = instr->opcode() == IrOpcode::FrameAddr;
+				if (!derived)
+				{
+					derived = instr->opcode() == IrOpcode::Copy
+						? frameDerived.contains(instr->as<IrCopyPayload>().source.id)
+						: false;
+				}
+				if (!derived && instr->opcode() == IrOpcode::BinOp)
+				{
+					const auto& p = instr->as<IrBinOpPayload>();
+					derived = frameDerived.contains(p.lhs.id) || frameDerived.contains(p.rhs.id);
+				}
+				if (!derived && instr->opcode() == IrOpcode::UnOp)
+					derived = frameDerived.contains(instr->as<IrUnOpPayload>().operand.id);
+				if (derived)
+					if (IrValue result = resultOf(*instr); result.isValid())
+						frameDerived.insert(result.id);
+			}
+		}
+		for (const IrInstr* paramInstr : params)
+			if (IrValue v = paramInstr->as<IrParamPayload>().value; v.isValid() && frameDerived.contains(v.id))
+				return true;
+		return false;
 	}
 
 	// ---- address folding --------------------------------------------------------------------
