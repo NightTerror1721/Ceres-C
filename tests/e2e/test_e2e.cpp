@@ -111,6 +111,41 @@ namespace
 				std::format("O{}:{}", static_cast<int>(level), expected));
 		}
 	}
+
+	// Compiles a C file and a hand-written .casm together (the driver assembles and links both for
+	// real), returning `main`'s exit status - or -1 when there is no sibling CeresASM checkout.
+	// The two files deliberately have different stems: the driver writes a C unit's generated .casm
+	// under the C source's own name, so a hand-written .casm sharing that stem would be overwritten.
+	int compileLinkAndRunWithCasm(std::string_view name, std::string_view cSource, std::string_view casmSource,
+		ceresc::support::OptimizationLevel level)
+	{
+		std::optional<fs::path> ceresDir = findCeresDirectory();
+		if (!ceresDir)
+			return -1;
+
+		fs::path workDir = fs::temp_directory_path() / "ceresc_e2e_casm" / std::format("O{}", static_cast<int>(level));
+		std::error_code error;
+		fs::remove_all(workDir, error);
+		fs::create_directories(workDir, error);
+
+		fs::path cPath = workDir / std::format("{}_prog.c", name);
+		fs::path casmPath = workDir / std::format("{}_abi.casm", name);
+		{
+			std::ofstream c(cPath, std::ios::binary);
+			c << cSource;
+			std::ofstream a(casmPath, std::ios::binary);
+			a << casmSource;
+		}
+
+		ceresc::driver::Options options;
+		options.inputPaths.push_back(cPath.string());
+		options.inputPaths.push_back(casmPath.string());
+		options.outputPath = (workDir / std::format("{}.cres", name)).string();
+		options.optimization = ceresc::support::OptimizationOptions::forLevel(level);
+		options.ceresPath = ceresDir->string();
+		options.run = true; // the driver assembles, links and runs; the program prints nothing
+		return ceresc::driver::run(options);
+	}
 }
 
 TEST(e2e, return_constant_assembles_and_runs_without_faulting)
@@ -609,6 +644,86 @@ TEST(e2e, a_value_in_a_register_survives_an_inline_assembly_that_destroys_every_
 		"}\n"
 		"int main(void) { return f(5); }\n",
 		"", 28);
+}
+
+TEST(e2e, setjmp_and_longjmp_round_trip_against_a_hand_written_abi_pair)
+{
+	// The ABI contract asm/setjmp.casm (the STDLIB) relies on, checked end to end: the hand-written
+	// pair saves r8-r11/f8-f15, fp, sp and the return address, and longjmp puts them back. If the
+	// compiler's frame or callee-saved set ever moved, the resumed code would read the wrong value
+	// (or jump to the wrong place) and main would return 7 or the VM would fault.
+	using ceresc::support::OptimizationLevel;
+
+	const char* source =
+		"unsigned int jmpbuf[16];\n"
+		"extern int cc_setjmp(unsigned int* buf);\n"
+		"extern void cc_longjmp(unsigned int* buf, int val);\n"
+		"int main(void)\n"
+		"{\n"
+		"    int a = 1, b = 2, c = 3;\n"
+		"    int x = cc_setjmp(jmpbuf);\n"
+		"    if (x == 0)\n"
+		"        cc_longjmp(jmpbuf, 5);\n"
+		"    return (x == 5 && a + b + c == 6) ? 0 : 7;\n"
+		"}\n";
+
+	const char* abiPair = R"CASM(
+@text
+
+global cc_setjmp:                 // (buf in r0)
+    str [r0 + 0],  r8
+    str [r0 + 4],  r9
+    str [r0 + 8],  r10
+    str [r0 + 12], r11
+    str [r0 + 16], fp
+    str [r0 + 20], sp
+    ldr r1, [sp]
+    str [r0 + 24], r1
+    str [r0 + 28], f8
+    str [r0 + 32], f9
+    str [r0 + 36], f10
+    str [r0 + 40], f11
+    str [r0 + 44], f12
+    str [r0 + 48], f13
+    str [r0 + 52], f14
+    str [r0 + 56], f15
+    li  r0, 0
+    ret
+
+global cc_longjmp:                // (buf in r0, val in r1)
+    ldr r8,  [r0 + 0]
+    ldr r9,  [r0 + 4]
+    ldr r10, [r0 + 8]
+    ldr r11, [r0 + 12]
+    ldr fp,  [r0 + 16]
+    ldr f8,  [r0 + 28]
+    ldr f9,  [r0 + 32]
+    ldr f10, [r0 + 36]
+    ldr f11, [r0 + 40]
+    ldr f12, [r0 + 44]
+    ldr f13, [r0 + 48]
+    ldr f14, [r0 + 52]
+    ldr f15, [r0 + 56]
+    ldr r2,  [r0 + 24]
+    ldr sp,  [r0 + 20]
+    add sp, sp, 4
+    ifne r1, 0, .lj_done
+    li  r1, 1
+.lj_done:
+    mov r0, r1
+    jp  r2
+)CASM";
+
+	for (OptimizationLevel level : { OptimizationLevel::O0, OptimizationLevel::O1, OptimizationLevel::O2 })
+	{
+		int status = compileLinkAndRunWithCasm("setjmp", source, abiPair, level);
+		if (status < 0)
+		{
+			std::printf("  (skipped: no sibling CeresASM checkout found - set CERESC_CERES_PATH)\n");
+			return;
+		}
+		CHECK_EQ(std::format("O{}:{}", static_cast<int>(level), status), std::format("O{}:0", static_cast<int>(level)));
+	}
 }
 
 TEST(e2e, global_variables_persist_across_calls)

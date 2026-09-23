@@ -1867,3 +1867,34 @@ TEST(codegen, a_tail_call_restores_the_callee_saved_registers_before_the_jump)
 	size_t jump = text.find("jp g");
 	CHECK(popm != std::string::npos && jump != std::string::npos && popm < jump);
 }
+
+// ---- the callee-saved ABI contract (F4) -------------------------------------------------------
+
+TEST(codegen, the_callee_saved_set_is_the_one_setjmp_saves)
+{
+	// asm/setjmp.casm saves exactly r8-r11 and f8-f15. A function that must keep a value across a
+	// call uses that set and only it, so the pair round-trips. These masks are the contract written
+	// down: if the allocator ever handed a value live across a call a register outside the set, they
+	// would change - and setjmp would restore the wrong register.
+	std::string ints = atO2(
+		"int g(void);\n"
+		"int f(int a, int b, int c, int d, int e, int h, int i, int j) {\n"
+		"    int p = a + b; int q = c + d; int r = e + h; int s = i + j;\n"
+		"    g(); return p + q + r + s;\n"
+		"}\n");
+	CHECK(contains(ints, "pushm 0x0F00"));
+	CHECK(contains(ints, "popm 0x0F00"));
+	CHECK_EQ(countOf(ints, "pushm "), usize(1));
+	CHECK_EQ(countOf(ints, "popm "), usize(1));
+
+	std::string floats = atO2(
+		"float g(void);\n"
+		"float f(float a, float b, float c, float d) {\n"
+		"    float p = a + b; float q = c + d; float r = a * b; float s = c * d;\n"
+		"    g(); return p + q + r + s;\n"
+		"}\n");
+	CHECK(contains(floats, "fpushm 0x0F00"));
+	CHECK(contains(floats, "fpopm 0x0F00"));
+	CHECK_EQ(countOf(floats, "fpushm "), usize(1));
+	CHECK_EQ(countOf(floats, "fpopm "), usize(1));
+}

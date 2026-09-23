@@ -1035,6 +1035,7 @@ de extremo a extremo la forma que los dos fallos altos podían romper.
 | **F10** — builtins del compilador (`__builtin_trap`/`unreachable`/`expect`/`constant_p`) | **hecha** | `Add __builtin_trap/unreachable/expect/constant_p` |
 | **F2** — aritmética marcada (`__builtin_add/sub/mul_overflow`) | **hecha** | `Add __builtin_add/sub/mul_overflow` |
 | **O7** — llamada de cola (`return f(args)` → epílogo + `jp`) | **hecha** | `Turn a returned call into a tail call` |
+| **F4** — contrato de ABI de `setjmp`/`longjmp` verificado | **hecha** | `Pin the setjmp/longjmp callee-saved ABI with tests` |
 | **F3**, **F6**, **F7**, **F12**, **F14** | **aplazadas, con motivo** | — |
 
 **Por qué se aplazan.** Igual que en la Ola B, cada una es un proyecto en sí:
@@ -1082,7 +1083,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) | **aplazado** (subsumido por copy propagation + DCE; el coalescing real pertenece a O4) |
 | 5 | **O8** — acceso PC-relativo a estáticos (`LDRP`/`STRP`) | ensamblador | **bloqueado** (CASM no expone `LDRP`/`STRP`) |
 | 6 | **O7** — llamada de cola + `BL`/`BLR` | — | **hecho** (solo `jp`; `BL`/`BLR` cambian el epílogo por sitio de llamada y se descartan) |
-| 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | pendiente |
+| 7 | **F4** — `setjmp`/`longjmp` nativo (o contrato de ABI verificado) | — | **hecho** (contrato verificado: `setjmp` en CASM a mano + golden de los máscaras callee-saved) |
 | 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; falta el reconocimiento de patrones `min`/`max`/`abs` | — | parcial |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | pendiente |
 | 10 | **O11** — **hecho** el plegado de autocomparación (6 predicados); falta el lattice condicional completo | — | parcial |
