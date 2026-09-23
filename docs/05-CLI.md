@@ -132,7 +132,7 @@ Optimizations are **on by default**: no `-O` flag means `-O1`.
 | `-O2` | Everything, inlining included. |
 | `-O3` | Accepted as an alias for `-O2`. There is no third tier; failing a build over a habit every other C compiler tolerates helps nobody. |
 | `-Os` | Everything `-O1` does except the two transforms that grow the image: no inlining and no jump tables. |
-| `-Og` | Everything `-O1` does except the two that make the code harder to follow: no inlining and no frame-slot reuse (a slot per scope). |
+| `-Og` | Everything `-O1` does except the three that make the code harder to follow: no inlining, no frame-slot reuse (a slot per scope), and no induction-variable pointer replacing a plain `base + i*C` with a hidden slot. |
 
 Each individual optimization also has its own switch, and a `-f`/`-fno-` **overrides whatever `-O`
 set, in argument order** — the same resolution rule as `-S`/`--run`:

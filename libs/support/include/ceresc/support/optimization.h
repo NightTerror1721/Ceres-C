@@ -63,6 +63,7 @@ namespace ceresc::support
 		bool minMaxIdioms = true;				// `a < b ? a : b` -> imin/umin, `x < 0 ? -x : x` -> abs
 		bool conditionalConstants = true;		// branch-aware constant propagation: resolve a branch/switch on a known constant
 		bool loopInvariantMotion = true;		// hoist a loop-invariant computation into the loop's preheader
+		bool inductionStrengthReduction = true;	// replace `base + i*C` in a loop with a pointer advanced by k*C
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
 		bool framelessLeaf = true;				// no enter/leave at all when nothing needs the frame
@@ -113,6 +114,7 @@ namespace ceresc::support
 			{ "min-max",            &OptimizationOptions::minMaxIdioms,             "recognize `a < b ? a : b` as min/max and `x < 0 ? -x : x` as abs" },
 			{ "sccp",               &OptimizationOptions::conditionalConstants,     "propagate constants along taken branches and resolve a constant switch" },
 			{ "loop-invariant",     &OptimizationOptions::loopInvariantMotion,      "hoist a loop-invariant computation into the loop's preheader" },
+			{ "induction-vars",     &OptimizationOptions::inductionStrengthReduction, "replace `base + i*C` in a loop with a pointer advanced by C per iteration" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },
@@ -151,11 +153,14 @@ namespace ceresc::support
 			case OptimizationLevel::Og:
 				// For debugging: everything O1 does except the transforms that make the generated
 				// code harder to follow. Reusing one frame slot for locals in disjoint scopes is
-				// the one that makes a slot's identity change across scopes, and a tail call erases
-				// a frame from the call stack the debugger would otherwise show.
+				// the one that makes a slot's identity change across scopes, a tail call erases a
+				// frame from the call stack the debugger would otherwise show, and an
+				// induction-variable pointer replaces a readable `base + i*C` with a slot that is
+				// loaded, advanced and stored behind the scenes.
 				options.inlining = false;
 				options.localSlotReuse = false;
 				options.tailCalls = false;
+				options.inductionStrengthReduction = false;
 				break;
 		}
 		return options;

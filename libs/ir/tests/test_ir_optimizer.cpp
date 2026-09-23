@@ -99,6 +99,19 @@ namespace
 		return options;
 	}
 
+	// Induction-variable strength reduction matches `base + counter*C` only when `base` is already
+	// loop invariant and defined before the loop - which is LICM's job. The two are enabled together
+	// here, the order the real pipeline runs them in. Dead-code elimination joins them because the
+	// pass leaves the old address computation behind for it to remove.
+	support::OptimizationOptions loopAndInduction()
+	{
+		support::OptimizationOptions options = support::OptimizationOptions::none();
+		options.loopInvariantMotion = true;
+		options.inductionStrengthReduction = true;
+		options.deadCodeElimination = true;
+		return options;
+	}
+
 	bool contains(std::string_view haystack, std::string_view needle)
 	{
 		return haystack.find(needle) != std::string_view::npos;
@@ -453,6 +466,75 @@ TEST(ir_optimizer, licm_leaves_a_loop_that_calls_alone)
 		"int g(int); int f(int n, int a) { int t = 0; for (int i = 0; i < n; i = i + 1) { t = t + a + g(i); } return t; }";
 	CHECK_EQ(optimizedIr(source, only(&support::OptimizationOptions::loopInvariantMotion), "f"),
 		optimizedIr(source, support::OptimizationOptions::none(), "f"));
+}
+
+// ---- induction-variable strength reduction (IV-SR) -----------------------------------------------
+
+TEST(ir_optimizer, induction_strength_reduction_turns_a_struct_array_walk_into_a_pointer)
+{
+	// `arr[i].a` with a twelve-byte element strides by a multiply that is not a power of two. The
+	// pass replaces the body's `mul` and its address add with a load of a pointer carried in a
+	// fresh local slot (locals grows from 4 to 5) that the latch bumps by 12. With the pass off the
+	// multiply is still in the body; with it on there is none left after the header.
+	std::string_view source =
+		"struct T { int a; int b; int c; }; "
+		"int f(struct T* arr, int n) { int s = 0; for (int i = 0; i < n; i = i + 1) { s = s + arr[i].a; } return s; }";
+
+	support::OptimizationOptions without = loopAndInduction();
+	without.inductionStrengthReduction = false;
+
+	std::string before = optimizedIr(source, without, "f");
+	std::string after = optimizedIr(source, loopAndInduction(), "f");
+
+	usize beforeHeader = before.find("L1:");
+	usize afterHeader = after.find("L1:");
+	CHECK(beforeHeader != std::string::npos && afterHeader != std::string::npos);
+	CHECK(before.find("mul", beforeHeader) != std::string::npos); // the stride multiply is in the body
+	CHECK(after.find("mul", afterHeader) == std::string::npos);   // and is gone with the pass on
+	CHECK(contains(after, "locals=5"));                           // the pointer's own slot
+}
+
+TEST(ir_optimizer, induction_strength_reduction_scales_the_step_by_the_element_size)
+{
+	// `i = i + 2` over 4-byte elements advances the pointer by 8, not 4: the latch's bump is a
+	// `const 8`, which only a step-aware pass produces.
+	std::string_view source =
+		"int f(int* arr, int n) { int s = 0; for (int i = 0; i < n; i = i + 2) { s = s + arr[i]; } return s; }";
+	CHECK(contains(optimizedIr(source, loopAndInduction(), "f"), "const 8"));
+}
+
+TEST(ir_optimizer, induction_strength_reduction_advances_a_global_array_walk)
+{
+	// A global array's address is loop invariant with no LICM help, so this is the pass on its own:
+	// the pointer slot makes the function one local wider and the body has no multiply left.
+	std::string_view source =
+		"int data[8]; int f(int n) { int s = 0; for (int i = 0; i < n; i = i + 1) { s = s + data[i]; } return s; }";
+	std::string after = optimizedIr(source, loopAndInduction(), "f");
+	CHECK(contains(after, "locals=4")); // params(1) + s + i + the pointer
+	CHECK(countOf(after, "mul") == 0);
+}
+
+TEST(ir_optimizer, induction_strength_reduction_leaves_a_loop_that_calls_alone)
+{
+	// A pointer carried across the loop is live across any call the loop makes, and the allocator's
+	// live-range test does not understand back edges, so a loop with a call is left untouched. The
+	// base is a global here, so invariance is not what makes the pass decline - the call is.
+	std::string_view source =
+		"int g(int); int data[8]; int f(int n) { int s = 0; for (int i = 0; i < n; i = i + 1) { s = s + data[i] + g(i); } return s; }";
+	support::OptimizationOptions without = loopAndInduction();
+	without.inductionStrengthReduction = false;
+	CHECK_EQ(optimizedIr(source, loopAndInduction(), "f"), optimizedIr(source, without, "f"));
+}
+
+TEST(ir_optimizer, induction_strength_reduction_leaves_a_scaled_index_alone)
+{
+	// `arr[i * 2]` is still a walk, but the scaled operand is a derived value rather than a direct
+	// read of the counter, so the canonical shape is absent and nothing changes.
+	std::string_view source =
+		"int f(int* arr, int n) { int s = 0; for (int i = 0; i < n; i = i + 1) { s = s + arr[i * 2]; } return s; }";
+	support::OptimizationOptions without = loopAndInduction();
+	without.inductionStrengthReduction = false;
+	CHECK_EQ(optimizedIr(source, loopAndInduction(), "f"), optimizedIr(source, without, "f"));
 }
 
 // ---- block layout --------------------------------------------------------------------------------

@@ -1096,7 +1096,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 10 | **O11** — plegado de autocomparación **y** SCCP (lattice + worklist, aristas tomadas, `switch` constante resuelto) | — | **hecho** |
 | 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
-| 13 | **O3** — LICM **hecho** (detección de bucles naturales + dominancia); falta IV-SR | — | parcial |
+| 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | pendiente |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
@@ -1153,8 +1153,26 @@ para O4/O5, ABI ancha para F3, formato de depuración para F8, serialización de
 sobre un árbol de dominancia) y elevación de cargas/cálculos invariantes al preheader. Un bucle que
 llama a algo se deja intacto a propósito: un valor elevado vive durante todo el bucle, o sea también
 a través de la llamada, y el propio test del asignador para "¿este rango cruza una llamada?" es
-lineal en orden de emisión, que una arista de retroceso engaña. La reducción de fuerza de variables
-de inducción sigue pendiente; necesita el mismo análisis y su propio coste.
+lineal en orden de emisión, que una arista de retroceso engaña.
+
+**La parte 2 de O3 (IV-SR) también está.** `strengthReduceInductionVariables` (`-finduction-vars`,
+ON en O1, OFF en O0 y en `-Og`) reconoce `base + i*C` dentro de un bucle donde `i` es una variable
+de inducción básica —un local no escapado, no volátil y de palabra con un único `store` en el bucle,
+en el *latch* único, de `load(i) ± k`— y lo reescribe como un puntero incremental en un slot nuevo:
+se inicializa en el preheader a `base + i_entrada*C`, se avanza `k*C` en el latch (detrás del propio
+`store` de `i`) y cada uso de la dirección pasa a ser una carga de ese slot. Los bucles con llamada
+se dejan igual que en el LICM (mismo problema de liveness lineal del asignador), y la forma exigida
+es canónica: la base invariante definida antes del bucle, el operando escalado sin otros usos, el
+valor derivado dominado por su definición y usado solo dentro del bucle y nunca en el latch. Además
+se rechaza una base constante, porque si no el pase volvería a dispararse sobre el `+ offset` de un
+acceso a miembro (donde no hay multiplicación que ahorrar) y crearía punteros inútiles.
+
+El trozo de análisis de bucles que el LICM tenía incrustado se extrajo a `findNaturalLoops`, que
+ambos pases comparten; es el único cambio que toca al LICM, y sus tests y goldens siguen verdes.
+`examples/31_induction_vars.c` cubre los tres casos (stride 4, stride 12 no potencia de dos, y
+recorrido inverso desde un índice no nulo) con valores calculados a mano, corriendo a los tres
+niveles. Medido sobre el caso stride 12, el cuerpo pasa de `mul` + `add` + carga a una sola carga,
+con el `add` de avance movido al latch: una instrucción menos por iteración y sin multiplicación.
 
 **F6 se partió en dos.** El *flexible array member* es autocontenido (parser, layout, `sizeof`,
 acceso) y ya está hecho. `alloca`/VLA no lo son: el compilador direcciona todo el frame como

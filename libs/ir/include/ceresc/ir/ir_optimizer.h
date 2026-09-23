@@ -26,6 +26,8 @@
 //   branch simplification a CondJump whose two operands are known constants becomes a plain Jump
 //   jump threading        a branch whose target only jumps somewhere else goes straight there
 //   unreachable blocks    a block no path from the entry reaches is dropped
+//   loop-invariant motion a pure, non-faulting computation the loop never changes moves to the preheader
+//   induction strength    `base + i*C` in a loop becomes a pointer advanced by C per iteration
 //   block layout          blocks are reordered so a jump's target is emitted right after it
 //   dead code             a pure instruction whose result nothing reads is dropped
 //

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -2236,6 +2237,76 @@ namespace ceresc::ir
 			return dom;
 		}
 
+		// Every natural loop of a function, merged by header (a header with two latches is one
+		// loop), each carrying the set of its blocks and, when it has exactly one entry from
+		// outside, its preheader - the single block outside the loop whose only successor is the
+		// header. Shared by the loop passes (LICM and induction-variable strength reduction), which
+		// both need the same loop set: computing it twice, in two slightly different ways, is how
+		// the two would silently start disagreeing about what a loop is.
+		std::vector<NaturalLoop> findNaturalLoops(usize blockCount,
+			const std::vector<std::vector<usize>>& predecessors,
+			const std::vector<std::vector<usize>>& successors,
+			const std::vector<BlockSet>& dom)
+		{
+			std::vector<NaturalLoop> loops;
+			auto loopForHeader = [&](usize header) -> NaturalLoop&
+			{
+				for (NaturalLoop& loop : loops)
+					if (loop.header == header)
+						return loop;
+				loops.push_back(NaturalLoop{ header, ~usize(0), std::vector<bool>(blockCount, false) });
+				loops.back().blocks[header] = true;
+				return loops.back();
+			};
+
+			for (usize u = 0; u < blockCount; ++u)
+			{
+				for (usize v : successors[u])
+				{
+					if (!dom[u].test(v))
+						continue; // not a back edge: v does not dominate u
+					NaturalLoop& loop = loopForHeader(v);
+					loop.blocks[u] = true;
+					// Everything that reaches the latch `u` without passing through the header `v`.
+					std::vector<usize> stack{ u };
+					while (!stack.empty())
+					{
+						usize x = stack.back();
+						stack.pop_back();
+						if (x == v)
+							continue; // never expand the header's own predecessors
+						for (usize p : predecessors[x])
+						{
+							if (!loop.blocks[p])
+							{
+								loop.blocks[p] = true;
+								stack.push_back(p);
+							}
+						}
+					}
+				}
+			}
+
+			for (NaturalLoop& loop : loops)
+			{
+				usize outside = 0;
+				for (usize p : predecessors[loop.header])
+					if (!loop.blocks[p])
+						++outside;
+				if (outside != 1)
+					continue; // several entries from outside: nowhere to hoist to
+				for (usize p : predecessors[loop.header])
+				{
+					if (loop.blocks[p])
+						continue;
+					if (successors[p].size() == 1 && successors[p][0] == loop.header)
+						loop.preheader = p;
+					break;
+				}
+			}
+			return loops;
+		}
+
 		bool isTerminatorInstr(const IrInstr& instr)
 		{
 			switch (instr.opcode())
@@ -2342,62 +2413,7 @@ namespace ceresc::ir
 						});
 
 			// Every natural loop, merged by header (a header with two latches is one loop).
-			std::vector<NaturalLoop> loops;
-			auto loopForHeader = [&](usize header) -> NaturalLoop&
-			{
-				for (NaturalLoop& loop : loops)
-					if (loop.header == header)
-						return loop;
-				loops.push_back(NaturalLoop{ header, ~usize(0), std::vector<bool>(blockCount, false) });
-				loops.back().blocks[header] = true;
-				return loops.back();
-			};
-
-			for (usize u = 0; u < blockCount; ++u)
-			{
-				for (usize v : successors[u])
-				{
-					if (!dom[u].test(v))
-						continue; // not a back edge: v does not dominate u
-					NaturalLoop& loop = loopForHeader(v);
-					loop.blocks[u] = true;
-					// Everything that reaches the latch `u` without passing through the header `v`.
-					std::vector<usize> stack{ u };
-					while (!stack.empty())
-					{
-						usize x = stack.back();
-						stack.pop_back();
-						if (x == v)
-							continue; // never expand the header's own predecessors
-						for (usize p : predecessors[x])
-						{
-							if (!loop.blocks[p])
-							{
-								loop.blocks[p] = true;
-								stack.push_back(p);
-							}
-						}
-					}
-				}
-			}
-
-			for (NaturalLoop& loop : loops)
-			{
-				usize outside = 0;
-				for (usize p : predecessors[loop.header])
-					if (!loop.blocks[p])
-						++outside;
-				if (outside != 1)
-					continue; // several entries from outside: nowhere to hoist to
-				for (usize p : predecessors[loop.header])
-				{
-					if (loop.blocks[p])
-						continue;
-					if (successors[p].size() == 1 && successors[p][0] == loop.header)
-						loop.preheader = p;
-					break;
-				}
-			}
+			std::vector<NaturalLoop> loops = findNaturalLoops(blockCount, predecessors, successors, dom);
 
 			// The loops are processed in the order they were discovered. Order does not change what
 			// gets hoisted: `invariant()` rejects an operand defined anywhere inside the loop being
@@ -2574,6 +2590,570 @@ namespace ceresc::ir
 				changedAtAll = true;
 			}
 			return changedAtAll;
+		}
+
+		// ---- pass: induction-variable strength reduction ------------------------------------------------
+		//
+		// `for (i = 0; i < n; i++) sum += arr[i];` recomputes `arr + i*C` every iteration. When `i` is
+		// a BASIC induction variable - a local the loop updates by a constant step `k` exactly once,
+		// in the loop's unique latch - that address is itself an induction variable, advancing by
+		// `k*C` per iteration. Rewriting it as a pointer initialized before the loop and bumped in the
+		// latch replaces the per-iteration multiply and address addition with a single add.
+		//
+		// This IR has no phi, so the advancing pointer is carried in a fresh local slot: a store in
+		// the preheader gives it its first value, a load/add/store in the latch advances it, and the
+		// original address computation becomes a load of that slot where it was used. The slot is
+		// asked to live in a register (IrLocalSlot::preferRegister): a memory-backed pointer would
+		// cost more than it saved.
+		//
+		// Firing only on the canonical shape keeps this sound by construction:
+		//   - the counter is a non-escaping, non-volatile word local with exactly one store in the
+		//     loop, in the loop's unique latch, whose value is `load(counter) +/- k` for a constant k;
+		//   - the derived address is `base + counter*C` (or `base + counter`) where `base` is loop
+		//     invariant, `C` a positive constant, the scaled operand has no other use, and the derived
+		//     value is dominated by its own definition and used nowhere but inside the loop and not
+		//     in the latch;
+		//   - the loop makes no call - a value live across the loop is live across a call, and the
+		//     allocator's "does this range span a call" test is linear in emission order, which a back
+		//     edge fools (the very reason LICM declines a loop that calls).
+
+		bool strengthReduceInductionVariables(IrFunction& function, support::Arena& arena, const OptimizationOptions& options)
+		{
+			if (!options.inductionStrengthReduction)
+				return false;
+
+			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+			const usize blockCount = blocks.size();
+			const usize tempCount = function.tempCount();
+			if (blockCount < 2 || tempCount < 2)
+				return false;
+
+			std::unordered_map<const BasicBlock*, usize> indexOf;
+			for (usize i = 0; i < blockCount; ++i)
+				indexOf.emplace(blocks[i].get(), i);
+
+			std::vector<std::vector<usize>> predecessors(blockCount);
+			std::vector<std::vector<usize>> successors(blockCount);
+			for (usize i = 0; i < blockCount; ++i)
+			{
+				for (BasicBlock* successor : successorsOf(function, i))
+				{
+					auto it = indexOf.find(successor);
+					if (it == indexOf.end())
+						continue;
+					successors[i].push_back(it->second);
+					predecessors[it->second].push_back(i);
+				}
+			}
+
+			std::vector<u32> defCount(tempCount, 0);
+			std::vector<usize> defBlock(tempCount, ~usize(0));
+			std::vector<IrInstr*> definer(tempCount, nullptr);
+			for (usize i = 0; i < blockCount; ++i)
+			{
+				for (IrInstr* instr : blocks[i]->instrs())
+				{
+					if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
+					{
+						++defCount[result.id];
+						defBlock[result.id] = i;
+						definer[result.id] = instr;
+					}
+				}
+			}
+
+			std::vector<BlockSet> dom = computeDominators(blockCount, predecessors);
+			std::vector<NaturalLoop> loops = findNaturalLoops(blockCount, predecessors, successors, dom);
+
+			std::unordered_map<u32, ConstValue> constants = collectConstants(function);
+			auto intConstant = [&](IrValue value, i64& out) -> bool
+			{
+				if (!value.isValid())
+					return false;
+				auto it = constants.find(value.id);
+				if (it == constants.end() || it->second.isFloat)
+					return false;
+				out = it->second.intValue;
+				return true;
+			};
+
+			std::vector<bool> nonEscaping = collectNonEscapingLocals(function);
+			std::vector<u32> frameAddrLocal = mapFrameAddrTemps(function);
+
+			// Every use of every temporary, by (block, instruction index): the dominance and
+			// single-use questions below are asked of this one scan.
+			std::vector<std::vector<std::pair<usize, usize>>> uses(tempCount);
+			for (usize b = 0; b < blockCount; ++b)
+			{
+				std::span<IrInstr* const> instrs = blocks[b]->instrs();
+				for (usize i = 0; i < instrs.size(); ++i)
+					forEachOperand(*instrs[i], [&](IrValue value)
+					{
+						if (value.isValid() && value.id < tempCount)
+							uses[value.id].emplace_back(b, i);
+					});
+			}
+
+			// The local a single-definition word load reads, or false.
+			auto localOfLoad = [&](IrValue value, u32& local) -> bool
+			{
+				if (!value.isValid() || value.id >= tempCount || defCount[value.id] != 1)
+					return false;
+				const IrInstr* def = definer[value.id];
+				if (!def || def->opcode() != IrOpcode::Load)
+					return false;
+				const IrLoadPayload& load = def->as<IrLoadPayload>();
+				if (load.isFloat || load.isVolatile || load.size != IrMemSize::Word)
+					return false;
+				if (!load.address.isValid() || load.address.id >= frameAddrLocal.size() || frameAddrLocal[load.address.id] == ~0u)
+					return false;
+				local = frameAddrLocal[load.address.id];
+				return true;
+			};
+			auto isLoadOfLocal = [&](IrValue value, u32 wanted) -> bool
+			{
+				u32 local = ~0u;
+				return localOfLoad(value, local) && local == wanted;
+			};
+
+			// `value` as `counter` or `counter << c` / `counter * C`, with the counter's local and
+			// the scale factor written out. A bare load is scale 1 - the element-size-1 case, where
+			// IrBuilder emits `base + i` with no multiply at all.
+			auto decomposeScaled = [&](IrValue value, u32& local, i64& scale) -> bool
+			{
+				if (!value.isValid() || value.id >= tempCount || defCount[value.id] != 1)
+					return false;
+				const IrInstr* def = definer[value.id];
+				if (!def)
+					return false;
+				if (def->opcode() == IrOpcode::Load)
+				{
+					if (!localOfLoad(value, local))
+						return false;
+					scale = 1;
+					return true;
+				}
+				if (def->opcode() != IrOpcode::BinOp)
+					return false;
+				const IrBinOpPayload& p = def->as<IrBinOpPayload>();
+				if (p.isFloat || (p.op != IrBinOp::Shl && p.op != IrBinOp::Mul))
+					return false;
+				u32 found = ~0u;
+				IrValue amount{};
+				if (localOfLoad(p.lhs, found))
+					amount = p.rhs;
+				else if (localOfLoad(p.rhs, found))
+					amount = p.lhs;
+				else
+					return false;
+				i64 amountValue = 0;
+				if (!intConstant(amount, amountValue))
+					return false;
+				if (p.op == IrBinOp::Mul)
+				{
+					if (amountValue <= 0)
+						return false;
+					scale = amountValue;
+				}
+				else
+				{
+					if (amountValue < 0 || amountValue > 31)
+						return false;
+					scale = i64(1) << amountValue;
+				}
+				local = found;
+				return true;
+			};
+
+			// The rewrite chosen for the first loop that offers one. One per call: the fixpoint
+			// around this pass re-runs it until no loop is left, which keeps the new pointers from
+			// making each other's analysis stale.
+			struct Plan
+			{
+				usize preheader = 0;
+				usize dBlock = 0;
+				usize dIndex = 0;
+				IrValue dResult{};
+				IrValue base{};
+				u32 local = 0;
+				i64 step = 0;
+				i64 scale = 1;
+				bool isUnsigned = true;
+				usize latch = 0;
+				usize storeIndex = 0;
+				const IrInstr* store = nullptr;
+			};
+			std::optional<Plan> plan;
+
+			for (const NaturalLoop& loop : loops)
+			{
+				if (plan)
+					break;
+				if (loop.preheader == ~usize(0))
+					continue;
+
+				bool loopHasCall = false;
+				for (usize i = 0; i < blockCount && !loopHasCall; ++i)
+					if (loop.blocks[i])
+						for (const IrInstr* instr : blocks[i]->instrs())
+							if (instr->opcode() == IrOpcode::Call)
+							{
+								loopHasCall = true;
+								break;
+							}
+				if (loopHasCall)
+					continue;
+
+				// The header's only predecessor inside the loop, if it has exactly one: the unique
+				// latch. Two in-loop predecessors would mean two back edges, and a counter updated
+				// in only one of them would not be a basic induction variable.
+				usize latch = ~usize(0);
+				{
+					usize inLoopPreds = 0;
+					for (usize p : predecessors[loop.header])
+					{
+						if (!loop.blocks[p])
+							continue;
+						++inLoopPreds;
+						latch = p;
+					}
+					if (inLoopPreds != 1)
+						continue;
+				}
+
+				// The store to a local inside the loop, by local index - flagged when there is more
+				// than one, which disqualifies the local as an induction variable.
+				std::vector<const IrInstr*> loopStore(function.localCount(), nullptr);
+				std::vector<usize> loopStoreBlock(function.localCount(), ~usize(0));
+				std::vector<bool> multipleStores(function.localCount(), false);
+				for (usize i = 0; i < blockCount; ++i)
+				{
+					if (!loop.blocks[i])
+						continue;
+					for (const IrInstr* instr : blocks[i]->instrs())
+					{
+						if (instr->opcode() != IrOpcode::Store)
+							continue;
+						IrValue address = instr->as<IrStorePayload>().address;
+						if (!address.isValid() || address.id >= frameAddrLocal.size() || frameAddrLocal[address.id] == ~0u)
+							continue;
+						u32 local = frameAddrLocal[address.id];
+						if (loopStore[local])
+							multipleStores[local] = true;
+						else
+						{
+							loopStore[local] = instr;
+							loopStoreBlock[local] = i;
+						}
+					}
+				}
+
+				// local -> step, for every basic induction variable of this loop.
+				std::vector<std::optional<i64>> stepOf(function.localCount());
+				for (u32 local = 0; local < function.localCount(); ++local)
+				{
+					const IrInstr* store = loopStore[local];
+					if (!store || multipleStores[local] || loopStoreBlock[local] != latch)
+						continue;
+					if (local >= nonEscaping.size() || !nonEscaping[local])
+						continue;
+					const IrLocalSlot& slot = function.localSlots()[local];
+					if (slot.isFloat || slot.isVolatile || slot.sizeInBytes != 4)
+						continue;
+
+					const IrStorePayload& stored = store->as<IrStorePayload>();
+					if (stored.isFloat || stored.isVolatile || stored.size != IrMemSize::Word)
+						continue;
+					IrValue updated = stored.value;
+					if (!updated.isValid() || updated.id >= tempCount || defCount[updated.id] != 1)
+						continue;
+					const IrInstr* updateDef = definer[updated.id];
+					if (!updateDef || updateDef->opcode() != IrOpcode::BinOp)
+						continue;
+					const IrBinOpPayload& update = updateDef->as<IrBinOpPayload>();
+					if (update.isFloat || (update.op != IrBinOp::Add && update.op != IrBinOp::Sub))
+						continue;
+
+					IrValue stepValue{};
+					if (update.op == IrBinOp::Add)
+					{
+						if (isLoadOfLocal(update.lhs, local))
+							stepValue = update.rhs;
+						else if (isLoadOfLocal(update.rhs, local))
+							stepValue = update.lhs;
+						else
+							continue;
+					}
+					else
+					{
+						if (!isLoadOfLocal(update.lhs, local))
+							continue;
+						stepValue = update.rhs;
+					}
+
+					i64 step = 0;
+					if (!intConstant(stepValue, step) || step == 0)
+						continue;
+					if (update.op == IrBinOp::Sub)
+					{
+						if (step == (std::numeric_limits<i64>::min)())
+							continue;
+						step = -step;
+					}
+					stepOf[local] = step;
+				}
+
+				for (usize b = 0; b < blockCount && !plan; ++b)
+				{
+					if (!loop.blocks[b] || b == loop.header || b == latch)
+						continue;
+					std::span<IrInstr* const> instrs = blocks[b]->instrs();
+					for (usize idx = 0; idx < instrs.size() && !plan; ++idx)
+					{
+						const IrInstr* d = instrs[idx];
+						if (d->opcode() != IrOpcode::BinOp)
+							continue;
+						const IrBinOpPayload& dp = d->as<IrBinOpPayload>();
+						if (dp.isFloat || dp.op != IrBinOp::Add)
+							continue;
+						IrValue dr = dp.result;
+						if (!dr.isValid() || dr.id >= tempCount || defCount[dr.id] != 1)
+							continue;
+
+						for (int order = 0; order < 2 && !plan; ++order)
+						{
+							IrValue base = order == 0 ? dp.lhs : dp.rhs;
+							IrValue scaled = order == 0 ? dp.rhs : dp.lhs;
+							if (!scaled.isValid() || scaled.id >= tempCount)
+								continue;
+							if (uses[scaled.id].size() != 1)
+								continue; // must become dead, or replacing the add saves nothing
+							if (!base.isValid() || base.id >= tempCount || defCount[base.id] != 1)
+								continue;
+							// A constant base would re-fire on the `+ offset` of a member access,
+							// where there is no multiply to remove: a loop-carried pointer would only
+							// add work.
+							if (constants.contains(base.id))
+								continue;
+							usize baseBlock = defBlock[base.id];
+							if (baseBlock >= blockCount || loop.blocks[baseBlock] || !dom[loop.preheader].test(baseBlock))
+								continue; // base has to be loop invariant and defined before the loop
+
+							u32 local = ~0u;
+							i64 scale = 0;
+							if (!decomposeScaled(scaled, local, scale))
+								continue;
+							if (local >= stepOf.size() || !stepOf[local].has_value())
+								continue;
+
+							// Every use of the derived address must be in the loop, dominated by the
+							// definition, and outside the latch - which advances the pointer behind
+							// the counter's own store.
+							bool usesFine = true;
+							for (auto [ub, ui] : uses[dr.id])
+							{
+								if (!loop.blocks[ub] || ub == latch || !dom[ub].test(b) || (ub == b && ui <= idx))
+								{
+									usesFine = false;
+									break;
+								}
+							}
+							if (!usesFine)
+								continue;
+
+							usize storeIndex = 0;
+							bool foundStore = false;
+							for (usize si = 0; si < blocks[latch]->instrs().size(); ++si)
+								if (blocks[latch]->instrs()[si] == loopStore[local])
+								{
+									storeIndex = si;
+									foundStore = true;
+									break;
+								}
+							if (!foundStore)
+								continue;
+
+							Plan chosen;
+							chosen.preheader = loop.preheader;
+							chosen.dBlock = b;
+							chosen.dIndex = idx;
+							chosen.dResult = dr;
+							chosen.base = base;
+							chosen.local = local;
+							chosen.step = *stepOf[local];
+							chosen.scale = scale;
+							chosen.isUnsigned = dp.isUnsigned;
+							chosen.latch = latch;
+							chosen.storeIndex = storeIndex;
+							chosen.store = loopStore[local];
+							plan = chosen;
+						}
+					}
+				}
+			}
+
+			if (!plan)
+				return false;
+
+			const Plan& p = *plan;
+			const support::SourceLocation addressLoc = blocks[p.dBlock]->instrs()[p.dIndex]->location();
+			const support::SourceLocation latchLoc = p.store->location();
+			const i64 delta = p.step * p.scale;
+
+			u32 pointerSlot = function.newLocalSlot(4, false, false, true, false);
+			IrValue addressP = function.newTemp();
+			IrValue counterAddress = function.newTemp();
+			IrValue counterEntry = function.newTemp();
+			IrValue entryScaled = counterEntry;
+			IrValue pointerInit = function.newTemp();
+			IrValue pointerValue = function.newTemp();
+			IrValue pointerCurrent = function.newTemp();
+			IrValue deltaConst = function.newTemp();
+			IrValue pointerNext = function.newTemp();
+
+			// The preheader: &pointer, then the counter's entry value, its scaled form, the first
+			// pointer value `base + counter*scale`, and the store that starts it off.
+			std::vector<IrInstr*> preInstrs;
+			{
+				IrFrameAddrPayload pointerAddress;
+				pointerAddress.result = addressP;
+				pointerAddress.localIndex = pointerSlot;
+				preInstrs.push_back(arena.create<IrInstr>(addressLoc, pointerAddress));
+
+				IrFrameAddrPayload counterSlot;
+				counterSlot.result = counterAddress;
+				counterSlot.localIndex = p.local;
+				preInstrs.push_back(arena.create<IrInstr>(addressLoc, counterSlot));
+
+				IrLoadPayload counterLoad;
+				counterLoad.result = counterEntry;
+				counterLoad.size = IrMemSize::Word;
+				counterLoad.address = counterAddress;
+				preInstrs.push_back(arena.create<IrInstr>(addressLoc, counterLoad));
+
+				if (p.scale != 1)
+				{
+					// A dedicated temp: the load's result is its own, and giving the scaled form the
+					// same id would be two definitions of one temporary (this IR is not SSA).
+					entryScaled = function.newTemp();
+					// A power-of-two scale is a shift by its exponent; anything else a multiply by
+					// the scale itself.
+					const bool powerOfTwo = (static_cast<u64>(p.scale) & (static_cast<u64>(p.scale) - 1)) == 0;
+					const i64 amount = powerOfTwo
+						? static_cast<i64>(std::countr_zero(static_cast<u64>(p.scale)))
+						: p.scale;
+					IrValue scaleConstant = function.newTemp();
+					preInstrs.push_back(makeConst(arena, addressLoc, scaleConstant,
+						ConstValue{ false, amount, 0.0f }));
+					IrBinOpPayload scaled;
+					scaled.result = entryScaled;
+					scaled.op = powerOfTwo ? IrBinOp::Shl : IrBinOp::Mul;
+					scaled.isUnsigned = true;
+					scaled.lhs = counterEntry;
+					scaled.rhs = scaleConstant;
+					preInstrs.push_back(arena.create<IrInstr>(addressLoc, scaled));
+				}
+
+				IrBinOpPayload init;
+				init.result = pointerInit;
+				init.op = IrBinOp::Add;
+				init.isUnsigned = p.isUnsigned;
+				init.lhs = p.base;
+				init.rhs = entryScaled;
+				preInstrs.push_back(arena.create<IrInstr>(addressLoc, init));
+
+				IrStorePayload store;
+				store.size = IrMemSize::Word;
+				store.address = addressP;
+				store.value = pointerInit;
+				preInstrs.push_back(arena.create<IrInstr>(addressLoc, store));
+			}
+
+			// The latch: load the pointer, add the per-iteration delta, store it back - right behind
+			// the counter's own update.
+			std::vector<IrInstr*> latchInstrs;
+			{
+				IrLoadPayload load;
+				load.result = pointerCurrent;
+				load.size = IrMemSize::Word;
+				load.address = addressP;
+				latchInstrs.push_back(arena.create<IrInstr>(latchLoc, load));
+
+				latchInstrs.push_back(makeConst(arena, latchLoc, deltaConst, ConstValue{ false, delta, 0.0f }));
+
+				IrBinOpPayload advance;
+				advance.result = pointerNext;
+				advance.op = IrBinOp::Add;
+				advance.isUnsigned = true;
+				advance.lhs = pointerCurrent;
+				advance.rhs = deltaConst;
+				latchInstrs.push_back(arena.create<IrInstr>(latchLoc, advance));
+
+				IrStorePayload store;
+				store.size = IrMemSize::Word;
+				store.address = addressP;
+				store.value = pointerNext;
+				latchInstrs.push_back(arena.create<IrInstr>(latchLoc, store));
+			}
+
+			IrLoadPayload bodyLoad;
+			bodyLoad.result = pointerValue;
+			bodyLoad.size = IrMemSize::Word;
+			bodyLoad.address = addressP;
+			IrInstr* bodyLoadInstr = arena.create<IrInstr>(addressLoc, bodyLoad);
+
+			// Replace the address computation with the pointer load and rename every use of it.
+			std::unordered_map<u32, IrValue> replacement;
+			replacement.emplace(p.dResult.id, pointerValue);
+			for (usize b = 0; b < blockCount; ++b)
+			{
+				std::span<IrInstr* const> instrs = blocks[b]->instrs();
+				std::vector<IrInstr*> rebuilt;
+				rebuilt.reserve(instrs.size());
+				bool changedBlock = false;
+				for (usize i = 0; i < instrs.size(); ++i)
+				{
+					if (b == p.dBlock && i == p.dIndex)
+					{
+						rebuilt.push_back(bodyLoadInstr);
+						changedBlock = true;
+						continue;
+					}
+					if (IrInstr* renamed = renameOperands(*instrs[i], arena, replacement))
+					{
+						rebuilt.push_back(renamed);
+						changedBlock = true;
+					}
+					else
+						rebuilt.push_back(instrs[i]);
+				}
+				if (changedBlock)
+					blocks[b]->replaceInstrs(std::move(rebuilt));
+			}
+
+			{
+				std::span<IrInstr* const> pre = blocks[p.preheader]->instrs();
+				usize insertAt = (!pre.empty() && isTerminatorInstr(*pre.back())) ? pre.size() - 1 : pre.size();
+				std::vector<IrInstr*> rebuilt;
+				rebuilt.reserve(pre.size() + preInstrs.size());
+				rebuilt.insert(rebuilt.end(), pre.begin(), pre.begin() + static_cast<std::ptrdiff_t>(insertAt));
+				rebuilt.insert(rebuilt.end(), preInstrs.begin(), preInstrs.end());
+				rebuilt.insert(rebuilt.end(), pre.begin() + static_cast<std::ptrdiff_t>(insertAt), pre.end());
+				blocks[p.preheader]->replaceInstrs(std::move(rebuilt));
+			}
+
+			{
+				std::span<IrInstr* const> lat = blocks[p.latch]->instrs();
+				usize insertAt = p.storeIndex + 1;
+				std::vector<IrInstr*> rebuilt;
+				rebuilt.reserve(lat.size() + latchInstrs.size());
+				rebuilt.insert(rebuilt.end(), lat.begin(), lat.begin() + static_cast<std::ptrdiff_t>(insertAt));
+				rebuilt.insert(rebuilt.end(), latchInstrs.begin(), latchInstrs.end());
+				rebuilt.insert(rebuilt.end(), lat.begin() + static_cast<std::ptrdiff_t>(insertAt), lat.end());
+				blocks[p.latch]->replaceInstrs(std::move(rebuilt));
+			}
+
+			return true;
 		}
 
 		// ---- pass: dead code elimination -------------------------------------------------------------
@@ -3202,6 +3782,7 @@ namespace ceresc::ir
 				changed |= threadJumps(*function, arena, options);
 				changed |= removeUnreachableBlocks(*function, options);
 				changed |= hoistLoopInvariants(*function, options);
+				changed |= strengthReduceInductionVariables(*function, arena, options);
 				changed |= layoutBlocks(*function, options);
 				changed |= eliminateDeadCode(*function, options, pureFunctions);
 				if (!changed)
