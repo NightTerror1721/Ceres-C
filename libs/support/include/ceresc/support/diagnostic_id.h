@@ -239,6 +239,8 @@ namespace ceresc::support
 		InvalidBuiltinOperand            = 3096,
 		CaseRangeEmpty                   = 3097,
 		CaseRangeTooLarge                = 3098,
+		FlexibleArrayMemberNotLast       = 3099,
+		FlexibleArrayMemberInAggregate   = 3100,
 
 		ConstWithoutInitializer = kDiagnosticWarningBit | 3001,
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,

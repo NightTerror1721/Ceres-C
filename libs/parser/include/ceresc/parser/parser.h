@@ -475,6 +475,12 @@ namespace ceresc::parser
 		// has been read. Everywhere else (a struct member, a typedef, a cast) the omitted size is still an error.
 		bool _allowUnsizedArray = false;
 		bool _unsizedArrayPending = false;
+		// `struct S { int n; int a[]; };` - a flexible array member: an unsized array allowed as a
+		// struct's LAST field. Raised around a field's applyDeclarator() call only (parseStructTypeSpec),
+		// which builds the array with size 0; sema then rejects one that is not last, or a struct that
+		// has one embedded by value. Kept separate from _allowUnsizedArray because a FAM has no
+		// initializer to take its length from - it stays size 0.
+		bool _allowFlexibleArrayMember = false;
 		// The number of elements an initializer gives an array of `element`, or -1 when it cannot say.
 		static i64 inferArrayLength(const Type* element, const Expr* initializer);
 

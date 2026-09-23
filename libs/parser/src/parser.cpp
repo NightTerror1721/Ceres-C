@@ -1023,7 +1023,9 @@ namespace ceresc::parser
 						synchronizeStatement();
 						break;
 					}
+					_allowFlexibleArrayMember = true;
 					const Type* fieldType = applyDeclarator(fieldBase, fieldDeclarator, /*isParameter=*/false);
+					_allowFlexibleArrayMember = false;
 					if (!fieldType)
 					{
 						synchronizeStatement();
@@ -2721,6 +2723,14 @@ namespace ceresc::parser
 				{
 					// `int a[] = ...`: the size comes from the initializer, which finishVarDecl() reads next
 					_unsizedArrayPending = true;
+					base = Type::makeArray(_arena, base, 0);
+					note(nullptr);
+					continue;
+				}
+				if (_allowFlexibleArrayMember && !isParameter && i == 0 && !declarator.nested)
+				{
+					// `int a[];` as a struct field - a flexible array member. Stays size 0 (there is no
+					// initializer to give it a length); sema checks that it is the struct's last field.
 					base = Type::makeArray(_arena, base, 0);
 					note(nullptr);
 					continue;

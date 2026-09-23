@@ -1094,7 +1094,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 8 | **O12** — builtins `imin`/`imax`/`umin`/`umax` **hechos**; reconocimiento de patrones `min`/`max`/`abs` **hecho** | — | **hecho** |
 | 9 | **O10** — inlining multi-bloque y con llamadas | — | **hecho** |
 | 10 | **O11** — plegado de autocomparación **y** SCCP (lattice + worklist, aristas tomadas, `switch` constante resuelto) | — | **hecho** |
-| 11 | **F6** — `alloca`, VLA y *flexible array members* | — | pendiente |
+| 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — optimizaciones de bucle (LICM, IV-SR) | detección de bucles | pendiente |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | pendiente |
@@ -1123,8 +1123,16 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 - **Batch 4** (`O10` inlining multi-bloque): pendiente de la pasada de revisión de este lote.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
-son proyectos de varios días (análisis de bucles/dominancia para O3/O15/O11, reasignación de registros
+son proyectos de varios días (análisis de bucles/dominancia para O3/O15, reasignación de registros
 para O4/O5, ABI ancha para F3, formato de depuración para F8, serialización de IR para F13).
+
+**F6 se partió en dos.** El *flexible array member* es autocontenido (parser, layout, `sizeof`,
+acceso) y ya está hecho. `alloca`/VLA no lo son: el compilador direcciona todo el frame como
+`[sp + Frame.slotN]`, y `sp` debe quedarse quieto entre `enter` y `leave` (24-Calling-Convention.md) —
+moverlo para reservar en tiempo de ejecución invalidaría cada acceso a un local y el área de
+argumentos salientes, que tiene que seguir en `[sp + 0]`. Hacerlo bien es re-basar los accesos al
+frame en `fp` (r14) con un área saliente en el `sp` actual, un cambio de ABI que merece su propia
+parte con su propio guardián de tests, no un añadido a la de layout.
 
 ---
 

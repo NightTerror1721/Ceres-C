@@ -354,6 +354,16 @@ TEST(parser, a_struct_union_or_enum_may_omit_its_tag_when_a_body_follows)
 	CHECK(parseFails("enum ;"));
 }
 
+TEST(parser, a_flexible_array_member_is_an_unsized_array_field)
+{
+	// `int a[];` is allowed as a struct's last member - a flexible array member - and only there;
+	// sema is what rejects one that is not last or that is embedded by value. The parser builds it
+	// as a zero-length array (the same "size not known" representation an unsized variable uses
+	// until its initializer gives it a length).
+	CHECK_EQ(printDecl("struct S { int n; int a[]; };"), "(struct S (fields (int n) (int[] a)))");
+	CHECK(!parseFails("struct S { int n; int a[][3]; };"));
+}
+
 TEST(parser, a_cast_is_a_valid_operand_of_a_unary_operator)
 {
 	// C's grammar is "unary-operator cast-expression", so none of these needs an extra pair of

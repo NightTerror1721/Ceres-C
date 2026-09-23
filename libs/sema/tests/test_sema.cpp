@@ -513,8 +513,8 @@ TEST(sema, an_array_without_a_size_or_an_initializer_is_still_an_error)
 	CHECK(containsMessage(none, "array size is required"));
 	CheckOutcome scalar = checkSource("int a[] = 5;");
 	CHECK(!scalar.ok);
-	CheckOutcome member = checkSource("struct S { int n; int items[]; };");
-	CHECK(!member.ok);
+	// A struct field is the one other place an omitted size is legal - a flexible array member - so
+	// it is deliberately NOT an error here. See the flexible-array-member tests below.
 	CheckOutcome pointer = checkSource("int f() { int (*p)[] = 0; return 0; }");
 	CHECK(!pointer.ok);
 	CheckOutcome flatRows = checkSource("int m[][2] = { 1, 2, 3, 4 };");
@@ -918,6 +918,55 @@ TEST(sema, array_of_self_by_value_is_caught_through_the_array_element_type)
 			foundCycleMessage = true;
 	}
 	CHECK(foundCycleMessage);
+}
+
+// ---- flexible array members ---------------------------------------------------------------------
+
+TEST(sema, a_flexible_array_member_is_allowed_as_the_last_field)
+{
+	CHECK(checkSource("struct S { int n; int a[]; }; int main() { }").ok);
+	// The element type may itself be an array: `int a[][3]` is an unsized array of `int[3]`.
+	CHECK(checkSource("struct S { int n; int a[][3]; }; int main() { }").ok);
+	// A pointer to the element type still works, and so does indexing the member.
+	CHECK(checkSource("struct S { int n; int a[]; }; int main() { struct S* p; p->a[2] = 7; return p->a[2]; }").ok);
+}
+
+TEST(sema, sizeof_a_struct_with_a_flexible_array_member_excludes_it)
+{
+	// The member contributes no bytes to the struct's own size, but its alignment still applies -
+	// so a trailing `char` still pads the struct out to four bytes.
+	CHECK(checkSource("struct S { int n; int a[]; };\n_Static_assert(sizeof(struct S) == 4, \"4\");").ok);
+	CHECK(checkSource("struct T { char c; int a[]; };\n_Static_assert(sizeof(struct T) == 4, \"4\");").ok);
+}
+
+TEST(sema, a_flexible_array_member_that_is_not_last_is_an_error)
+{
+	CheckOutcome outcome = checkSource("struct S { int a[]; int n; }; int main() { }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "must be the last member"));
+}
+
+TEST(sema, a_struct_with_a_flexible_array_member_cannot_be_embedded_by_value)
+{
+	CheckOutcome direct = checkSource("struct S { int n; int a[]; }; struct T { struct S s; }; int main() { }");
+	CHECK(!direct.ok);
+	CHECK(containsMessage(direct, "cannot be held by value"));
+
+	CheckOutcome array = checkSource("struct S { int n; int a[]; }; struct T { struct S arr[3]; }; int main() { }");
+	CHECK(!array.ok);
+	CHECK(containsMessage(array, "cannot be held by value"));
+
+	// Through a pointer is fine: that is exactly what the member is for.
+	CHECK(checkSource("struct S { int n; int a[]; }; struct T { struct S* s; }; int main() { }").ok);
+}
+
+TEST(sema, sizeof_a_flexible_array_member_is_an_error)
+{
+	// The member's own type is an incomplete array, so `sizeof(s.a)` cannot be answered - the same
+	// rule that already applies to `extern int table[]`.
+	CheckOutcome outcome = checkSource("struct S { int n; int a[]; }; int main() { struct S s; return sizeof(s.a); }");
+	CHECK(!outcome.ok);
+	CHECK(containsMessage(outcome, "size is not known"));
 }
 
 // ---- arrays/pointers, now that the parser can actually produce array declarators -------------------
