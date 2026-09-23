@@ -1097,7 +1097,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
-| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **hecho** (relleno, copia y búsqueda a nivel de bucle) |
+| 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
