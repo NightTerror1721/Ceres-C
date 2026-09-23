@@ -1398,6 +1398,27 @@ TEST(codegen, a_register_parameter_competes_for_the_pool_like_any_other_register
 	CHECK(!contains(atO2Without(asked, &support::OptimizationOptions::loopInvariantMotion), "], r1 //"));
 }
 
+TEST(codegen, a_displaced_parameter_is_not_homed_on_another_parameters_arrival_register)
+{
+	// A `register` local can outrank an ordinary parameter for the caller-saved pool and push the
+	// parameter out of the register it arrived in. It must not be pushed onto a register a LATER
+	// parameter still arrives in: the prologue settles parameters in declaration order, so the
+	// displaced parameter's `mov home, arrived` would clobber that later arrival before its own
+	// store read it. Five loop-carried `register` locals drain r6/r7/r12/r0/r1 first, so `a` and
+	// `b` are displaced - to frame slots, never onto r2/r3, which `c` and `d` still arrive in.
+	std::string casm = atO2(
+		"int f(int a, int b, int c, int d) {"
+		"    register int p = a, q = b, r = c, s = d, t = a + b;"
+		"    int k = 0;"
+		"    while (k < a) { p = p + 1; q = q + 1; r = r + 1; s = s + 1; t = t + 1; k = k + 1; }"
+		"    return p + q + r + s + t + b + c * 2 + d * 4;"
+		"}");
+	std::string prologue = casm.substr(0, casm.find(".L0:"));
+	CHECK(contains(prologue, "str [sp + __frame_f.slot0], r0")); // `a` displaced to a slot
+	CHECK(contains(prologue, "str [sp + __frame_f.slot1], r1")); // `b` displaced to a slot
+	CHECK(!contains(prologue, "mov "));                          // neither landed on r2/r3
+}
+
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
 {
 	// The keyword reorders preferences and nothing else: a volatile local needs a memory home

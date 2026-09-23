@@ -316,6 +316,42 @@ namespace ceresc::codegen
 			return reg;
 		};
 
+		// Which argument registers a parameter already arrives in, per bank. A parameter's home
+		// register must stay disjoint from every OTHER parameter's arrival register: codegen's
+		// prologue settles parameters in declaration order, one plain move/store at a time, so an
+		// earlier parameter's `mov home, arrived` (or `str [slot], arrived`) would clobber a later
+		// one's arrival register before it is read - the callee-side counterpart of the argument
+		// registers never being handed a value at a call site (codegen.cpp). A `register` local
+		// may still take an argument register; it only forces the parameter it displaces to some
+		// other register (or a frame slot), never onto another parameter's arrival.
+		std::vector<bool> intArrivalReserved(4, false);
+		std::vector<bool> floatArrivalReserved(4, false);
+		for (u32 i = 0; i < function.paramCount(); ++i)
+		{
+			if (_paramArrival[i].kind == ArgSlotKind::IntReg && _paramArrival[i].index < 4)
+				intArrivalReserved[_paramArrival[i].index] = true;
+			else if (_paramArrival[i].kind == ArgSlotKind::FloatReg && _paramArrival[i].index < 4)
+				floatArrivalReserved[_paramArrival[i].index] = true;
+		}
+		auto takeRegisterAvoiding = [](std::vector<u32>& pool, u32 wanted, const std::vector<bool>& reserved) -> std::optional<u32>
+		{
+			if (pool.empty())
+				return std::nullopt;
+			// The parameter's own arrival register is always allowed - it is what keeps the prologue
+			// from emitting anything at all for that parameter.
+			auto it = std::find(pool.begin(), pool.end(), wanted);
+			if (it == pool.end())
+			{
+				it = std::find_if(pool.begin(), pool.end(),
+					[&](u32 reg) { return reg >= reserved.size() || !reserved[reg]; });
+				if (it == pool.end())
+					return std::nullopt; // only other parameters' arrival registers are left
+			}
+			u32 reg = *it;
+			pool.erase(it);
+			return reg;
+		};
+
 		if (options.registerAllocation)
 		{
 			// Locals first: they are live for the whole function, so whatever they take is gone for
@@ -368,10 +404,17 @@ namespace ceresc::codegen
 						: (slot.isFloat ? freeFloat : freeInt);
 					// A parameter prefers the register it already arrived in: taking it means the
 					// prologue has nothing at all to emit for that parameter. Only in a leaf, though
-					// - that register is caller-saved, and a call would clobber it.
-					u32 preferred = (!hasCalls && i < function.paramCount()) ? _paramArrival[i].index : ~0u;
+					// - that register is caller-saved, and a call would clobber it. A parameter that
+					// cannot have its own arrival register must not land on another parameter's, or
+					// the prologue's in-order settle would clobber that arrival before it is read
+					// (see intArrivalReserved/floatArrivalReserved above).
+					bool isParam = i < function.paramCount();
+					u32 preferred = (!hasCalls && isParam) ? _paramArrival[i].index : ~0u;
 
-					if (std::optional<u32> reg = takeRegister(pool, preferred))
+					std::optional<u32> reg = (!hasCalls && isParam)
+						? takeRegisterAvoiding(pool, preferred, slot.isFloat ? floatArrivalReserved : intArrivalReserved)
+						: takeRegister(pool, preferred);
+					if (reg)
 					{
 						_locals[i] = Placement{ PlacementKind::Register, *reg, slot.isFloat };
 						if (hasCalls)

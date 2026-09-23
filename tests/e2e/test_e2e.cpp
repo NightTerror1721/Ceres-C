@@ -1028,6 +1028,31 @@ TEST(e2e, a_short_circuit_boolean_used_as_a_value_is_right_at_every_level)
 		"4");
 }
 
+TEST(e2e, a_parameter_displaced_by_a_register_local_does_not_land_on_another_parameters_arrival_register)
+{
+	// The prologue settles parameters in declaration order, one plain move/store at a time. When a
+	// `register` local drains the pool first, an ordinary parameter is displaced - and it must NOT
+	// be displaced onto a register a LATER parameter still arrives in, or the earlier settle
+	// clobbers that arrival before it is stored. `p`..`t` are loop-carried, so they keep registers
+	// and empty r6/r7/r12/r0/r1 before the four parameters are considered; without the guard the
+	// last two parameters were read back from registers holding the first two, and this printed 26.
+	runsTheSameAtEveryLevel("parameter_arrival_preserved",
+		"int f(int a, int b, int c, int d) {"
+		"    register int p = a, q = b, r = c, s = d, t = a + b;"
+		"    int k = 0;"
+		"    while (k < a) { p = p + 1; q = q + 1; r = r + 1; s = s + 1; t = t + 1; k = k + 1; }"
+		"    return p + q + r + s + t + b + c * 2 + d * 4;" // 42 for (1,2,3,4)
+		"}"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int v = f(1, 2, 3, 4);"
+		"    *term = 48 + (v / 10);"
+		"    *term = 48 + (v % 10);"
+		"    return 0;"
+		"}",
+		"42");
+}
+
 // ---- composite memory: arrays, pointers and structs (Fase 7) -----------------------------------
 //
 // The phase's own deliverables and exit criterion: `suma_array`, a function that fills and reads a

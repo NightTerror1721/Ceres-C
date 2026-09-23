@@ -228,9 +228,10 @@ consume.
   aritmética, shifts, conversiones y ABI ancha están bajadas (F3.1b–F3.4); un valor de 64 bits ya no se
   rechaza con `E5002`. Quedan fuera, por caer en otra frontera, un discriminante de `switch` ancho
   (F9) y un operando ancho de un builtin de una instrucción (F3.3). `double`/`long double` se recortan
-  a `float` (W2001); sin `l`/`L` en literales. La STDLIB lo asume explícitamente
-  (`include/stdint.h`: "Nothing 64-bit is defined… an int64_t that quietly held 32 would be a trap") y
-  se simplificará en F3.5.
+  a `float` (W2001); sin `l`/`L` en literales. La STDLIB ya usa el tipo real (F3.5): `int64_t`/
+  `uint64_t` e `intmax_t` en `<stdint.h>`, los `PRI*64`/`SCN*64` en `<inttypes.h>`, `%lld`/`%llu` en
+  `printf`/`scanf`, `strtoll`/`strtoull`/`atoll`, `llabs`/`lldiv`/`imaxabs`/`imaxdiv`, y `ns64`/`time`
+  sobre `uint64_t`.
 - **Bitfields**, `__attribute__((packed))` (E2043).
 - **`#line`**, `#include_next`, `_Pragma`, `__has_include`, `#embed`.
 - **Dirección constante con desplazamiento** (`&a[i]` en inicializador estático) → `E4006`.
@@ -1104,7 +1105,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 13 | **O3** — LICM e IV-SR **hechos** (detección de bucles naturales + dominancia; `base + i*C` → puntero incremental) | — | **hecho** |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | **cerrado** (relleno, copia y búsqueda a nivel de bucle; `strcpy`/`strcmp`/`strchr` quedan fuera: son de función completa) |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
-| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2/F3.3/F3.4 hechas** (tipo, representación, aritmética, mul/div/mod, shifts, conversiones y ABI ancha); F3.5 pendiente (STDLIB) |
+| 16 | **F3** — enteros de 64 bits | ABI de 64 bits | **F3.1a/F3.1b/F3.2/F3.3/F3.4/F3.5 hechas** (tipo, representación, aritmética, mul/div/mod, shifts, conversiones, ABI ancha y la STDLIB sobre el tipo real) |
 | 17 | **F8** — información de depuración de C | formato de debug de CeresASM | pendiente |
 | 18 | **F13** — LTO / IR de programa completo | serialización de IR | pendiente |
 
@@ -1218,7 +1219,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `long long` > `unsigned long` > `long` > `unsigned int` > `int`), en `sema.cpp` y en la copia que
   `ir_builder.cpp` mantiene. La mitad de *representación* (el IR es de 32 bits, así que un valor de 64
   bits se legaliza a una pareja `(lo, hi)` en cada operación, load/store y llamada) la cubren
-  F3.1b–F3.4; solo queda la STDLIB (F3.5). `IrBuilder` ya no rechaza un `long long` bajado
+  F3.1b–F3.4; la STDLIB ya usa el tipo real (F3.5). `IrBuilder` ya no rechaza un `long long` bajado
   (`rejectWideInteger()` se retiró); siguen rechazados con `E5002` un discriminante de `switch` ancho
   (F9) y un operando ancho de un builtin de una instrucción.
 
@@ -1307,8 +1308,8 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `18446744073709551615LL`) ahora **avisa** (`W0015`) y conserva su patrón de 64 bits (antes no avisaba
   y quedaba en 0), y un `ULL` de todo el rango no avisa. Se validaron 384 casos de shift y ~90 de
   conversión contra una referencia de Python a los tres niveles (banco de pruebas, fuera del repo).
-  Queda fuera de F3 solo la ABI ancha (F3.4: parámetro, retorno y argumento de 64 bits) y la STDLIB
-  (F3.5); un discriminante de `switch` ancho (F9) y un operando ancho de un builtin de una instrucción
+  La ABI ancha (F3.4: parámetro, retorno y argumento de 64 bits) y la STDLIB (F3.5) ya están; un
+  discriminante de `switch` ancho (F9) y un operando ancho de un builtin de una instrucción
   siguen rechazados con E5002.
 
 - **Revisión de `ocr` sobre F3.3** (`2d5ac5a..da1dbfb`): 13 ficheros, 13 hallazgos, **dos altos y tres
@@ -1395,6 +1396,26 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   marca los temporales de `FrameAddr` y propaga por `Copy`/`BinOp`/`UnOp`, que es la aritmética de
   `&s->campo`; una `Load` de esa dirección es un VALOR y corta la propagación). Cubierto por
   `a_call_passing_the_address_of_a_local_is_not_a_tail_call`.
+
+- **Corrección de la colisión entre el hogar de un parámetro y la llegada de otro** (la destapó la
+  construcción de la STDLIB para F3.5): `printf("%g")`/`%e` se colgaban a `-O1`/`-O2` (y con ellos
+  `test_printf`, `examples/calc` y, antes del arreglo anterior, `test_disk_fs`). El bucle infinito
+  estaba en `float_digits` de `src/format.c`: su `m` se recalculaba sin fin porque `X` (el exponente
+  de salida, un `int*`) nunca se escribía. La causa es del asignador: el prólogo de un función hoja
+  asienta los parámetros en orden de declaración, con un `mov hogar, llegada` (o un
+  `str [slot], llegada`) cada uno, y **un local `register` puede desbancar a un parámetro del registro
+  en que llegó**. Los slots de puntero que crea el pase de variables de inducción llevan
+  `preferRegister = true`, así que en `float_digits` cinco de ellos vaciaron `r6/r7/r12/r0/r1` *antes*
+  de que se consideraran los cuatro parámetros; `nd` (llega en `r0`) fue a parar a `r2` y `out` (llega
+  en `r1`) a `r3`, y entonces el asentamiento de `exp10` (llega en `r2`) guardó en su slot el valor ya
+  pisado de `r2`. Es el análogo en el callee de la regla del llamador de que a un valor nunca se le da
+  un registro de argumento cuando hay una llamada (codegen.cpp): `value_placement.cpp` reserva ahora,
+  por banco, los registros de llegada de los parámetros, y un parámetro que no puede quedarse con el
+  suyo solo puede tomar un registro que no sea de llegada (o un slot) —nunca el de otro parámetro—,
+  mientras que un local no parámetro sí puede seguir usando los de argumento. Cubierto por
+  `a_displaced_parameter_is_not_homed_on_another_parameters_arrival_register` (codegen) y
+  `a_parameter_displaced_by_a_register_local_does_not_land_on_another_parameters_arrival_register`
+  (e2e: devolvía 26 en vez de 42 a O1/O2).
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
 son proyectos de varios días (bitfields y layout empaquetado para F7; reasignación de registros para
