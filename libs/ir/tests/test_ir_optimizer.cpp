@@ -232,6 +232,10 @@ TEST(ir_optimizer, the_size_and_debug_levels_turn_off_the_right_O1_passes)
 	// a branch makes the code easier to follow, not harder.
 	CHECK(o1.conditionalConstants && og.conditionalConstants);
 	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).conditionalConstants);
+
+	// Loop-invariant motion is an ordinary O1 optimization as well.
+	CHECK(o1.loopInvariantMotion);
+	CHECK(!support::OptimizationOptions::forLevel(support::OptimizationLevel::O0).loopInvariantMotion);
 }
 
 // ---- self-comparison folding ---------------------------------------------------------------------
@@ -364,6 +368,62 @@ TEST(ir_optimizer, sccp_does_not_resolve_a_branch_on_a_twice_defined_temporary)
 	support::OptimizationOptions options = only(&support::OptimizationOptions::conditionalConstants);
 	std::string text = optimizedIr("int f(int a) { if (a ? 1 : 0) return 10; return 20; }", options, "f");
 	CHECK(contains(text, "br."));
+}
+
+// ---- loop-invariant code motion (LICM) ----------------------------------------------------------
+
+TEST(ir_optimizer, licm_hoists_an_invariant_load_and_computation_into_the_preheader)
+{
+	// `a * b` and the loads of `a` and `b` are the same on every iteration (`a`/`b` are parameters
+	// the loop never writes), so all of it moves into the preheader block L0; only the accumulate
+	// stays in the body.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::loopInvariantMotion);
+	std::string text = optimizedIr(
+		"int f(int n, int a, int b) { int total = 0; for (int i = 0; i < n; i = i + 1) { total = total + a * b; } return total; }",
+		options, "f");
+	usize mul = text.find("mul");
+	usize header = text.find("L1:");
+	CHECK(mul != std::string::npos && header != std::string::npos);
+	CHECK(mul < header); // the multiply is in the preheader, before the loop header
+}
+
+TEST(ir_optimizer, licm_does_not_hoist_a_division)
+{
+	// The VM raises Trap on a zero divisor, so hoisting a division could fault a loop that never
+	// reaches it. The divisor's load moves out, but the division itself stays in the body.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::loopInvariantMotion);
+	std::string text = optimizedIr(
+		"int f(int n, int a) { int t = 0; for (int i = 0; i < n; i = i + 1) { t = t + 10 / a; } return t; }",
+		options, "f");
+	usize div = text.find("div");
+	usize header = text.find("L1:");
+	CHECK(div != std::string::npos && header != std::string::npos);
+	CHECK(div > header); // the division is still in the loop body
+}
+
+TEST(ir_optimizer, licm_does_not_hoist_a_load_of_a_local_the_loop_writes)
+{
+	// `i` changes every iteration, so its load must stay in the loop; only the loop-invariant `n`
+	// is read once, in the preheader.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::loopInvariantMotion);
+	std::string text = optimizedIr(
+		"int f(int n) { int t = 0; for (int i = 0; i < n; i = i + 1) { t = t + i; } return t; }",
+		options, "f");
+	// L1 is the header, where the loop counter is read and compared.
+	CHECK(contains(text, "load.word"));
+	usize header = text.find("L1:");
+	CHECK(text.find("load.word", header) != std::string::npos);
+}
+
+TEST(ir_optimizer, licm_leaves_a_loop_that_calls_alone)
+{
+	// A value hoisted out of a loop stays live for the whole loop, so it would be live across any
+	// call the loop makes - and the allocator's own "does this range span a call" test is linear in
+	// emission order, which a back edge fools. A loop with a call is therefore left untouched.
+	std::string_view source =
+		"int g(int); int f(int n, int a) { int t = 0; for (int i = 0; i < n; i = i + 1) { t = t + a + g(i); } return t; }";
+	CHECK_EQ(optimizedIr(source, only(&support::OptimizationOptions::loopInvariantMotion), "f"),
+		optimizedIr(source, support::OptimizationOptions::none(), "f"));
 }
 
 // ---- block layout --------------------------------------------------------------------------------

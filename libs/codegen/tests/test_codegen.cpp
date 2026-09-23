@@ -62,6 +62,17 @@ namespace
 		return generateCasm(source, support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
 	}
 
+	// -O2 with one pass switched off. The register-allocation tests below use it to keep LICM from
+	// hoisting the very loop-carried loads they are written to place: LICM is a real optimization
+	// (it is what turns `s + a + b + c` in a loop into a single add), and it changes what the
+	// allocator sees, so a test of the allocator has to name the pipeline it is testing.
+	std::string atO2Without(std::string_view source, bool support::OptimizationOptions::* flag)
+	{
+		support::OptimizationOptions options = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
+		options.*flag = false;
+		return generateCasm(source, options);
+	}
+
 	// One optimization at a time, on top of -O0 - what pins a single peephole's effect without the
 	// rest of the pipeline reshaping the output around it.
 	support::OptimizationOptions only(bool support::OptimizationOptions::* flag)
@@ -578,8 +589,9 @@ TEST(codegen, a_load_aliased_to_a_register_is_snapshotted_before_a_store_redefin
 	// the post-increment value and the store would land one past the last digit (the most significant
 	// one, which is the only byte that then goes missing). The aliased load must instead be a copy
 	// taken before the increment, which the store then folds as its index.
-	std::string casm = atO2(
-		"int f(unsigned v) { char buf[3]; int i = 0; while (v > 0) { buf[i++] = (char)(48 + (v % 10)); v /= 10; } return buf[0]; }");
+	std::string casm = atO2Without(
+		"int f(unsigned v) { char buf[3]; int i = 0; while (v > 0) { buf[i++] = (char)(48 + (v % 10)); v /= 10; } return buf[0]; }",
+		&support::OptimizationOptions::loopInvariantMotion);
 	CHECK(contains(casm, "mov r1, r6"));          // the snapshot of i, taken before the increment
 	CHECK(contains(casm, "add r7, r1, 1"));       // i + 1 computed from the snapshot, not from i itself
 	CHECK(contains(casm, "mov r6, r7"));          // i = i + 1
@@ -1353,8 +1365,8 @@ TEST(codegen, register_wins_the_pool_over_a_local_that_did_not_ask)
 	std::string without(program);
 	without.replace(without.find("{}REGISTER{}"), 12, "");
 
-	std::string asked = atO2(withRegister);
-	std::string did_not = atO2(without);
+	std::string asked = atO2Without(withRegister, &support::OptimizationOptions::loopInvariantMotion);
+	std::string did_not = atO2Without(without, &support::OptimizationOptions::loopInvariantMotion);
 	CHECK(asked != did_not);
 
 	// The variable that asked keeps its value in a register across the loop, so the body stops
@@ -1384,8 +1396,8 @@ TEST(codegen, a_register_parameter_competes_for_the_pool_like_any_other_register
 
 	// The parameter that asked keeps the register it arrived in, so the prologue has nothing at all
 	// to emit for it; the one that did not is spilled to a field on the way past.
-	CHECK(contains(atO2(did_not), "], r1 //"));
-	CHECK(!contains(atO2(asked), "], r1 //"));
+	CHECK(contains(atO2Without(did_not, &support::OptimizationOptions::loopInvariantMotion), "], r1 //"));
+	CHECK(!contains(atO2Without(asked, &support::OptimizationOptions::loopInvariantMotion), "], r1 //"));
 }
 
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)

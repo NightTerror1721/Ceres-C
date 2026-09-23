@@ -62,6 +62,7 @@ namespace ceresc::support
 		bool blockLayout = true;				// order blocks so a jump to the next one is a fall-through
 		bool minMaxIdioms = true;				// `a < b ? a : b` -> imin/umin, `x < 0 ? -x : x` -> abs
 		bool conditionalConstants = true;		// branch-aware constant propagation: resolve a branch/switch on a known constant
+		bool loopInvariantMotion = true;		// hoist a loop-invariant computation into the loop's preheader
 
 		// ---- codegen-level (libs/codegen) -------------------------------------------------------
 		bool framelessLeaf = true;				// no enter/leave at all when nothing needs the frame
@@ -111,6 +112,7 @@ namespace ceresc::support
 			{ "tail-calls",         &OptimizationOptions::tailCalls,                "turn `return f(args)` into a frame-restoring jump to f" },
 			{ "min-max",            &OptimizationOptions::minMaxIdioms,             "recognize `a < b ? a : b` as min/max and `x < 0 ? -x : x` as abs" },
 			{ "sccp",               &OptimizationOptions::conditionalConstants,     "propagate constants along taken branches and resolve a constant switch" },
+			{ "loop-invariant",     &OptimizationOptions::loopInvariantMotion,      "hoist a loop-invariant computation into the loop's preheader" },
 			{ "frameless-leaf",     &OptimizationOptions::framelessLeaf,            "omit the stack frame when a function needs none" },
 			{ "regalloc",           &OptimizationOptions::registerAllocation,       "keep values in registers; reuse spilled frame slots" },
 			{ "cmp-branch-fusion",  &OptimizationOptions::cmpBranchFusion,          "fuse a comparison into the branch that reads it" },

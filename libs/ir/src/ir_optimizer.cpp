@@ -2145,6 +2145,400 @@ namespace ceresc::ir
 			return true;
 		}
 
+		// ---- pass: loop-invariant code motion (LICM) ---------------------------------------------------
+		//
+		// A natural loop is a back edge `u -> v` together with every block that reaches `u` without
+		// passing through `v`; `v` is the loop header. Finding one needs a dominator tree (a back edge
+		// is an edge into a block that dominates its source), which this pass computes on its own -
+		// nothing else in the IR asks for one today.
+		//
+		// The one transformation is hoisting: an instruction inside the loop whose operands are all
+		// defined outside it (or are themselves hoisted) moves into the loop's PREHEADER - the single
+		// block outside the loop whose only successor is the header, and the header's only entry from
+		// outside. Only side-effect-free instructions that cannot fault are hoisted, so executing one
+		// more often than the loop would have is unobservable: division and remainder are excluded
+		// because the VM raises Trap on a zero divisor, and a float-to-int conversion because it is
+		// undefined out of range - hoisting either could make a loop that never reaches it fault or
+		// misbehave.
+		//
+		// A loop with no such preheader (its header has several entries from outside, or the unique
+		// one has another successor) is skipped rather than given one: inserting a block would change
+		// the CFG for every later pass, and a hoist into a block that can also leave the loop could
+		// read an operand that was never defined on that path.
+
+		struct NaturalLoop
+		{
+			usize header = 0;
+			usize preheader = ~usize(0);
+			std::vector<bool> blocks; // indexed by block index
+		};
+
+		// A dominator set as a bitset, so the dataflow intersection is O(blocks/64) rather than
+		// O(blocks) - a function with many blocks is otherwise cubic in the fixpoint below.
+		struct BlockSet
+		{
+			std::vector<u64> words;
+
+			explicit BlockSet(usize count = 0) : words((count + 63) / 64, 0) {}
+			void set(usize i) { words[i / 64] |= 1ull << (i % 64); }
+			bool test(usize i) const { return (words[i / 64] >> (i % 64)) & 1ull; }
+			void setAll(usize count)
+			{
+				words.assign((count + 63) / 64, ~0ull);
+				if (count % 64)
+					words.back() = (1ull << (count % 64)) - 1;
+			}
+			void intersectWith(const BlockSet& other)
+			{
+				for (usize i = 0; i < words.size(); ++i)
+					words[i] &= other.words[i];
+			}
+			bool operator==(const BlockSet&) const noexcept = default;
+		};
+
+		std::vector<BlockSet> computeDominators(usize blockCount, const std::vector<std::vector<usize>>& predecessors)
+		{
+			std::vector<BlockSet> dom(blockCount);
+			for (usize b = 0; b < blockCount; ++b)
+			{
+				dom[b] = BlockSet(blockCount);
+				dom[b].setAll(blockCount); // optimistic: every block dominates every other, until proven otherwise
+				dom[b].set(b);
+			}
+			dom[0] = BlockSet(blockCount);
+			dom[0].set(0); // only the entry dominates the entry
+
+			bool changed = true;
+			while (changed)
+			{
+				changed = false;
+				for (usize b = 1; b < blockCount; ++b)
+				{
+					BlockSet next(blockCount);
+					if (predecessors[b].empty())
+					{
+						next.set(b); // unreachable: only itself
+					}
+					else
+					{
+						next = dom[predecessors[b][0]];
+						for (usize k = 1; k < predecessors[b].size(); ++k)
+							next.intersectWith(dom[predecessors[b][k]]);
+						next.set(b);
+					}
+					if (!(next == dom[b]))
+					{
+						dom[b] = std::move(next);
+						changed = true;
+					}
+				}
+			}
+			return dom;
+		}
+
+		bool isTerminatorInstr(const IrInstr& instr)
+		{
+			switch (instr.opcode())
+			{
+				case IrOpcode::Jump:
+				case IrOpcode::CondJump:
+				case IrOpcode::TableJump:
+				case IrOpcode::Return:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		// True for an instruction LICM may hoist: pure, and unable to fault. Loads are excluded (they
+		// read memory that a store in the loop may have written), as are calls and stores.
+		bool isHoistableInstruction(const IrInstr& instr) noexcept
+		{
+			switch (instr.opcode())
+			{
+				case IrOpcode::BinOp:
+				{
+					const IrBinOp op = instr.as<IrBinOpPayload>().op;
+					return op != IrBinOp::Div && op != IrBinOp::Mod; // a zero divisor would raise Trap
+				}
+				case IrOpcode::UnOp:
+					return instr.as<IrUnOpPayload>().op != IrUnOp::FloatToInt; // undefined out of range
+				case IrOpcode::Cmp:
+				case IrOpcode::Copy:
+				case IrOpcode::FrameAddr:
+				case IrOpcode::GlobalAddr:
+				case IrOpcode::Builtin:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		bool hoistLoopInvariants(IrFunction& function, const OptimizationOptions& options)
+		{
+			if (!options.loopInvariantMotion)
+				return false;
+
+			std::span<const std::unique_ptr<BasicBlock>> blocks = function.blocks();
+			const usize blockCount = blocks.size();
+			const usize tempCount = function.tempCount();
+			if (blockCount < 2)
+				return false;
+
+			std::unordered_map<const BasicBlock*, usize> indexOf;
+			for (usize i = 0; i < blockCount; ++i)
+				indexOf.emplace(blocks[i].get(), i);
+
+			std::vector<std::vector<usize>> predecessors(blockCount);
+			std::vector<std::vector<usize>> successors(blockCount);
+			for (usize i = 0; i < blockCount; ++i)
+			{
+				for (BasicBlock* successor : successorsOf(function, i))
+				{
+					auto it = indexOf.find(successor);
+					if (it == indexOf.end())
+						continue;
+					successors[i].push_back(it->second);
+					predecessors[it->second].push_back(i);
+				}
+			}
+
+			std::vector<u32> defCount(tempCount, 0);
+			std::vector<usize> defBlock(tempCount, ~usize(0));
+			for (usize i = 0; i < blockCount; ++i)
+			{
+				for (const IrInstr* instr : blocks[i]->instrs())
+				{
+					if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
+					{
+						++defCount[result.id];
+						defBlock[result.id] = i;
+					}
+				}
+			}
+
+			std::vector<BlockSet> dom = computeDominators(blockCount, predecessors);
+
+			// What a hoisted load needs: the local it reads must not escape (so no pointer and no
+			// call can write it) and must not be stored anywhere in the loop (so its value is the
+			// same on every iteration) - see the load case in the hoist test below.
+			std::vector<bool> nonEscaping = collectNonEscapingLocals(function);
+			std::vector<u32> frameAddrLocal = mapFrameAddrTemps(function);
+
+			// Every natural loop, merged by header (a header with two latches is one loop).
+			std::vector<NaturalLoop> loops;
+			auto loopForHeader = [&](usize header) -> NaturalLoop&
+			{
+				for (NaturalLoop& loop : loops)
+					if (loop.header == header)
+						return loop;
+				loops.push_back(NaturalLoop{ header, ~usize(0), std::vector<bool>(blockCount, false) });
+				loops.back().blocks[header] = true;
+				return loops.back();
+			};
+
+			for (usize u = 0; u < blockCount; ++u)
+			{
+				for (usize v : successors[u])
+				{
+					if (!dom[u].test(v))
+						continue; // not a back edge: v does not dominate u
+					NaturalLoop& loop = loopForHeader(v);
+					loop.blocks[u] = true;
+					// Everything that reaches the latch `u` without passing through the header `v`.
+					std::vector<usize> stack{ u };
+					while (!stack.empty())
+					{
+						usize x = stack.back();
+						stack.pop_back();
+						if (x == v)
+							continue; // never expand the header's own predecessors
+						for (usize p : predecessors[x])
+						{
+							if (!loop.blocks[p])
+							{
+								loop.blocks[p] = true;
+								stack.push_back(p);
+							}
+						}
+					}
+				}
+			}
+
+			for (NaturalLoop& loop : loops)
+			{
+				usize outside = 0;
+				for (usize p : predecessors[loop.header])
+					if (!loop.blocks[p])
+						++outside;
+				if (outside != 1)
+					continue; // several entries from outside: nowhere to hoist to
+				for (usize p : predecessors[loop.header])
+				{
+					if (loop.blocks[p])
+						continue;
+					if (successors[p].size() == 1 && successors[p][0] == loop.header)
+						loop.preheader = p;
+					break;
+				}
+			}
+
+			// Innermost first, so a value hoisted into an inner preheader can be hoisted further by
+			// an enclosing loop in the same pass.
+			std::sort(loops.begin(), loops.end(), [](const NaturalLoop& a, const NaturalLoop& b)
+			{
+				return std::count(a.blocks.begin(), a.blocks.end(), true) <
+					std::count(b.blocks.begin(), b.blocks.end(), true);
+			});
+
+			bool changedAtAll = false;
+			for (const NaturalLoop& loop : loops)
+			{
+				if (loop.preheader == ~usize(0))
+					continue;
+
+				std::vector<bool> definedInLoop(tempCount, false);
+				for (usize i = 0; i < blockCount; ++i)
+					if (loop.blocks[i])
+						for (const IrInstr* instr : blocks[i]->instrs())
+							if (IrValue result = resultOf(*instr); result.isValid() && result.id < tempCount)
+								definedInLoop[result.id] = true;
+
+				// A value hoisted into the preheader stays live for the whole loop, so it is live
+				// across any Call the loop makes - and the allocator's own "does this live range
+				// span a call" test is linear in emission order, which a back edge fools. Refuse a
+				// loop that calls anything rather than hand the allocator a range it would put in a
+				// caller-saved register that the call then clobbers. (A hoisted value whose every use
+				// is inside the loop is dead once the loop ends, so a call OUTSIDE it is harmless.)
+				bool loopHasCall = false;
+				for (usize i = 0; i < blockCount && !loopHasCall; ++i)
+					if (loop.blocks[i])
+						for (const IrInstr* instr : blocks[i]->instrs())
+							if (instr->opcode() == IrOpcode::Call)
+							{
+								loopHasCall = true;
+								break;
+							}
+				if (loopHasCall)
+					continue;
+
+				std::vector<bool> usedOutsideLoop(tempCount, false);
+				for (usize i = 0; i < blockCount; ++i)
+				{
+					if (loop.blocks[i])
+						continue;
+					for (const IrInstr* instr : blocks[i]->instrs())
+						forEachOperand(*instr, [&](IrValue value)
+						{
+							if (value.isValid() && value.id < tempCount)
+								usedOutsideLoop[value.id] = true;
+						});
+				}
+
+				// Which non-escaping local the loop writes. A load of one it does NOT write is the
+				// same value on every iteration, so it may be hoisted too.
+				std::vector<bool> storedInLoop(function.localCount(), false);
+				for (usize i = 0; i < blockCount; ++i)
+					if (loop.blocks[i])
+						for (const IrInstr* instr : blocks[i]->instrs())
+							if (instr->opcode() == IrOpcode::Store)
+							{
+								IrValue address = instr->as<IrStorePayload>().address;
+								if (address.isValid() && address.id < frameAddrLocal.size() && frameAddrLocal[address.id] != ~0u)
+									storedInLoop[frameAddrLocal[address.id]] = true;
+							}
+
+				auto hoistable = [&](const IrInstr& instr) -> bool
+				{
+					if (instr.opcode() != IrOpcode::Load)
+						return isHoistableInstruction(instr);
+					const IrLoadPayload& load = instr.as<IrLoadPayload>();
+					if (load.isVolatile || !load.address.isValid() || load.address.id >= frameAddrLocal.size())
+						return false;
+					u32 local = frameAddrLocal[load.address.id];
+					return local != ~0u && local < nonEscaping.size() && nonEscaping[local] && !storedInLoop[local];
+				};
+
+				// A temporary is invariant when it is defined outside the loop by a single
+				// definition that dominates the preheader, or when it is itself being hoisted. A
+				// second definition makes the value ambiguous (this IR is not SSA), so it is not
+				// hoisted over.
+				auto invariant = [&](IrValue value, const std::unordered_set<u32>& hoisted)
+				{
+					if (!value.isValid() || value.id >= tempCount)
+						return true;
+					if (hoisted.contains(value.id))
+						return true;
+					if (definedInLoop[value.id])
+						return false;
+					return defCount[value.id] == 1 && dom[loop.preheader].test(defBlock[value.id]);
+				};
+
+				std::unordered_set<u32> hoisted;
+				std::vector<IrInstr*> order;
+				bool progress = true;
+				while (progress)
+				{
+					progress = false;
+					for (usize i = 0; i < blockCount; ++i)
+					{
+						if (!loop.blocks[i])
+							continue;
+						for (IrInstr* instr : blocks[i]->instrs())
+						{
+							IrValue result = resultOf(*instr);
+							if (!result.isValid() || result.id >= tempCount || hoisted.contains(result.id))
+								continue;
+							if (usedOutsideLoop[result.id])
+								continue; // hoisting would extend its live range past the loop
+							if (defCount[result.id] != 1 || !hoistable(*instr))
+								continue;
+							bool allInvariant = true;
+							forEachOperand(*instr, [&](IrValue value)
+							{
+								if (!invariant(value, hoisted))
+									allInvariant = false;
+							});
+							if (!allInvariant)
+								continue;
+							hoisted.insert(result.id);
+							order.push_back(instr);
+							progress = true;
+						}
+					}
+				}
+
+				if (order.empty())
+					continue;
+
+				std::unordered_set<const IrInstr*> moving(order.begin(), order.end());
+				for (usize i = 0; i < blockCount; ++i)
+				{
+					if (!loop.blocks[i])
+						continue;
+					std::span<IrInstr* const> instrs = blocks[i]->instrs();
+					std::vector<IrInstr*> kept;
+					kept.reserve(instrs.size());
+					for (IrInstr* instr : instrs)
+						if (!moving.contains(instr))
+							kept.push_back(instr);
+					if (kept.size() != instrs.size())
+						blocks[i]->replaceInstrs(std::move(kept));
+				}
+
+				std::span<IrInstr* const> pre = blocks[loop.preheader]->instrs();
+				usize insertAt = (!pre.empty() && isTerminatorInstr(*pre.back())) ? pre.size() - 1 : pre.size();
+				std::vector<IrInstr*> rebuilt;
+				rebuilt.reserve(pre.size() + order.size());
+				rebuilt.insert(rebuilt.end(), pre.begin(), pre.begin() + static_cast<std::ptrdiff_t>(insertAt));
+				rebuilt.insert(rebuilt.end(), order.begin(), order.end());
+				rebuilt.insert(rebuilt.end(), pre.begin() + static_cast<std::ptrdiff_t>(insertAt), pre.end());
+				blocks[loop.preheader]->replaceInstrs(std::move(rebuilt));
+				changedAtAll = true;
+			}
+			return changedAtAll;
+		}
+
 		// ---- pass: dead code elimination -------------------------------------------------------------
 
 		bool eliminateDeadCode(IrFunction& function, const OptimizationOptions& options,
@@ -2226,20 +2620,6 @@ namespace ceresc::ir
 			if (function.isInlineHint())
 				return kMaxInlineInstrsWhenRequested;
 			return kMaxInlineInstrs;
-		}
-
-		bool isTerminatorInstr(const IrInstr& instr)
-		{
-			switch (instr.opcode())
-			{
-				case IrOpcode::Jump:
-				case IrOpcode::CondJump:
-				case IrOpcode::TableJump:
-				case IrOpcode::Return:
-					return true;
-				default:
-					return false;
-			}
 		}
 
 		// A callee worth splicing: any shape of control flow (several blocks, calls to other
@@ -2784,6 +3164,7 @@ namespace ceresc::ir
 				changed |= eliminateDeadStores(*function, options);
 				changed |= threadJumps(*function, arena, options);
 				changed |= removeUnreachableBlocks(*function, options);
+				changed |= hoistLoopInvariants(*function, options);
 				changed |= layoutBlocks(*function, options);
 				changed |= eliminateDeadCode(*function, options, pureFunctions);
 				if (!changed)

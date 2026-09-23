@@ -1096,7 +1096,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 | 10 | **O11** — plegado de autocomparación **y** SCCP (lattice + worklist, aristas tomadas, `switch` constante resuelto) | — | **hecho** |
 | 11 | **F6** — *flexible array members* **hechos**; `alloca`/VLA aplazados (necesitan re-basar el frame en `fp`) | — | parcial |
 | 12 | **F7** — bitfields y layout empaquetado | — | pendiente |
-| 13 | **O3** — optimizaciones de bucle (LICM, IV-SR) | detección de bucles | pendiente |
+| 13 | **O3** — LICM **hecho** (detección de bucles naturales + dominancia); falta IV-SR | — | parcial |
 | 14 | **O15** — reconocimiento de idiomas de bucle byte→palabra | O3 | pendiente |
 | 15 | **O4** — mejor asignador de registros | contrato de `setjmp` (F4) | pendiente |
 | 16 | **F3** — enteros de 64 bits | ABI de 64 bits | pendiente |
@@ -1133,8 +1133,15 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
   `docs/11-Diagnostics.md`.
 
 Los items 4–18 quedan pendientes. Los bloqueados o aplazados tienen su razón en la tabla; los demás
-son proyectos de varios días (análisis de bucles/dominancia para O3/O15, reasignación de registros
+son proyectos de varios días (análisis de bucles/dominancia para O15, reasignación de registros
 para O4/O5, ABI ancha para F3, formato de depuración para F8, serialización de IR para F13).
+
+**O3 se partió igual que F6.** El LICM ya está: detección de bucles naturales (aristas de retroceso
+sobre un árbol de dominancia) y elevación de cargas/cálculos invariantes al preheader. Un bucle que
+llama a algo se deja intacto a propósito: un valor elevado vive durante todo el bucle, o sea también
+a través de la llamada, y el propio test del asignador para "¿este rango cruza una llamada?" es
+lineal en orden de emisión, que una arista de retroceso engaña. La reducción de fuerza de variables
+de inducción sigue pendiente; necesita el mismo análisis y su propio coste.
 
 **F6 se partió en dos.** El *flexible array member* es autocontenido (parser, layout, `sizeof`,
 acceso) y ya está hecho. `alloca`/VLA no lo son: el compilador direcciona todo el frame como
