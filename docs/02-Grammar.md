@@ -164,8 +164,8 @@ third a pointer to one; the multiplication test uses the machine's multiply-high
 operand is rejected rather than silently widened.
 
 `__builtin_rint` rounds ties to even, which is C's `rint`/`nearbyint`. `__builtin_abs` of
-`INT_MIN` sets the machine's Overflow flag rather than producing a value, exactly as the instruction
-does. The integer builtins take an integer and the float builtins a float, with no conversion applied
+`INT_MIN` is `INT_MIN` again, with the machine's Overflow flag set, exactly as the instruction does;
+no builtin is constant-folded, so no optimization level assumes anything else. The integer builtins take an integer and the float builtins a float, with no conversion applied
 - pass the bank you mean. None is a function call and none clobbers memory, so a call whose result
 nothing reads is removed like any other pure computation. `__builtin_flags()` is the one whose value
 depends on where it is read (`sti`/`cli` change it), so common-subexpression elimination and
