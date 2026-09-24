@@ -1087,6 +1087,15 @@ namespace ceresc::sema
 		if (auto* cast = dynamic_cast<ast::CastExpr*>(expr))
 			return evalConstantExpr(cast->operand()); // no truncation modeled - see the header comment
 
+		// A _Generic selection is a constant expression when the association it picks is one (C11
+		// 6.5.1.1p4). The pick is sema's, so the selection has to have been checked.
+		if (auto* generic = dynamic_cast<ast::GenericSelectionExpr*>(expr))
+		{
+			if (!generic->selectedExpr() && !_scopes.empty())
+				checkExpr(generic);
+			return generic->selectedExpr() ? evalConstantExpr(generic->selectedExpr()) : std::nullopt;
+		}
+
 		if (auto* sizeofExpr = dynamic_cast<ast::SizeofExpr*>(expr))
 		{
 			// A constant asked for before the enclosing declaration's initializer was checked: the operand has

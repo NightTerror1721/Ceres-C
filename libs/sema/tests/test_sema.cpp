@@ -117,6 +117,15 @@ TEST(sema, literal_types)
 	CHECK_EQ(typeOfMainLastExpr("int main() { \"hi\"; }"), "char*");
 }
 
+TEST(sema, a_generic_selection_of_a_constant_is_a_constant_expression)
+{
+	CHECK(checkSource("_Static_assert(_Generic(1u, unsigned int: 1, default: 0), \"picks\"); enum { E = _Generic('a', char: 3, default: 1) }; _Static_assert(E == 3, \"e\");"
+		"int f(void) { _Static_assert(_Generic(u'a', unsigned short: 2, default: 0) == 2, \"u\"); return 0; }").ok);
+	CheckOutcome notConstant = checkSource("int g; _Static_assert(_Generic(1, int: g, default: 0), \"x\");");
+	CHECK(!notConstant.ok);
+	CHECK(containsMessage(notConstant, "must be a constant expression"));
+}
+
 TEST(sema, a_literal_prefix_selects_the_character_type)
 {
 	// wchar_t is int, char16_t unsigned short, char32_t unsigned int, C23's char8_t unsigned char;
