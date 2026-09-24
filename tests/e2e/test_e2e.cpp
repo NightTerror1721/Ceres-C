@@ -1992,10 +1992,11 @@ TEST(e2e, the_memcpy_and_memset_builtins_and_the_loop_idioms_run_on_the_block_in
 		"    *term = big[99] == 'q' && big[100] == 7 ? 'b' : 'x';"
 		"    big[100] = 0;"
 		"    *term = length(big) == 100 && scan(big, 100, 'z') == 100 && scan(copy, 10000, 9) == 9999 ? 'c' : 'x';"
-		"    forward(big + 1, big, 50);"                     // overlapping, d > s: repeats the first byte
-		"    *term = big[50] == 'q' && big[1] == 'q' ? 'd' : 'x';"
+		"    big[0] = 'p'; big[1] = 's';"                   // distinct, so a repeat is observable
+		"    forward(big + 1, big, 50);"                     // overlapping, d > s: repeats big[0] all the way
+		"    *term = big[1] == 'p' && big[2] == 'p' && big[50] == 'p' && big[51] == 'q' ? 'd' : 'x';"
 		"    fill(big, 0, 'z'); fill(big, -5, 'z');"         // a non-positive count does nothing
-		"    *term = big[0] == 'q' ? 'e' : 'x';"
+		"    *term = big[0] == 'p' ? 'e' : 'x';"
 		"    return 0;"
 		"}",
 		"abcde");

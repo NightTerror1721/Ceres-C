@@ -465,10 +465,11 @@ TEST(options, the_usage_text_mentions_objects_archives_and_declarations)
 
 TEST(options, symtab_asks_the_link_for_a_symbol_table)
 {
-	ParseResult with = parse({ "ceresc", "main.c", "--run", "--symtab" });
+	ParseResult with = parse({ "main.c", "--run", "--symtab" });
 	CHECK(with.options.has_value() && with.options->symbolTable);
-	ParseResult without = parse({ "ceresc", "main.c", "--run" });
+	ParseResult without = parse({ "main.c", "--run" });
 	CHECK(without.options.has_value() && !without.options->symbolTable);
+	CHECK(!parse({ "main.c", "--symtab" }).options.has_value());   // there is no link to ask without --run
 }
 
 TEST(options, run_arg_collects_the_extra_arguments_for_ceres_run_in_order)

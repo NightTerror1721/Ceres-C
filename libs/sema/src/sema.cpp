@@ -1808,7 +1808,11 @@ namespace ceresc::sema
 				const Type* destination = typeAt(0);
 				const Type* second = typeAt(1);
 				const Type* count = typeAt(2);
-				if (!destination || !destination->isPointer() || (isCopy ? !second || !second->isPointer() : !second || !isIntegerType(second)) ||
+				// The destination must convert to void*: a pointer to const data (which may live in .rodata) or
+				// to a function is not somewhere these write.
+				const Type* voidPointer = Type::makePointer(_arena, &Type::Void);
+				const bool writable = destination && destination->isPointer() && isAssignable(voidPointer, destination);
+				if (!writable || (isCopy ? !second || !second->isPointer() : !second || !isIntegerType(second) || second->isWideInteger()) ||
 					!count || !isIntegerType(count) || count->isWideInteger())
 				{
 					_diagnostics.error(DiagId::InvalidBuiltinOperand, node.location(), "'{}' takes a destination pointer, {} and a byte count",

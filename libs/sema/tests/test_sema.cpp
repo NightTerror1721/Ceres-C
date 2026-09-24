@@ -123,6 +123,10 @@ TEST(sema, the_memcpy_and_memset_builtins_check_their_operands)
 	CHECK(!checkSource("void f(char* d, int n) { __builtin_memcpy(d, n, n); }").ok);           // the source is not a pointer
 	CHECK(!checkSource("void f(char* d, char* s) { __builtin_memset(d, s, 4); }").ok);          // nor is the value a number
 	CHECK(!checkSource("void f(char* d) { __builtin_memset(d, 0); }").ok);                      // three operands
+	CHECK(!checkSource("void f(int d) { __builtin_memset(d, 0, 4); }").ok);                     // the destination is not a pointer
+	CHECK(!checkSource("void f(const char* d) { __builtin_memset(d, 0, 4); }").ok);             // nor one to const data
+	CHECK(!checkSource("void f(char* d, long long n) { __builtin_memcpy(d, d, n); }").ok);      // a 64-bit count
+	CHECK(!checkSource("void f(char* d) { __builtin_memset(d, 1LL, 4); }").ok);                 // a 64-bit byte value
 }
 
 TEST(sema, a_generic_selection_of_a_constant_is_a_constant_expression)

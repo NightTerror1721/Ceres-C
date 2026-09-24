@@ -91,7 +91,8 @@ namespace ceresc::driver
 			"  --ceres-path <path> where to find `ceres`: its directory, or the executable itself. Without it the\n"
 			"                      CERES_PATH environment variable says, and then PATH\n"
 			"  --symtab            link a table of the program's function names into it (`ceres link --symtab`),\n"
-			"                      for a backtrace or a fault report that names functions (ceres/backtrace.h)\n"
+			"                      for a backtrace or a fault report that names functions (ceres/backtrace.h);\n"
+			"                      only with --run, the build that links\n"
 			"  -Werror             treat warnings as errors\n"
 			"  --stats, -fstats    after optimizing, report what changed (instruction counts, inlining)\n"
 			"  --version           print the version and stop\n"
@@ -263,6 +264,11 @@ namespace ceresc::driver
 		if ((options.clean || options.cleanKeepCasm) && !options.run)
 		{
 			diagnosticsOut << "ceresc: '--clean' and '--clean-keep-casm' require '--run'\n";
+			return std::nullopt;
+		}
+		if (options.symbolTable && !options.run)
+		{
+			diagnosticsOut << "ceresc: '--symtab' requires '--run': it is an option of the link\n";
 			return std::nullopt;
 		}
 		return options;
