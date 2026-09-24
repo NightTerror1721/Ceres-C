@@ -8,34 +8,23 @@ and why, rather than rediscovering it.
 Nothing under [`examples/`](../examples) depends on anything on this page, so the shipped programs
 describe the language as it actually behaves.
 
-> Four bugs used to be listed here — narrow loads that never sign-extended, `(char)` casts that did
-> not truncate, int-to-`bool` conversions that did not normalize, and a `const`/storage-class gap in
-> the parser. All four are fixed, and each is now pinned by an ordinary test rather than a
-> known-failure marker. The fifth entry below is not ours.
+> Five bugs used to be listed here — narrow loads that never sign-extended, `(char)` casts that did
+> not truncate, int-to-`bool` conversions that did not normalize, a `const`/storage-class gap in
+> the parser, and one in CeresASM (below). All five are fixed, and each is pinned by an ordinary test
+> rather than a known-failure marker.
 
-## The assembler miscompiles the integer `neg` pseudo-instruction
+## The integer `neg` pseudo-instruction (fixed in CeresASM)
 
-This one is in **CeresASM**, not in Ceres-C, and it is worked around here rather than fixed here.
-`neg rd, rs` is documented to expand to `imul rd, rs, -1`, but it assembles to `IMUL rd, r15, r0` —
-the `-1` lands in the `rs` register field as `r15`, and the real source register is dropped. Every
-integer negation then returns garbage.
+CeresASM used to assemble `neg rd, rs` on integer registers to `IMUL rd, r15, r0` — the `-1` of its
+documented expansion `imul rd, rs, -1` landed in the `rs` register field as `r15` and the source
+register was dropped. CeresASM 0f827ed encodes it as the `IMULI rd, rs, -1` it was always meant to be
+(pinned by its `encoding / integer_neg_is_imul_by_minus_one_of_the_source`).
 
-```casm
-@text
-global main:
-    li  r1, 3
-    neg r2, r1        // disassembles as IMUL r2, r15, r0
-    imul r3, r1, -1   // disassembles as IMULI r3, r1, -1  — correct
-    halt
-```
-
-The float form is fine: `neg fd, fs` maps to the real `FNEG` opcode.
-
-Ceres-C therefore writes the documented expansion out in full — `imul rd, rs, -1` — for integer
-negation, and keeps using the pseudo for floats. Pinned by
-`codegen / integer_negation_writes_out_the_imul_expansion_instead_of_the_neg_pseudo`, whose comment
-says to check the assembler first if it ever goes red. Once the assembler is fixed, the workaround
-can go.
+Ceres-C still writes that expansion out in full — `imul rd, rs, -1` — for integer negation, and uses
+the pseudo only for floats (where `neg fd, fs` is the real `FNEG` opcode). The two now assemble to the
+same word, so nothing changes for a program; keeping the explicit form means Ceres-C also works with an
+assembler older than the fix. Pinned by
+`codegen / integer_negation_writes_out_the_imul_expansion_instead_of_the_neg_pseudo`.
 
 ---
 
