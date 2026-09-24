@@ -1126,7 +1126,8 @@ namespace ceresc::ir
 				case IrOpcode::Builtin:
 				{
 					const auto& p = instr.as<IrBuiltinPayload>();
-					if (!stable(p.a) || !stable(p.b))
+					// Two reads of the flags around a `cli` are two different values.
+					if (p.builtin == ast::Builtin::Flags || !stable(p.a) || !stable(p.b))
 						return false;
 					out = CseKey{ 4, static_cast<u8>(p.builtin), 0, 0, p.a.id, p.b.id };
 					return true;
@@ -2360,8 +2361,11 @@ namespace ceresc::ir
 				case IrOpcode::Copy:
 				case IrOpcode::FrameAddr:
 				case IrOpcode::GlobalAddr:
-				case IrOpcode::Builtin:
 					return true;
+				case IrOpcode::Builtin:
+					// The flags have no operand, so they look invariant - but a `sti` or `cli` in the
+					// loop changes them.
+					return instr.as<IrBuiltinPayload>().builtin != ast::Builtin::Flags;
 				default:
 					return false;
 			}

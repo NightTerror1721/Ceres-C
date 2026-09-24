@@ -1090,7 +1090,7 @@ Cada fila indica qué lo bloquea. Se implementa de arriba abajo, un commit por f
 
 | # | Item | Depende de | Estado |
 | --- | --- | --- | --- |
-| 1 | **F14a** — `__builtin_stack_pointer()` (estado de máquina) | — | **hecho** |
+| 1 | **F14a** — `__builtin_stack_pointer()` y `__builtin_flags()` (estado de máquina) | — | **hecho** |
 | 2 | **F12** — `#include_next` (hecho); `#line` y `_Pragma` siguen pendientes | — | parcial |
 | 3 | **O9** — layout de bloques para fall-through | — | **hecho** |
 | 4 | **O5** — coalescing de copias en el asignador | test de ABI (F4) | **aplazado** (subsumido por copy propagation + DCE; el coalescing real pertenece a O4) |

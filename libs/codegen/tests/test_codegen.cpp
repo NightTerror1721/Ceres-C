@@ -1494,6 +1494,32 @@ TEST(codegen, stack_pointer_reads_sp)
 		"    ret                   // test.c:1\n");
 }
 
+TEST(codegen, flags_are_pushed_and_popped)
+{
+	CHECK_EQ(atO2("unsigned int f(void) { return __builtin_flags(); }"),
+		"@text\n"
+		"\n"
+		"// f - test.c:1\n"
+		"global f:\n"
+		".L0:\n"
+		"    push                  // test.c:1\n"
+		"    pop r3                // test.c:1\n"
+		"    mov r0, r3            // test.c:1\n"
+		"    ret                   // test.c:1\n");
+}
+
+TEST(codegen, flags_read_on_both_sides_of_cli_are_two_reads)
+{
+	// irq_save's shape: the Interrupt flag is read, then cleared, then read again. At -O2 the two
+	// reads must both be there, in order around the `cli`.
+	std::string casm = atO2("unsigned int f(void) { unsigned int a = __builtin_flags(); __builtin_cli(); return a ^ __builtin_flags(); }");
+	usize first = casm.find("    push ");
+	usize cli = casm.find("    cli");
+	usize second = casm.find("    push ", cli == std::string::npos ? 0 : cli);
+	CHECK(first != std::string::npos && cli != std::string::npos && second != std::string::npos);
+	CHECK(first < cli && cli < second);
+}
+
 TEST(codegen, expect_lowers_to_its_operand_and_constant_p_to_a_constant)
 {
 	// Neither is a machine instruction, and `constant_p` does not even evaluate its operand: the

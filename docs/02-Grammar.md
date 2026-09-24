@@ -142,6 +142,7 @@ each one takes. Each lowers to exactly one Ceres instruction.
 | `__builtin_umin(a, b)`, `__builtin_umax(a, b)` | `min`, `max` | unsigned integer minimum / maximum |
 | `__builtin_abs(i)` | `abs` | `int` |
 | `__builtin_stack_pointer()` | `mov rd, sp` | `unsigned int`, the current stack pointer |
+| `__builtin_flags()` | `push` (PUSHF) + `pop rd` | `unsigned int`, the flags register (bit 4 is the Interrupt flag) |
 | `__builtin_fabs`, `__builtin_sqrt`, `__builtin_floor`, `__builtin_ceil`, `__builtin_trunc`, `__builtin_rint`, `__builtin_frcp`, `__builtin_frsqrt` | one float instruction each | `float` |
 | `__builtin_fmod`, `__builtin_fmin`, `__builtin_fmax`, `__builtin_copysign` | one float instruction each | `float` |
 | `__builtin_fclass(f)` | `fclass` | `int` classification bitmask |
@@ -165,7 +166,10 @@ operand is rejected rather than silently widened.
 `INT_MIN` sets the machine's Overflow flag rather than producing a value, exactly as the instruction
 does. The integer builtins take an integer and the float builtins a float, with no conversion applied
 - pass the bank you mean. None is a function call and none clobbers memory, so a call whose result
-nothing reads is removed like any other pure computation. There is no `__builtin_fma`: the machine's
+nothing reads is removed like any other pure computation. `__builtin_flags()` is the one whose value
+depends on where it is read (`sti`/`cli` change it), so common-subexpression elimination and
+loop-invariant motion never merge or move it; it is two instructions, since nothing moves the flags
+straight into a register. There is no `__builtin_fma`: the machine's
 `fma` accumulates into its destination, which this back end's two scratch float registers cannot
 guarantee a spare register for.
 

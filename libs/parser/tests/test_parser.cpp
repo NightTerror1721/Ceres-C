@@ -1335,6 +1335,8 @@ TEST(parser, trap_unreachable_expect_and_constant_p_are_recognized)
 	CHECK_EQ(printExpr("__builtin_constant_p(1 + 2)"), "(__builtin_constant_p (+ 1 2))");
 	CHECK_EQ(printExpr("__builtin_stack_pointer()"), "(__builtin_stack_pointer)");
 	CHECK(parseFails("int main(void) { return __builtin_stack_pointer(1); }")); // takes no operand
+	CHECK_EQ(printExpr("__builtin_flags()"), "(__builtin_flags)");
+	CHECK(parseFails("int main(void) { return __builtin_flags(0); }"));
 
 	CHECK_EQ(printExpr("__builtin_imin(a, b)"), "(__builtin_imin a b)");
 	CHECK_EQ(printExpr("__builtin_umax(a, b)"), "(__builtin_umax a b)");

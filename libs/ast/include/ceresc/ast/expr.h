@@ -571,7 +571,11 @@ namespace ceresc::ast
 		StackPointer,
 		// Integer minimum and maximum, signed and unsigned (`IMIN`/`IMAX`, `MIN`/`MAX`). The float
 		// pair already exists as `Fmin`/`Fmax`.
-		MinSigned, MaxSigned, MinUnsigned, MaxUnsigned
+		MinSigned, MaxSigned, MinUnsigned, MaxUnsigned,
+		// The flags register (`pushf` then `pop rd`: the machine has no move from it). What a
+		// program wants from it is the Interrupt flag, bit 4, which `sti`/`cli` change - so unlike
+		// every other builtin its value depends on WHERE it is read: CSE and LICM leave it alone.
+		Flags
 	};
 
 	constexpr std::string_view builtinName(Builtin builtin) noexcept
@@ -612,6 +616,7 @@ namespace ceresc::ast
 			case Builtin::MaxSigned:     return "__builtin_imax";
 			case Builtin::MinUnsigned:   return "__builtin_umin";
 			case Builtin::MaxUnsigned:   return "__builtin_umax";
+			case Builtin::Flags:         return "__builtin_flags";
 		}
 		return "";
 	}
@@ -624,7 +629,7 @@ namespace ceresc::ast
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
 			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP,
 			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer,
-			Builtin::MinSigned, Builtin::MaxSigned, Builtin::MinUnsigned, Builtin::MaxUnsigned })
+			Builtin::MinSigned, Builtin::MaxSigned, Builtin::MinUnsigned, Builtin::MaxUnsigned, Builtin::Flags })
 			if (name == builtinName(builtin))
 				return builtin;
 		return std::nullopt;
@@ -643,6 +648,7 @@ namespace ceresc::ast
 			case Builtin::AddOverflow: case Builtin::SubOverflow: case Builtin::MulOverflow:
 				return 3;
 			case Builtin::StackPointer:
+			case Builtin::Flags:
 				return 0;
 			default:
 				return 1;

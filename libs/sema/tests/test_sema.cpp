@@ -2210,6 +2210,7 @@ TEST(sema, the_compiler_builtins_type_their_result)
 	CHECK(checkSource("void f(void) { __builtin_trap(); }").ok);
 	CHECK(checkSource("void f(void) { __builtin_unreachable(); }").ok);
 	CHECK(checkSource("unsigned int f(void) { return __builtin_stack_pointer(); }").ok);
+	CHECK(checkSource("unsigned int f(void) { return __builtin_flags() & 16u; }").ok);
 	CHECK(checkSource("int f(int a, int b) { return __builtin_imin(a, b); }").ok);
 	CHECK(checkSource("unsigned int f(unsigned a, unsigned b) { return __builtin_umax(a, b); }").ok);
 

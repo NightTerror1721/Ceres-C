@@ -1315,6 +1315,17 @@ namespace ceresc::codegen
 					break;
 				}
 
+				// Nor do the flags, and nothing moves them into a register: `push` with no operand
+				// is PUSHF, and the word comes straight back off the stack.
+				if (p.builtin == Builtin::Flags)
+				{
+					std::string dest = defineInto(p.result, kScratchA, false);
+					_emitter.instr("push", comment);
+					_emitter.instr(std::format("pop {}", dest), comment);
+					storeResult(p.result, dest, loc);
+					break;
+				}
+
 				std::string_view mnemonic;
 				switch (p.builtin)
 				{
@@ -1358,6 +1369,7 @@ namespace ceresc::codegen
 					case Builtin::SubOverflow:
 					case Builtin::MulOverflow:
 					case Builtin::StackPointer: // handled above, before this switch
+					case Builtin::Flags:        // ... and so is this one
 						break;
 				}
 				if (mnemonic.empty())

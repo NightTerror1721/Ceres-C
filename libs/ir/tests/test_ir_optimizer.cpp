@@ -873,6 +873,27 @@ TEST(ir_optimizer, cse_leaves_a_load_alone_because_it_reads_memory)
 		countOf(optimizedIr(source, support::OptimizationOptions::none(), "f"), "load"));
 }
 
+TEST(ir_optimizer, cse_leaves_the_flags_alone_because_cli_changes_them)
+{
+	support::OptimizationOptions options = support::OptimizationOptions::none();
+	options.commonSubexpressionElimination = true;
+	std::string_view source = "unsigned f(void) { unsigned a = __builtin_flags(); __builtin_cli(); return a ^ __builtin_flags(); }";
+	CHECK_EQ(countOf(optimizedIr(source, options, "f"), "__builtin_flags"), usize(2));
+}
+
+TEST(ir_optimizer, licm_does_not_hoist_a_read_of_the_flags)
+{
+	// No operand makes it look invariant, but a `sti` in the body changes it.
+	support::OptimizationOptions options = only(&support::OptimizationOptions::loopInvariantMotion);
+	std::string text = optimizedIr(
+		"unsigned f(int n) { unsigned t = 0; for (int i = 0; i < n; i = i + 1) { t = t + __builtin_flags(); __builtin_sti(); } return t; }",
+		options, "f");
+	usize flags = text.find("__builtin_flags");
+	usize header = text.find("L1:");
+	CHECK(flags != std::string::npos && header != std::string::npos);
+	CHECK(flags > header);
+}
+
 TEST(ir_optimizer, cse_is_off_at_O0)
 {
 	support::OptimizationOptions withoutCse = support::OptimizationOptions::none();

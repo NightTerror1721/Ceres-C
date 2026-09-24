@@ -1489,6 +1489,9 @@ namespace ceresc::sema
 			case Builtin::StackPointer:
 				result = &Type::UInt; // the stack pointer, read with no argument and no code around it
 				break;
+			case Builtin::Flags:
+				result = &Type::UInt; // the whole flags register; bit 4 is the Interrupt flag
+				break;
 			case Builtin::MinSigned:
 			case Builtin::MaxSigned:
 				for (ast::Expr* argument : node.args())
