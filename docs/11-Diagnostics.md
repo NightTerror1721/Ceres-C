@@ -122,6 +122,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E0004` | `0x` with no digits after it. |
 | `E0005` | `0b` with no digits after it. |
 | `E0016` | An `8` or a `9` in an octal literal (one that starts with `0`). |
+| `E0017` | A hexadecimal float literal with a `.` but no `p` exponent (`0x1.8`): C requires the exponent. |
 | `E0006` | A `\` at the end of a literal. |
 | `E0007` | `\x` with no hex digits after it. |
 | `E0008` | An escape sequence this compiler does not know. |

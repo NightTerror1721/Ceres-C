@@ -195,6 +195,47 @@ TEST(lexer, a_float_literal_accepts_an_f_suffix)
 	CHECK(!diagnostics.hasDiagnostics());
 }
 
+TEST(lexer, a_float_literal_accepts_an_l_suffix)
+{
+	// long double, which is float here like double: the value is the literal's, the suffix is read.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("1.5L 2.5l 1e3L", testSourceId(), diagnostics, pool);
+
+	CHECK_EQ(lexer.next().floatingValue(), TokenValue::FloatingValue{ 1.5 });
+	CHECK_EQ(lexer.next().floatingValue(), TokenValue::FloatingValue{ 2.5 });
+	CHECK_EQ(lexer.next().floatingValue(), TokenValue::FloatingValue{ 1000.0 });
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_hexadecimal_float_literal_has_a_binary_exponent)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("0x1.8p3 0x1p-2 0X.8P1 0xA.P0f 0x1p+4L 0xFFp0", testSourceId(), diagnostics, pool);
+
+	const double expected[] = { 12.0, 0.25, 1.0, 10.0, 16.0, 255.0 };
+	for (double value : expected)
+	{
+		Token t = lexer.next();
+		CHECK(t.isLiteralFloat());
+		CHECK_EQ(t.floatingValue(), TokenValue::FloatingValue{ value });
+	}
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_hexadecimal_float_needs_its_exponent)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("0x1.8", testSourceId(), diagnostics, pool);
+	lexer.next();
+	CHECK(diagnostics.hasErrors());
+	CHECK_EQ(static_cast<u16>(diagnostics.diagnostics().front().id), static_cast<u16>(support::DiagnosticId::HexFloatWithoutExponent));
+}
+
 TEST(lexer, an_f_suffix_turns_a_digit_run_into_a_float)
 {
 	support::DiagnosticEngine diagnostics;

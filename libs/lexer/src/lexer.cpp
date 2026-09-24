@@ -160,6 +160,16 @@ namespace ceresc::lexer
 		return Token::makeLiteralFloat(lexeme, value, loc);
 	}
 
+	Token Lexer::makeHexFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc)
+	{
+		TokenValue::FloatingValue value = 0.0;
+		auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, std::chars_format::hex);
+		if (result.ec == std::errc::result_out_of_range)
+			_diagnostics.error(DiagId::FloatLiteralOutOfRange, loc, "floating-point literal is out of range");
+
+		return Token::makeLiteralFloat(lexeme, value, loc);
+	}
+
 	Token Lexer::scanRadixInteger(SourceLocation startLoc, uoffset startPos, int base)
 	{
 		_cursor.advance(2); // '0' then 'x'/'X' or 'b'/'B'
@@ -176,10 +186,55 @@ namespace ceresc::lexer
 				_cursor.advance();
 		}
 
+		// A hexadecimal FLOAT: hex digits, an optional '.' and more of them, then a binary exponent
+		// `p`/`P` - which C requires, since without it `0x1.8` could not be told from a member access
+		// on a number. `0x1.8p3` is 1.5 * 2^3 = 12. The suffix is `f`/`F` or `l`/`L` (long double,
+		// which is float here), and an `f` right after the digits is a digit, not a suffix, until
+		// the exponent has been read.
+		if (base == 16 && (_cursor.peek() == '.' || _cursor.peek() == 'p' || _cursor.peek() == 'P'))
+		{
+			bool sawPoint = false;
+			if (_cursor.peek() == '.')
+			{
+				sawPoint = true;
+				_cursor.advance();
+				while (isHexDigit(_cursor.peek()))
+					_cursor.advance();
+			}
+			const bool hasExponent = (_cursor.peek() == 'p' || _cursor.peek() == 'P') &&
+				(isDigit(_cursor.peek(1)) || ((_cursor.peek(1) == '+' || _cursor.peek(1) == '-') && isDigit(_cursor.peek(2))));
+			if (hasExponent)
+			{
+				_cursor.advance();
+				if (_cursor.peek() == '+' || _cursor.peek() == '-')
+					_cursor.advance();
+				while (isDigit(_cursor.peek()))
+					_cursor.advance();
+			}
+			uoffset floatEnd = _cursor.position();
+			if (_cursor.peek() == 'f' || _cursor.peek() == 'F' || _cursor.peek() == 'l' || _cursor.peek() == 'L')
+				_cursor.advance();
+			std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
+			std::string_view mantissa = _cursor.buffer().substr(digitsStart, floatEnd - digitsStart);
+			if (!hasExponent)
+			{
+				_diagnostics.error(DiagId::HexFloatWithoutExponent, startLoc,
+					"hexadecimal floating literal '{}' needs a 'p' exponent", lexeme);
+				return Token::makeLiteralFloat(lexeme, 0.0, startLoc);
+			}
+			if (mantissa.size() == 0 || mantissa.front() == 'p' || mantissa.front() == 'P' ||
+				(sawPoint && mantissa.size() >= 2 && mantissa[0] == '.' && (mantissa[1] == 'p' || mantissa[1] == 'P')))
+			{
+				_diagnostics.error(DiagId::HexLiteralHasNoDigits, startLoc, "hexadecimal literal has no digits");
+				return Token::makeLiteralFloat(lexeme, 0.0, startLoc);
+			}
+			return makeHexFloatToken(lexeme, mantissa, startLoc);
+		}
+
 		uoffset digitsEnd = _cursor.position();
-		// A `u`/`U` suffix makes the literal unsigned and `ll`/`LL` makes it 64-bit. `f`/`F` is a hex
-		// DIGIT here, never a float suffix - `0xFFf` is one number - so only the integer suffixes
-		// apply to a radix literal.
+		// A `u`/`U` suffix makes the literal unsigned and `l`/`L` or `ll`/`LL` makes it long or 64-bit.
+		// `f`/`F` is a hex DIGIT here, never a float suffix - `0xFFf` is one number - so only the
+		// integer suffixes apply to a radix literal (a hex float is read above).
 		bool isUnsigned = false;
 		bool isLongLong = false;
 		bool isLong = false;
@@ -238,17 +293,18 @@ namespace ceresc::lexer
 				_cursor.advance();
 		}
 
-		// A trailing suffix. `u`/`U` marks an integer literal unsigned and `ll`/`LL` makes it 64-bit;
-		// `f`/`F` marks a float, and is also what turns a digit run with no `.`/exponent into one
-		// (`1f`). The integer suffixes combine in either order (`1ull`, `1llu`), while `f` stands
-		// alone. Anything else is an identifier of its own, exactly as before.
+		// A trailing suffix. `u`/`U` marks an integer literal unsigned and `l`/`L` or `ll`/`LL` makes it
+		// long or 64-bit; `f`/`F` marks a float, and is also what turns a digit run with no
+		// `.`/exponent into one (`1f`). On a float, `l`/`L` is long double - float here, like double -
+		// but on a digit run it stays the integer `long` suffix (`1l`). The integer suffixes combine
+		// in either order (`1ull`, `1llu`), while a float suffix stands alone.
 		uoffset digitsEnd = _cursor.position();
 		bool isUnsigned = false;
 		bool isLongLong = false;
 		bool isLong = false;
 		if (isFloat)
 		{
-			if (_cursor.peek() == 'f' || _cursor.peek() == 'F')
+			if (_cursor.peek() == 'f' || _cursor.peek() == 'F' || _cursor.peek() == 'l' || _cursor.peek() == 'L')
 				_cursor.advance();
 		}
 		else if (_cursor.peek() == 'f' || _cursor.peek() == 'F')

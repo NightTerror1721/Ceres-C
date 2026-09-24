@@ -64,6 +64,7 @@ namespace ceresc::support
 		// gives such a literal no type; this compiler keeps its 64-bit bit pattern.
 		IntegerLiteralOutOfRange      = kDiagnosticWarningBit | 15,
 		InvalidOctalDigit             = 16,
+		HexFloatWithoutExponent       = 17,
 
 		// ---- 1xxx  preprocessor ---------------------------------------------------------------
 		IfExpressionSyntax              = 1001,

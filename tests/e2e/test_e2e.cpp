@@ -1925,6 +1925,22 @@ TEST(e2e, integer_literals_keep_their_value_with_every_prefix_and_suffix)
 		"abcdef");
 }
 
+TEST(e2e, hexadecimal_and_long_double_float_literals_have_their_value)
+{
+	runsTheSameAtEveryLevel("float_literal_forms",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    float a = 0x1.8p3;"
+		"    float b = 0x1p-2f;"
+		"    float c = 2.5L;"
+		"    *term = a == 12.0f ? 'a' : 'x';"
+		"    *term = b == 0.25f ? 'b' : 'x';"
+		"    *term = c == 2.5f ? 'c' : 'x';"
+		"    return 0;"
+		"}",
+		"abc");
+}
+
 TEST(e2e, a_local_function_pointer_shadowing_a_function_is_called_through)
 {
 	// Sema resolves `pick` to the parameter, so the call must go through it, not to the global

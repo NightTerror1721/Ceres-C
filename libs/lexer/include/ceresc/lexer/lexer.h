@@ -405,6 +405,8 @@ namespace ceresc::lexer
 
 		Token makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong, bool isLong);
 		Token makeFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc);
+		// A hexadecimal float (`0x1.8p3`): `digits` is what follows the 0x, up to the suffix.
+		Token makeHexFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc);
 
 		// Consumes an integer literal's trailing suffix, which may combine `u`/`U` and `ll`/`LL` in
 		// either order (`42u`, `42ll`, `42ull`, `42llu`) - at most one of each, exactly as C's
