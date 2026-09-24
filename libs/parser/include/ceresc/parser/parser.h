@@ -229,6 +229,9 @@ namespace ceresc::parser
 			bool constAttr = false;
 			bool deprecated = false;
 			bool warnUnusedResult = false;
+			ast::FormatKind formatKind = ast::FormatKind::None;
+			u16 formatIndex = 0;
+			u16 formatFirst = 0;
 		};
 
 		struct DeclSpecifiers

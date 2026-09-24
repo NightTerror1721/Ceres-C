@@ -653,6 +653,272 @@ namespace ceresc::sema
 		// a float travels as the f32 it already is - see docs/09-Variadic-Convention.md.
 	}
 
+	void Sema::checkFormatAttribute(ast::FunctionDecl& node)
+	{
+		if (node.formatKind() == ast::FormatKind::None)
+			return;
+		std::span<const Param> params = node.params();
+		const usize index = node.formatIndex();
+		const Type* format = index <= params.size() ? params[index - 1].type : nullptr;
+		const Type* pointee = format && format->isPointer() ? format->arrayElementType() : nullptr;
+		const bool isString = pointee && isIntegerType(pointee) && pointee->sizeInBytes() == 1;
+		// The arguments a format describes are the `...`: the first of them is the parameter after
+		// the last fixed one.
+		const bool firstOk = node.formatFirst() == 0 || (node.isVariadic() && node.formatFirst() == params.size() + 1);
+		if (!isString || !firstOk)
+		{
+			_diagnostics.warning(DiagId::AttributeIgnored, node.location(),
+				"attribute 'format' on '{}' ignored: parameter {} must be a 'const char *' and the first argument {} must be the '...'",
+				node.name(), index, node.formatFirst());
+			node.setFormat(ast::FormatKind::None, 0, 0);
+		}
+	}
+
+	namespace
+	{
+		// What one conversion takes from the argument list.
+		enum class FormatWant : u8
+		{
+			Int,         // an int: anything integral of 4 bytes or fewer (it arrives promoted)
+			LongLong,    // a 64-bit integer: two words
+			Float,       // a float: the machine's only float, passed as the f32 it is
+			String,      // a pointer to char
+			Pointer,     // any pointer
+			IntPointer,  // a pointer to a 4-byte integer (%n)
+			Pointee1,    // scanf: a pointer to a 1-byte integer (%hhd, %c, %s, %[)
+			Pointee2,    // ... to a 2-byte one (%hd)
+			Pointee4,    // ... to a 4-byte one
+			Pointee8,    // ... to an 8-byte one (%lld)
+			FloatPointer,// ... to a float
+			AnyPointer,  // scanf %p: where a pointer is stored
+		};
+
+		std::string_view describe(FormatWant want)
+		{
+			switch (want)
+			{
+				case FormatWant::Int:          return "an 'int'";
+				case FormatWant::LongLong:     return "a 'long long'";
+				case FormatWant::Float:        return "a 'float'";
+				case FormatWant::String:       return "a 'char *'";
+				case FormatWant::Pointer:      return "a pointer";
+				case FormatWant::IntPointer:   return "an 'int *'";
+				case FormatWant::Pointee1:     return "a 'char *'";
+				case FormatWant::Pointee2:     return "a 'short *'";
+				case FormatWant::Pointee4:     return "an 'int *'";
+				case FormatWant::Pointee8:     return "a 'long long *'";
+				case FormatWant::FloatPointer: return "a 'float *'";
+				case FormatWant::AnyPointer:   return "a 'void **'";
+			}
+			return "";
+		}
+	}
+
+	void Sema::checkFormatCall(ast::CallExpr& node, const ast::FunctionDecl& function)
+	{
+		std::span<Expr* const> args = node.args();
+		const usize formatAt = static_cast<usize>(function.formatIndex()) - 1;
+		if (formatAt >= args.size())
+			return;
+		const auto* literal = dynamic_cast<const ast::StringLiteralExpr*>(args[formatAt]);
+		if (!literal)
+			return; // a format made at run time cannot be read here
+		const std::string_view text = literal->value().view();
+		const bool isScanf = function.formatKind() == ast::FormatKind::Scanf;
+		const bool checkArguments = function.formatFirst() != 0;
+		usize next = checkArguments ? static_cast<usize>(function.formatFirst()) - 1 : 0;
+		bool reportedShort = false;
+
+		auto integerOfSize = [&](const Type* type, usize size)
+		{
+			return type && isIntegerType(type) && type->sizeInBytes() == size;
+		};
+		auto accepts = [&](FormatWant want, const Type* type) -> bool
+		{
+			const Type* pointee = type && type->isPointer() ? type->arrayElementType() : nullptr;
+			switch (want)
+			{
+				case FormatWant::Int:          return type && isIntegerType(type) && type->sizeInBytes() <= 4;
+				case FormatWant::LongLong:     return integerOfSize(type, 8);
+				case FormatWant::Float:        return type && type->isFloat();
+				case FormatWant::String:       return integerOfSize(pointee, 1);
+				case FormatWant::Pointer:      return type && type->isPointer();
+				case FormatWant::IntPointer:   return integerOfSize(pointee, 4);
+				case FormatWant::Pointee1:     return integerOfSize(pointee, 1);
+				case FormatWant::Pointee2:     return integerOfSize(pointee, 2);
+				case FormatWant::Pointee4:     return integerOfSize(pointee, 4);
+				case FormatWant::Pointee8:     return integerOfSize(pointee, 8);
+				case FormatWant::FloatPointer: return pointee && pointee->isFloat();
+				case FormatWant::AnyPointer:   return pointee && (pointee->isPointer() || integerOfSize(pointee, 4));
+			}
+			return false;
+		};
+		auto take = [&](std::string_view spec, FormatWant want)
+		{
+			if (!checkArguments)
+				return;
+			if (next >= args.size())
+			{
+				if (!reportedShort)
+					_diagnostics.warning(DiagId::FormatArgumentCount, node.location(),
+						"format '{}' has no argument left to take: the call passes fewer than the format asks for", spec);
+				reportedShort = true;
+				++next;
+				return;
+			}
+			const Type* type = decayArray(args[next]->type());
+			if (type && !accepts(want, type))
+				_diagnostics.warning(DiagId::FormatMismatch, args[next]->location(),
+					"format '{}' expects {}, but argument {} has type '{}'", spec, describe(want), next + 1, typeName(type));
+			++next;
+		};
+
+		for (usize i = 0; i < text.size(); ++i)
+		{
+			if (text[i] != '%')
+				continue;
+			const usize start = i++;
+			if (i < text.size() && text[i] == '%')
+				continue;
+
+			bool suppressed = false;
+			if (isScanf)
+			{
+				if (i < text.size() && text[i] == '*')
+				{
+					suppressed = true;
+					++i;
+				}
+				while (i < text.size() && text[i] >= '0' && text[i] <= '9')
+					++i;
+			}
+			else
+			{
+				while (i < text.size() && std::string_view("-+ #0").find(text[i]) != std::string_view::npos)
+					++i;
+				if (i < text.size() && text[i] == '*')
+				{
+					take(text.substr(start, i - start + 1), FormatWant::Int);
+					++i;
+				}
+				else
+				{
+					while (i < text.size() && text[i] >= '0' && text[i] <= '9')
+						++i;
+				}
+				if (i < text.size() && text[i] == '.')
+				{
+					++i;
+					if (i < text.size() && text[i] == '*')
+					{
+						take(text.substr(start, i - start + 1), FormatWant::Int);
+						++i;
+					}
+					else
+					{
+						while (i < text.size() && text[i] >= '0' && text[i] <= '9')
+							++i;
+					}
+				}
+			}
+
+			// Length: hh and h narrow an int, ll, j and q are the 64-bit ones; l, z, t and L change
+			// nothing here (long, size_t, ptrdiff_t and long double are all 32 bits).
+			int shorts = 0;
+			int longs = 0;
+			bool wide = false;
+			while (i < text.size() && std::string_view("hlzjtLq").find(text[i]) != std::string_view::npos)
+			{
+				if (text[i] == 'h')
+					++shorts;
+				else if (text[i] == 'l')
+					++longs;
+				else if (text[i] == 'j' || text[i] == 'q')
+					wide = true;
+				++i;
+			}
+			wide = wide || longs >= 2;
+
+			if (i >= text.size())
+			{
+				_diagnostics.warning(DiagId::FormatMismatch, args[formatAt]->location(),
+					"the format ends in the middle of the conversion '{}'", text.substr(start));
+				break;
+			}
+			const char conversion = text[i];
+			if (isScanf && conversion == '[')
+			{
+				// A scan set: ']' right after '[' or '[^' is one of its characters, not its end.
+				++i;
+				if (i < text.size() && text[i] == '^')
+					++i;
+				if (i < text.size() && text[i] == ']')
+					++i;
+				while (i < text.size() && text[i] != ']')
+					++i;
+				if (i >= text.size())
+				{
+					_diagnostics.warning(DiagId::FormatMismatch, args[formatAt]->location(),
+						"the scan set '{}' has no closing ']'", text.substr(start));
+					break;
+				}
+			}
+			const std::string_view spec = text.substr(start, i - start + 1);
+
+			std::optional<FormatWant> want;
+			if (!isScanf)
+			{
+				switch (conversion)
+				{
+					case 'd': case 'i': case 'u': case 'x': case 'X': case 'o': case 'b':
+						want = wide ? FormatWant::LongLong : FormatWant::Int;
+						break;
+					case 'c':
+						want = FormatWant::Int;
+						break;
+					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G':
+						want = FormatWant::Float;
+						break;
+					case 's': want = FormatWant::String; break;
+					case 'p': want = FormatWant::Pointer; break;
+					case 'n': want = FormatWant::IntPointer; break;
+					default: break;
+				}
+			}
+			else
+			{
+				switch (conversion)
+				{
+					case 'd': case 'i': case 'u': case 'x': case 'X': case 'o':
+						want = wide ? FormatWant::Pointee8 : shorts >= 2 ? FormatWant::Pointee1
+							: shorts == 1 ? FormatWant::Pointee2 : FormatWant::Pointee4;
+						break;
+					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
+						want = FormatWant::FloatPointer;
+						break;
+					case 'c': case 's': case '[':
+						want = FormatWant::Pointee1;
+						break;
+					case 'p': want = FormatWant::AnyPointer; break;
+					case 'n': want = FormatWant::IntPointer; break;
+					default: break;
+				}
+			}
+			if (!want)
+			{
+				_diagnostics.warning(DiagId::FormatMismatch, args[formatAt]->location(),
+					"unknown conversion '{}' in the format: {} does not take one", spec, isScanf ? "scanf" : "printf");
+				continue;
+			}
+			if (!suppressed)
+				take(spec, *want);
+		}
+
+		if (checkArguments && next < args.size())
+			_diagnostics.warning(DiagId::FormatArgumentCount, args[next]->location(),
+				"argument {} is not used by the format: the call passes more than it asks for", next + 1);
+	}
+
 	// The type a FunctionDecl declares: `int f(int)` has type `int(int)`. Built on demand rather
 	// than stored on the node, because only the handful of places that use a function as a value
 	// ever need it and the declaration already holds every piece.
@@ -1060,6 +1326,8 @@ namespace ceresc::sema
 			// must not warn that a result nobody could use was ignored.
 			if (funcDecl->isWarnUnusedResult() && funcDecl->returnType() && !funcDecl->returnType()->isVoid())
 				node.setWarnUnusedResult(true);
+			if (funcDecl->formatKind() != ast::FormatKind::None)
+				checkFormatCall(node, *funcDecl);
 		}
 		else if (info)
 		{
@@ -2218,6 +2486,7 @@ namespace ceresc::sema
 	{
 		checkInterruptHandler(node);
 		checkAsmLabel(node, true);
+		checkFormatAttribute(node);
 
 		// Every function attribute declared on a prototype holds for the definition that comes
 		// after it, exactly as `noreturn` always has. The definition wins where it says otherwise.
@@ -2241,6 +2510,8 @@ namespace ceresc::sema
 				node.setDeprecated(true);
 			if (prototype->isWarnUnusedResult())
 				node.setWarnUnusedResult(true);
+			if (node.formatKind() == ast::FormatKind::None && prototype->formatKind() != ast::FormatKind::None)
+				node.setFormat(prototype->formatKind(), prototype->formatIndex(), prototype->formatFirst());
 		}
 
 		Symbol* existing = _globalScope->lookupInThisScope(node.name());

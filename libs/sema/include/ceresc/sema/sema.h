@@ -139,6 +139,12 @@ namespace ceresc::sema
 		// quoted (or "the called expression") and is only ever put in a diagnostic.
 		void checkCallArguments(ast::CallExpr& node, const CallSignature& signature, std::string_view calleeName);
 
+		// `__attribute__((format(...)))`: whether a declaration's numbers name a format string and
+		// its `...` (cleared, with a warning, when they do not), and whether a call's literal format
+		// agrees with the arguments after it (W3005, W3006).
+		void checkFormatAttribute(ast::FunctionDecl& node);
+		void checkFormatCall(ast::CallExpr& node, const ast::FunctionDecl& function);
+
 		std::optional<i64> evalConstantExpr(ast::Expr* expr);
 
 		// Every interrupt number bound in this unit, so a second binding to one can name the first.

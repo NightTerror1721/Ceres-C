@@ -107,6 +107,8 @@ These are the codes a `#pragma warning(...)` can name.
 | `W3002` | A function declared `noreturn` that contains a `return`. |
 | `W3003` | A call to a function declared `__attribute__((deprecated))`. |
 | `W3004` | The result of a call to a `__attribute__((warn_unused_result))` function is discarded. |
+| `W3005` | A literal format passed to a `__attribute__((format(...)))` function disagrees with an argument (`%lld` given an `int`, `%f` given an `int`, scanf's `%d` given something other than an `int *`...), has a conversion the family does not take, or ends inside a conversion. |
+| `W3006` | A literal format asks for more arguments than the call passes, or the call passes more than it asks for. |
 
 ## The errors
 

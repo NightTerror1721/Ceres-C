@@ -2107,6 +2107,88 @@ TEST(sema, a_noreturn_function_that_contains_a_return_is_warned_about)
 
 // ---- the other __attribute__s that do something --------------------------------------------------------------
 
+namespace
+{
+	const std::string kFormatHeader =
+		"int pf(const char* f, ...) __attribute__((format(printf, 1, 2)));\n"
+		"int sf(const char* f, ...) __attribute__((__format__(__scanf__, 1, 2)));\n"
+		"int vpf(const char* f, char* ap) __attribute__((format(printf, 1, 0)));\n";
+
+	// The diagnostics of one statement placed in main, after the declarations above.
+	CheckOutcome formatCall(std::string_view statement)
+	{
+		return checkSource(kFormatHeader +
+			"int main() { int i = 0; short h = 0; char c = 0; long long ll = 0; float f = 0; char buf[8]; int n;\n" +
+			std::string(statement) + "\n return 0; }");
+	}
+}
+
+TEST(sema, a_format_that_matches_its_arguments_is_not_warned_about)
+{
+	CheckOutcome clean = formatCall(
+		"pf(\"%d %i %u %x %c %s %f %g %lld %llu %p %n %% %5.2f %-8s %hhd %hd %ld %zu\\n\", "
+		"i, c, 1u, i, 'a', \"s\", f, 2.0f, ll, 3ULL, (void*)0, &n, f, buf, i, h, 4, 5u);"
+		"pf(\"%*d|%-.*f\", 3, i, 2, f);"
+		"sf(\"%d %hd %hhd %lld %f %lf %s %c %[^,] %*d %n\", &i, &h, &c, &ll, &f, &f, buf, buf, buf, &n);");
+	CHECK(clean.ok);
+	CHECK(clean.messages.empty());
+}
+
+TEST(sema, a_format_argument_of_the_wrong_kind_is_warned_about)
+{
+	CHECK(containsMessage(formatCall("pf(\"%lld\", i);"), "format '%lld' expects a 'long long', but argument 2 has type 'int'"));
+	CHECK(containsMessage(formatCall("pf(\"%d\", ll);"), "expects an 'int'"));
+	CHECK(containsMessage(formatCall("pf(\"%d\", f);"), "expects an 'int'"));
+	CHECK(containsMessage(formatCall("pf(\"%f\", i);"), "expects a 'float'"));
+	CHECK(containsMessage(formatCall("pf(\"%s\", i);"), "expects a 'char *'"));
+	CHECK(containsMessage(formatCall("pf(\"%x %s\", i, (void*)0);"), "argument 3 has type"));
+	CHECK(containsMessage(formatCall("pf(\"%*d\", f, i);"), "format '%*' expects an 'int'"));
+	CHECK(containsMessage(formatCall("pf(\"%jd\", i);"), "expects a 'long long'"));   // intmax_t is 64 bits
+	CHECK(containsMessage(formatCall("sf(\"%d\", i);"), "expects an 'int *'"));
+	CHECK(containsMessage(formatCall("sf(\"%lld\", &i);"), "expects a 'long long *'"));
+	CHECK(containsMessage(formatCall("sf(\"%hd\", &i);"), "expects a 'short *'"));
+	CHECK(containsMessage(formatCall("sf(\"%f\", &i);"), "expects a 'float *'"));
+	CHECK(formatCall("pf(\"%lld\", i);").ok);                                     // warnings, not errors
+}
+
+TEST(sema, a_format_and_a_call_that_disagree_on_the_count_are_warned_about)
+{
+	CHECK(containsMessage(formatCall("pf(\"%d %d\", i);"), "no argument left"));
+	CHECK(containsMessage(formatCall("pf(\"%d\", i, i);"), "argument 3 is not used"));
+	CHECK(containsMessage(formatCall("sf(\"%*d\", &i);"), "argument 2 is not used"));  // %*d stores nothing
+	CHECK(containsMessage(formatCall("pf(\"%y\");"), "unknown conversion '%y'"));
+	CHECK(containsMessage(formatCall("pf(\"%5\");"), "ends in the middle"));
+	CHECK(containsMessage(formatCall("sf(\"%[abc\", buf);"), "no closing ']'"));
+	// A va_list function's string is still read, but it has no arguments to count.
+	CHECK(containsMessage(formatCall("vpf(\"%y\", 0);"), "unknown conversion"));
+	CHECK(formatCall("vpf(\"%d %s\", 0);").messages.empty());
+}
+
+TEST(sema, a_format_made_at_run_time_is_not_checked)
+{
+	CHECK(formatCall("const char* fmt = \"%d\"; pf(fmt, f);").messages.empty());
+}
+
+TEST(sema, a_format_attribute_that_does_not_fit_its_function_is_ignored_with_a_warning)
+{
+	CHECK(containsMessage(checkSource("int bad(int x, ...) __attribute__((format(printf, 1, 2)));"), "attribute 'format' on 'bad' ignored"));
+	CHECK(containsMessage(checkSource("int bad(const char* f, int a, ...) __attribute__((format(printf, 1, 2)));"), "must be the '...'"));
+	CHECK(containsMessage(checkSource("int bad(const char* f, ...) __attribute__((format(printf, 2)));"), "attribute 'format' ignored"));
+	CHECK(containsMessage(checkSource("int bad(const char* f, ...) __attribute__((format(printf, 1, 1)));"), "attribute 'format' ignored"));
+	// Another archetype is accepted and not checked.
+	CheckOutcome other = checkSource("int st(const char* f, ...) __attribute__((format(strftime, 1, 0)));\nint main() { return st(\"%Q\"); }");
+	CHECK(other.ok && other.messages.empty());
+}
+
+TEST(sema, a_definition_keeps_its_prototypes_format)
+{
+	CheckOutcome outcome = checkSource(
+		"int pf(const char* f, ...) __attribute__((format(printf, 1, 2)));\n"
+		"int pf(const char* f, ...) { return 0; }\n"
+		"int main() { return pf(\"%s\", 1); }");
+	CHECK(containsMessage(outcome, "expects a 'char *'"));
+}
+
 TEST(sema, calling_a_deprecated_function_is_warned_about_wherever_it_is_called)
 {
 	CheckOutcome warned = checkSource(

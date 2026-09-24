@@ -250,6 +250,8 @@ namespace ceresc::support
 		NoReturnFunctionReturns = kDiagnosticWarningBit | 3002,
 		DeprecatedFunctionUse   = kDiagnosticWarningBit | 3003,
 		UnusedResult            = kDiagnosticWarningBit | 3004,
+		FormatMismatch          = kDiagnosticWarningBit | 3005,
+		FormatArgumentCount     = kDiagnosticWarningBit | 3006,
 
 		// ---- 4xxx  codegen --------------------------------------------------------------------
 		RegisterAddressEscaped         = 4001,

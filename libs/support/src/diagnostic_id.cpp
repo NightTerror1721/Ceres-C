@@ -34,6 +34,8 @@ namespace ceresc::support
 			case DiagnosticId::ConstWithoutInitializer:
 			case DiagnosticId::DeprecatedFunctionUse:
 			case DiagnosticId::UnusedResult:
+			case DiagnosticId::FormatMismatch:
+			case DiagnosticId::FormatArgumentCount:
 				return static_cast<DiagnosticId>(number | kDiagnosticWarningBit);
 			default:
 				return std::nullopt;

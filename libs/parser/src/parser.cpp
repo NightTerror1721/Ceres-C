@@ -1732,9 +1732,11 @@ namespace ceresc::parser
 			function->setConstAttr(attributes.constAttr);
 			function->setDeprecated(attributes.deprecated);
 			function->setWarnUnusedResult(attributes.warnUnusedResult);
+			function->setFormat(attributes.formatKind, attributes.formatIndex, attributes.formatFirst);
 		}
 		else if (decl && (attributes.noInline || attributes.alwaysInline || attributes.pure ||
-			attributes.constAttr || attributes.deprecated || attributes.warnUnusedResult))
+			attributes.constAttr || attributes.deprecated || attributes.warnUnusedResult ||
+			attributes.formatKind != ast::FormatKind::None))
 		{
 			// A specifier-position attribute (parsed with a non-null sink, so parseAttributes said
 			// nothing) on a declaration that turned out not to be a function. Reported here, since
@@ -2082,6 +2084,11 @@ namespace ceresc::parser
 				i64 argument = 0;
 				bool hasArgument = false;
 				bool argumentOk = false;
+				// format(archetype, string-index, first-to-check), read as it stands; sema checks the
+				// numbers against the declaration.
+				std::string_view formatArchetype;
+				u64 formatIndex = 0;
+				u64 formatFirst = 0;
 				if (match(TokenKind::LParen))
 				{
 					hasArgument = true;
@@ -2092,7 +2099,24 @@ namespace ceresc::parser
 					}
 					else
 					{
-						// Arguments this compiler has no use for: read past them, brackets balanced
+						if (name == "format" && check(TokenKind::Identifier))
+						{
+							formatArchetype = _current.lexeme();
+							advance();
+							if (match(TokenKind::Comma) && check(TokenKind::LiteralInt))
+							{
+								formatIndex = _current.integralValue();
+								advance();
+								if (match(TokenKind::Comma) && check(TokenKind::LiteralInt))
+								{
+									formatFirst = _current.integralValue();
+									advance();
+									argumentOk = check(TokenKind::RParen);
+								}
+							}
+						}
+						// Arguments this compiler has no use for (or the rest of a malformed format):
+						// read past them, brackets balanced
 						int depth = 1;
 						while (!isAtEnd() && depth > 0)
 						{
@@ -2150,6 +2174,33 @@ namespace ceresc::parser
 				else if (name == "warn_unused_result")
 				{
 					functionAttribute(&AttributeList::warnUnusedResult);
+				}
+				else if (name == "format")
+				{
+					if (formatArchetype.size() > 4 && formatArchetype.starts_with("__") && formatArchetype.ends_with("__"))
+						formatArchetype = formatArchetype.substr(2, formatArchetype.size() - 4);
+					const ast::FormatKind kind = formatArchetype == "printf" ? ast::FormatKind::Printf
+						: formatArchetype == "scanf" ? ast::FormatKind::Scanf : ast::FormatKind::None;
+					if (!argumentOk || formatIndex == 0 || formatIndex > 0xFFFF || formatFirst > 0xFFFF ||
+						(formatFirst != 0 && formatFirst <= formatIndex))
+					{
+						_diagnostics.warning(DiagId::AttributeIgnored, where,
+							"attribute 'format' ignored: it takes (printf or scanf, the format's parameter number, the number of the first argument it describes or 0)");
+					}
+					else if (kind != ast::FormatKind::None)
+					{
+						// Another archetype (strftime, ...) is accepted and not checked.
+						if (sink)
+						{
+							sink->formatKind = kind;
+							sink->formatIndex = static_cast<u16>(formatIndex);
+							sink->formatFirst = static_cast<u16>(formatFirst);
+						}
+						else
+						{
+							_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute '{}' ignored", name);
+						}
+					}
 				}
 				else if (name == "aligned")
 				{

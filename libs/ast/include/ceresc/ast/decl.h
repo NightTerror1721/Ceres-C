@@ -304,6 +304,12 @@ namespace ceresc::ast
 	};
 	static_assert(TriviallyDestructible<Param>, "Param must be trivially destructible (Arena-allocated)");
 
+	// `__attribute__((format(printf, i, j)))` and its scanf twin: parameter i is a format string of
+	// that family, and the arguments from j on are what it describes (j == 0 for a function that
+	// takes them as a va_list, whose string alone can be checked). Calls with a literal format are
+	// checked against it in sema (W3005, W3006).
+	enum class FormatKind : u8 { None, Printf, Scanf };
+
 	class FunctionDecl final : public Decl
 	{
 	private:
@@ -324,6 +330,9 @@ namespace ceresc::ast
 		bool _isConstAttr = false;      // `__attribute__((const))`: no side effects and reads nothing
 		bool _deprecated = false;       // `__attribute__((deprecated))`: warn wherever it is called
 		bool _warnUnusedResult = false; // `__attribute__((warn_unused_result))`: warn on a discarded result
+		FormatKind _formatKind = FormatKind::None; // `__attribute__((format(...)))`, see FormatKind
+		u16 _formatIndex = 0;           // the format string's parameter, counting from 1
+		u16 _formatFirst = 0;           // the first argument it describes, or 0
 
 	public:
 		FunctionDecl(support::SourceLocation location, std::string_view name, const Type* returnType, std::span<const Param> params,
@@ -378,6 +387,16 @@ namespace ceresc::ast
 		void setConstAttr(bool value) noexcept { _isConstAttr = value; }
 		void setDeprecated(bool value) noexcept { _deprecated = value; }
 		void setWarnUnusedResult(bool value) noexcept { _warnUnusedResult = value; }
+
+		FormatKind formatKind() const noexcept { return _formatKind; }
+		u16 formatIndex() const noexcept { return _formatIndex; }
+		u16 formatFirst() const noexcept { return _formatFirst; }
+		void setFormat(FormatKind kind, u16 index, u16 first) noexcept
+		{
+			_formatKind = kind;
+			_formatIndex = index;
+			_formatFirst = first;
+		}
 
 		// True when the function has external linkage - i.e. `global` in the generated CASM, and
 		// therefore visible to another object at link time. `static` is the only thing that takes
