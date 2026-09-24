@@ -737,6 +737,11 @@ namespace ceresc::driver
 
 		std::vector<std::string> runArgs{ "run", programPath.string() };
 		runArgs.insert(runArgs.end(), options.runArguments.begin(), options.runArguments.end());
+		if (!options.programArguments.empty())
+		{
+			runArgs.emplace_back("--");               // `ceres run` hands everything after it to the program
+			runArgs.insert(runArgs.end(), options.programArguments.begin(), options.programArguments.end());
+		}
 		int runResult = runSubprocess(ceresBinary, runArgs);
 		if (runResult < 0)
 			std::cerr << "ceresc: could not launch `ceres run`\n";

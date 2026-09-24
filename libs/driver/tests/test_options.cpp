@@ -463,6 +463,18 @@ TEST(options, the_usage_text_mentions_objects_archives_and_declarations)
 	CHECK(contains(result.output, "--emit-decls"));
 }
 
+TEST(options, arguments_after_a_double_dash_are_the_programs)
+{
+	ParseResult parsed = parse({ "main.c", "--run", "-O2", "--", "-x", "file.txt" });
+	CHECK(parsed.options.has_value());
+	if (!parsed.options) return;
+	CHECK(parsed.options->programArguments.size() == 2);
+	CHECK(parsed.options->programArguments.size() == 2 && parsed.options->programArguments[0] == "-x" &&
+		parsed.options->programArguments[1] == "file.txt");
+	CHECK(parsed.options->optimization.inlining);                  // -O2, before --, still counts
+	CHECK(!parse({ "main.c", "--", "x" }).options.has_value());   // no run, no program to hand them to
+}
+
 TEST(options, symtab_asks_the_link_for_a_symbol_table)
 {
 	ParseResult with = parse({ "main.c", "--run", "--symtab" });

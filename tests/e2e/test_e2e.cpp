@@ -48,7 +48,7 @@ namespace
 	// returning what `ceres run` printed to stdout - or kNoCeres if this environment has no sibling
 	// CeresASM checkout to run against (see findCeresDirectory()'s own note).
 	std::string compileAssembleAndRun(std::string_view name, std::string_view source,
-		ceresc::support::OptimizationLevel level, int expectedStatus = 0)
+		ceresc::support::OptimizationLevel level, int expectedStatus = 0, std::string_view runOptions = {})
 	{
 		std::optional<fs::path> ceresDir = findCeresDirectory();
 		if (!ceresDir)
@@ -86,7 +86,7 @@ namespace
 		if (asmResult != 0)
 			return std::format("<ceres asm failed: {}>", readFile(outputPath));
 
-		std::string runCommand = std::format("{} run {}", quote(ceresBinary), quote(cresPath));
+		std::string runCommand = std::format("{} run {}{}{}", quote(ceresBinary), quote(cresPath), runOptions.empty() ? "" : " ", runOptions);
 		int runResult = runSubprocessCapturingStdout(runCommand, outputPath);
 		CHECK_EQ(runResult, expectedStatus);
 		return readFile(outputPath);
@@ -95,12 +95,12 @@ namespace
 	// Runs one program at all three optimization levels and checks each printed `expected`. It prints
 	// a skip note when there is no `ceres` to run against.
 	void runsTheSameAtEveryLevel(std::string_view name, std::string_view source, std::string_view expected,
-		int expectedStatus = 0)
+		int expectedStatus = 0, std::string_view runOptions = {})
 	{
 		using ceresc::support::OptimizationLevel;
 		for (OptimizationLevel level : { OptimizationLevel::O0, OptimizationLevel::O1, OptimizationLevel::O2 })
 		{
-			std::string output = compileAssembleAndRun(name, source, level, expectedStatus);
+			std::string output = compileAssembleAndRun(name, source, level, expectedStatus, runOptions);
 			if (output == kNoCeres)
 			{
 				std::printf("  (skipped: no sibling CeresASM checkout found - set CERESC_CERES_PATH)\n");
@@ -154,6 +154,22 @@ TEST(e2e, return_constant_assembles_and_runs_without_faulting)
 	// nothing printed, just that it assembles and the VM halts cleanly instead of faulting. `main`'s
 	// return value is the process's exit status, so 42 is what `ceres run` exits with.
 	runsTheSameAtEveryLevel("return_constant", "int main() { return 42; }", "", 42);
+}
+
+TEST(e2e, main_receives_argc_argv_and_envp)
+{
+	// `ceres run prog --env K=v -- x yz`: the loader puts them on the stack and main finds them in r0-r2.
+	runsTheSameAtEveryLevel("main_arguments",
+		"int main(int argc, char** argv, char** envp) {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = (char)('0' + argc);"
+		"    *term = argv[1][0];"
+		"    *term = argv[2][1];"
+		"    *term = envp[0][0];"
+		"    *term = envp[1] == 0 ? '.' : '!';"
+		"    return argv[argc] == 0 ? 7 : 1;"
+		"}",
+		"3xzK.", 7, "--env K=v -- x yz");
 }
 
 TEST(e2e, null_is_a_valid_function_pointer_to_assign_compare_and_put_in_a_table)

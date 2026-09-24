@@ -65,7 +65,7 @@ namespace ceresc::driver
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
 			"               [--decls <file.casm>]... [--emit-decls <file.casm>]\n"
 			"               [--ceres-path <dir|file>] [--run-arg <arg>]... [--symtab]\n"
-			"               [-Werror] [-O<level>] [-f<opt>]\n"
+			"               [-Werror] [-O<level>] [-f<opt>] [-- <argument>...]\n"
 			"       ceresc --version | --help\n"
 			"\n"
 			"  <file.c>            a C subset source file to compile\n"
@@ -219,6 +219,13 @@ namespace ceresc::driver
 					options.emitDeclsPath = std::move(*value);
 				continue;
 			}
+			if (arg == "--")
+			{
+				// The rest is the program's own: main(argc, argv) gets them after its path.
+				for (++i; i < args.size(); ++i)
+					options.programArguments.emplace_back(args[i]);
+				break;
+			}
 			if (arg == "--run-arg")
 			{
 				std::optional<std::string> value = valueFor(arg, "--run-arg", i);
@@ -264,6 +271,11 @@ namespace ceresc::driver
 		if ((options.clean || options.cleanKeepCasm) && !options.run)
 		{
 			diagnosticsOut << "ceresc: '--clean' and '--clean-keep-casm' require '--run'\n";
+			return std::nullopt;
+		}
+		if (!options.programArguments.empty() && !options.run)
+		{
+			diagnosticsOut << "ceresc: arguments after '--' require '--run': they are the program's\n";
 			return std::nullopt;
 		}
 		if (options.symbolTable && !options.run)
