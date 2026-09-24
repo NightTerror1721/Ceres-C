@@ -2148,6 +2148,7 @@ TEST(sema, a_format_argument_of_the_wrong_kind_is_warned_about)
 	CHECK(containsMessage(formatCall("sf(\"%lld\", &i);"), "expects a 'long long *'"));
 	CHECK(containsMessage(formatCall("sf(\"%hd\", &i);"), "expects a 'short *'"));
 	CHECK(containsMessage(formatCall("sf(\"%f\", &i);"), "expects a 'float *'"));
+	CHECK(containsMessage(formatCall("sf(\"%p\", i);"), "expects a 'void **'"));
 	CHECK(formatCall("pf(\"%lld\", i);").ok);                                     // warnings, not errors
 }
 
@@ -2175,9 +2176,20 @@ TEST(sema, a_format_attribute_that_does_not_fit_its_function_is_ignored_with_a_w
 	CHECK(containsMessage(checkSource("int bad(const char* f, int a, ...) __attribute__((format(printf, 1, 2)));"), "must be the '...'"));
 	CHECK(containsMessage(checkSource("int bad(const char* f, ...) __attribute__((format(printf, 2)));"), "attribute 'format' ignored"));
 	CHECK(containsMessage(checkSource("int bad(const char* f, ...) __attribute__((format(printf, 1, 1)));"), "attribute 'format' ignored"));
+	// Where there is no function to hang it on, any format attribute is reported, archetype or not.
+	CHECK(containsMessage(checkSource("typedef int t __attribute__((format(prinft, 1, 2)));"), "attribute 'format' ignored"));
 	// Another archetype is accepted and not checked.
 	CheckOutcome other = checkSource("int st(const char* f, ...) __attribute__((format(strftime, 1, 0)));\nint main() { return st(\"%Q\"); }");
 	CHECK(other.ok && other.messages.empty());
+}
+
+TEST(sema, a_float_does_not_convert_to_a_pointer)
+{
+	// An integer still does, without a cast; a float means no address, and as an argument it would
+	// travel in the float bank while the callee reads an integer register.
+	CHECK(!checkSource("void f(void* p); int main() { float x = 1.0f; f(x); return 0; }").ok);
+	CHECK(!checkSource("int main() { float x = 1.0f; char* p = x; return 0; }").ok);
+	CHECK(checkSource("void f(void* p); int main() { f(0); return 0; }").ok);
 }
 
 TEST(sema, a_definition_keeps_its_prototypes_format)

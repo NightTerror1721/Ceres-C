@@ -236,8 +236,11 @@ namespace ceresc::sema
 			}
 			return true;
 		}
-		if (target->isPointer() && isArithmeticType(source))
-			return true; // permissive: this subset does not track "null pointer constant" specially
+		// Permissive: an integer converts to a pointer without a cast (this subset does not track
+		// "null pointer constant" specially). A float never does - there is no address it could mean,
+		// and as an argument it would travel in the float bank while the callee reads an integer one.
+		if (target->isPointer() && isIntegerType(source))
+			return true;
 		// A struct or union converts to one of the same tag whatever qualifiers either side carries:
 		// `struct T copy = *constPtr;` makes a NEW object, it does not hand out an alias to the
 		// read-only one (that is what the pointer rule above guards). Different tags stay incompatible.
@@ -708,7 +711,7 @@ namespace ceresc::sema
 				case FormatWant::Pointee4:     return "an 'int *'";
 				case FormatWant::Pointee8:     return "a 'long long *'";
 				case FormatWant::FloatPointer: return "a 'float *'";
-				case FormatWant::AnyPointer:   return "a 'void **'";
+				case FormatWant::AnyPointer:   return "a 'void **' (or a pointer to a 4-byte integer)";
 			}
 			return "";
 		}

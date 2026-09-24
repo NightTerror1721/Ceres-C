@@ -1759,10 +1759,15 @@ namespace ceresc::ir
 		// each argument is passed with the type it was computed as. Without this, a call through a
 		// pointer passed an int to a long long parameter as one word and a variadic tail as fixed
 		// arguments.
+		// Whether the callee names a FUNCTION is sema's answer, recorded as the name's type (the
+		// function's own type, or the pointer a variable holds) - not a lookup by name here, which a
+		// local pointer shadowing a global function of the same name would get wrong.
 		std::vector<const Type*> paramTypes;
+		paramTypes.reserve(node.args().size());
 		bool calleeIsVariadic = false;
 		auto* namedCallee = dynamic_cast<ast::NameExpr*>(node.callee());
-		auto declared = namedCallee ? _functionDecls.find(namedCallee->name()) : _functionDecls.end();
+		const bool namesFunction = namedCallee && namedCallee->type() && namedCallee->type()->isFunction();
+		auto declared = namesFunction ? _functionDecls.find(namedCallee->name()) : _functionDecls.end();
 		if (declared != _functionDecls.end())
 		{
 			for (const ast::Param& param : declared->second->params())
@@ -1838,8 +1843,8 @@ namespace ceresc::ir
 		// pointer, a cast, an array element - is an address to be computed and jumped through. The
 		// test is which of the two the name is, not whether the callee is a name at all: with
 		// function pointers a variable can be the callee under a name too.
-		auto* callee = dynamic_cast<ast::NameExpr*>(node.callee());
-		bool isDirect = callee && _functionDecls.contains(callee->name());
+		auto* callee = namedCallee;
+		bool isDirect = declared != _functionDecls.end();
 
 		// Lowered here, after the arguments' own expressions and before the Param run below: codegen
 		// requires the Params to sit immediately before the Call they belong to (it reads them back

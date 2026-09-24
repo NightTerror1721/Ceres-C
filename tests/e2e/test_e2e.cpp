@@ -1903,6 +1903,22 @@ TEST(e2e, an_argument_through_a_pointer_is_converted_to_the_parameter_type)
 		"abcd");
 }
 
+TEST(e2e, a_local_function_pointer_shadowing_a_function_is_called_through)
+{
+	// Sema resolves `pick` to the parameter, so the call must go through it, not to the global
+	// function that happens to share the name.
+	runsTheSameAtEveryLevel("shadowing_function_pointer",
+		"int pick(int x) { return 1; }"
+		"int two(int x) { return 2; }"
+		"int call(int (*pick)(int)) { return pick(0); }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + call(two);"
+		"    return 0;"
+		"}",
+		"2");
+}
+
 TEST(e2e, a_variadic_function_finds_its_tail_past_stack_passed_fixed_parameters)
 {
 	// Six fixed parameters, so two of them arrive on the stack before the tail even begins - the

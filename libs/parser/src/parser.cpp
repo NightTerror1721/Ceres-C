@@ -2044,11 +2044,11 @@ namespace ceresc::parser
 		bool isHarmlessAttribute(std::string_view name)
 		{
 			// The ones this compiler acts on - noreturn, noinline, always_inline, pure, const,
-			// deprecated and warn_unused_result - are deliberately NOT here: they are handled by
-			// parseAttributes() itself and must not also get the "ignored" warning.
+			// deprecated, warn_unused_result and format - are deliberately NOT here: they are handled
+			// by parseAttributes() itself and must not also get the "ignored" warning.
 			static constexpr std::string_view kKnown[] = {
 				"unused", "used", "fallthrough", "cold", "hot",
-				"nonnull", "format", "malloc", "visibility", "returns_nonnull", "nothrow", "leaf",
+				"nonnull", "malloc", "visibility", "returns_nonnull", "nothrow", "leaf",
 				"artificial", "gnu_inline", "may_alias", "flatten", "optimize", "no_instrument_function",
 			};
 			for (std::string_view known : kKnown)
@@ -2187,20 +2187,18 @@ namespace ceresc::parser
 						_diagnostics.warning(DiagId::AttributeIgnored, where,
 							"attribute 'format' ignored: it takes (printf or scanf, the format's parameter number, the number of the first argument it describes or 0)");
 					}
+					else if (!sink)
+					{
+						// Nowhere to hang it, whatever its archetype: said, not lost.
+						_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute '{}' ignored", name);
+					}
 					else if (kind != ast::FormatKind::None)
 					{
-						// Another archetype (strftime, ...) is accepted and not checked.
-						if (sink)
-						{
-							sink->formatKind = kind;
-							sink->formatIndex = static_cast<u16>(formatIndex);
-							sink->formatFirst = static_cast<u16>(formatFirst);
-						}
-						else
-						{
-							_diagnostics.warning(DiagId::AttributeIgnored, where, "attribute '{}' ignored", name);
-						}
+						sink->formatKind = kind;
+						sink->formatIndex = static_cast<u16>(formatIndex);
+						sink->formatFirst = static_cast<u16>(formatFirst);
 					}
+					// Another archetype (strftime, ...) on a function is accepted and not checked.
 				}
 				else if (name == "aligned")
 				{
