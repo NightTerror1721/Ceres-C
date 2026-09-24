@@ -1298,7 +1298,9 @@ namespace ceresc::sema
 			// the variable holds.
 			if (funcDecl)
 				nameExpr->setType(functionTypeOf(funcDecl));
-			else if (!info)
+			else if (info)
+				nameExpr->setType(symbol->type); // the pointer: IrBuilder reads the parameters from it
+			else
 				nameExpr->setType(errorRecoveryType());
 		}
 		else

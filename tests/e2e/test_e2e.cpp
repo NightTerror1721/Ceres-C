@@ -1856,6 +1856,53 @@ TEST(e2e, a_variadic_function_sums_its_argument_tail)
 		"6");
 }
 
+TEST(e2e, a_variadic_function_called_through_a_pointer_still_gets_its_tail)
+{
+	// The callee is not a name, so its parameters come from the pointer's type: without them the
+	// tail went out as fixed arguments and va_arg read whatever was in the variadic area.
+	runsTheSameAtEveryLevel("variadic_through_pointer",
+		"int sum(int count, ...) {"
+		"    __builtin_va_list ap;"
+		"    int total = 0;"
+		"    int i;"
+		"    __builtin_va_start(ap, count);"
+		"    for (i = 0; i < count; i = i + 1) total = total + __builtin_va_arg(ap, int);"
+		"    __builtin_va_end(ap);"
+		"    return total;"
+		"}"
+		"int main() {"
+		"    int (*f)(int, ...) = sum;"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = 48 + f(4, 1, 2, 0, 3);"
+		"    return 0;"
+		"}",
+		"6");
+}
+
+TEST(e2e, an_argument_through_a_pointer_is_converted_to_the_parameter_type)
+{
+	// An int given to a long long parameter becomes the two-word pair, a char is sign-extended,
+	// and so it goes for a function a _Generic picked - the callee's type says what it takes.
+	runsTheSameAtEveryLevel("widening_through_pointer",
+		"long long twice(long long x) { return 2 * x; }"
+		"struct S { unsigned long long m; int n; };"
+		"struct S make(long long x) { struct S s; s.m = (unsigned long long)x; s.n = x < 0; return s; }"
+		"int main() {"
+		"    long long (*t)(long long) = twice;"
+		"    int small = 7;"
+		"    signed char minus = -3;"
+		"    char* term = (char*)0xFF000004;"
+		"    *term = t(small) == 14 ? 'a' : 'x';"
+		"    *term = t(minus) == -6 ? 'b' : 'x';"
+		"    struct S s = _Generic(1, int: make)(small);"
+		"    *term = s.m == 7 && s.n == 0 ? 'c' : 'x';"
+		"    s = _Generic(1, int: make)(minus);"
+		"    *term = s.m == (unsigned long long)-3 && s.n == 1 ? 'd' : 'x';"
+		"    return 0;"
+		"}",
+		"abcd");
+}
+
 TEST(e2e, a_variadic_function_finds_its_tail_past_stack_passed_fixed_parameters)
 {
 	// Six fixed parameters, so two of them arrive on the stack before the tail even begins - the

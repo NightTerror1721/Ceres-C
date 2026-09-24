@@ -1753,30 +1753,43 @@ namespace ceresc::ir
 			argIsWide.push_back(false);
 		}
 
-		// The callee's declared parameter types, when the callee is a plain name (which sema
-		// guarantees it is - see the header comment). Empty for anything else, in which case each
-		// argument is passed with the type it was computed as.
-		std::span<const ast::Param> params;
+		// The callee's parameter types: from its declaration when the callee names a function, and
+		// otherwise from the callee's own type - a pointer to a function, or a function a _Generic
+		// chose - which carries them just the same. Only an unprototyped callee has none, and then
+		// each argument is passed with the type it was computed as. Without this, a call through a
+		// pointer passed an int to a long long parameter as one word and a variadic tail as fixed
+		// arguments.
+		std::vector<const Type*> paramTypes;
+		bool calleeIsVariadic = false;
+		auto* namedCallee = dynamic_cast<ast::NameExpr*>(node.callee());
+		auto declared = namedCallee ? _functionDecls.find(namedCallee->name()) : _functionDecls.end();
+		if (declared != _functionDecls.end())
+		{
+			for (const ast::Param& param : declared->second->params())
+				paramTypes.push_back(param.type);
+			calleeIsVariadic = declared->second->isVariadic();
+		}
+		else if (const Type* calleeType = node.callee() ? node.callee()->type() : nullptr)
+		{
+			if (const ast::FunctionTypeInfo* signature = calleeType->calleeSignature())
+			{
+				for (const Type* paramType : signature->params())
+					paramTypes.push_back(paramType);
+				calleeIsVariadic = signature->isVariadic;
+			}
+		}
 		// Where this callee's variadic tail starts, counted in the same argValues indices the Param
 		// instructions below are emitted from - so the hidden struct-return pointer, which is an
 		// argument here but not in the source, is already accounted for. ~0u means "no tail".
 		u32 fixedArgCount = ~0u;
-		if (auto* calleeName = dynamic_cast<ast::NameExpr*>(node.callee()))
-		{
-			auto it = _functionDecls.find(calleeName->name());
-			if (it != _functionDecls.end())
-			{
-				params = it->second->params();
-				if (it->second->isVariadic())
-					fixedArgCount = static_cast<u32>(params.size()) + (returnsStructIndirect ? 1u : 0u);
-			}
-		}
+		if (calleeIsVariadic)
+			fixedArgCount = static_cast<u32>(paramTypes.size()) + (returnsStructIndirect ? 1u : 0u);
 
 		usize argIndex = 0;
 		for (Expr* arg : node.args())
 		{
 			const Type* argType = arg->type();
-			const Type* paramType = argIndex < params.size() ? params[argIndex].type : nullptr;
+			const Type* paramType = argIndex < paramTypes.size() ? paramTypes[argIndex] : nullptr;
 			++argIndex;
 			// F3.4: whether the argument travels as a two-word pair is the CALLEE's parameter's to
 			// decide: a wide parameter takes two words (materializing a scalar or float source into a

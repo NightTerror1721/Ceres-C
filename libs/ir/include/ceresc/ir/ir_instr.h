@@ -216,12 +216,11 @@ namespace ceresc::ir
 		IrValue value;   // queues one outgoing argument before the next Call - see §9
 		bool isFloat = false; // the argument expression's OWN type - codegen routes it through
 		                       // f0-f3/the outgoing float slots instead of r0-r3 when set. Reflects
-		                       // the caller's argument, not the callee's declared parameter type:
-		                       // IrBuilder does not resolve a callee's signature (it looks up a Call's
-		                       // target by name only, see the header comment on IrBuilder's contract),
-		                       // so - unlike a plain assignment or initializer - a call passing a
-		                       // literal of the "wrong" arithmetic family to a scalar parameter is not
-		                       // converted here; write the matching literal/variable type at the call site.
+		                       // the caller's argument; sema refuses an argument of the other family
+		                       // than its parameter, so the two agree. (IrBuilder converts an argument to
+		                       // its parameter's type within a family - char to int, int to long long -
+		                       // from the callee's declaration or, for a pointer or a _Generic choice,
+		                       // from the callee's type.)
 
 		// This argument sits in the callee's variadic tail (past its last declared parameter), so
 		// it is passed on the stack no matter which bank `isFloat` names and no matter how many
