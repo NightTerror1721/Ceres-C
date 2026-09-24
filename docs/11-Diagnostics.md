@@ -122,7 +122,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `E0004` | `0x` with no digits after it. |
 | `E0005` | `0b` with no digits after it. |
 | `E0016` | An `8` or a `9` in an octal literal (one that starts with `0`). |
-| `E0017` | A hexadecimal float literal with a `.` but no `p` exponent (`0x1.8`): C requires the exponent. |
+| `E0017` | A hexadecimal float literal with a `.` but no `p` exponent (`0x1.8`), or a `p` with no digits after it (`0x1p`): C requires the exponent. |
 | `E0018` | A `\u`/`\U` without exactly four/eight hex digits, or naming a surrogate or a value past U+10FFFF. |
 | `E0019` | A `\x` or octal escape whose value does not fit one code unit of its literal (`"\x141"`; a wide literal has room for more). |
 | `E0020` | A character literal whose character needs more than one code unit: `u'\U0001F600'` (a surrogate pair), `'\u00E9'` or `u8'é'` (two UTF-8 bytes). |

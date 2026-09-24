@@ -53,6 +53,16 @@ namespace ceresc::support
 		}
 	}
 
+	// Code unit `index` of a literal's value, which holds its units as `unitSize`-byte little-endian
+	// bytes (the order the VM stores them in).
+	constexpr u32 codeUnitAt(std::string_view bytes, usize index, u32 unitSize) noexcept
+	{
+		u32 unit = 0;
+		for (u32 b = 0; b < unitSize; ++b)
+			unit |= static_cast<u32>(static_cast<u8>(bytes[index * unitSize + b])) << (8 * b);
+		return unit;
+	}
+
 	constexpr std::string_view literalPrefix(LiteralEncoding encoding) noexcept
 	{
 		switch (encoding)

@@ -63,6 +63,20 @@ TEST(ast_printer, string_literal)
 	CHECK_EQ(printer.print(*e), "\"hi\"");
 }
 
+TEST(ast_printer, a_prefixed_literal_prints_its_prefix_and_reads_back_the_same)
+{
+	support::Arena arena;
+	support::StringPool pool;
+	AstPrinter printer;
+	CHECK_EQ(printer.print(*arena.create<CharLiteralExpr>(loc(), 'a', support::LiteralEncoding::Wide)), "L'a'");
+	CHECK_EQ(printer.print(*arena.create<CharLiteralExpr>(loc(), 0x1F600, support::LiteralEncoding::Utf32)), "U'\\x1F600'");
+	CHECK_EQ(printer.print(*arena.create<StringLiteralExpr>(loc(), pool.intern("x"), support::LiteralEncoding::Utf8)), "u8\"x\"");
+	// u"a\"\\" then U+00E9 and an 'a' that must not run into its escape
+	const char units[] = { 'a', 0, '"', 0, '\\', 0, '\xE9', 0, 'a', 0 };
+	Expr* wide = arena.create<StringLiteralExpr>(loc(), pool.intern(std::string_view(units, sizeof units)), support::LiteralEncoding::Utf16);
+	CHECK_EQ(printer.print(*wide), "u\"a\\x22\\x5C\\xE9\\x61\"");
+}
+
 // ---- names -----------------------------------------------------------------------------------
 
 TEST(ast_printer, name_expr)

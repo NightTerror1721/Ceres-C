@@ -182,7 +182,8 @@ namespace ceresc::sema
 			return;
 		// A literal is already its own value. What is worth folding is what is built from them.
 		if (dynamic_cast<ast::BinaryExpr*>(expr) || dynamic_cast<ast::TernaryExpr*>(expr) ||
-			dynamic_cast<ast::SizeofExpr*>(expr) || dynamic_cast<ast::NameExpr*>(expr) || dynamic_cast<ast::UnaryExpr*>(expr))
+			dynamic_cast<ast::SizeofExpr*>(expr) || dynamic_cast<ast::NameExpr*>(expr) || dynamic_cast<ast::UnaryExpr*>(expr) ||
+			dynamic_cast<ast::GenericSelectionExpr*>(expr))
 		{
 			if (std::optional<i64> value = evalConstantExpr(expr))
 				expr->setConstantValue(*value);
@@ -248,11 +249,6 @@ namespace ceresc::sema
 			target->structDecl() == source->structDecl())
 			return true;
 		return false;
-	}
-
-	bool Sema::isCharType(const Type* type) noexcept
-	{
-		return type && (type->isChar() || type->isUChar() || type->isSChar());
 	}
 
 	void Sema::checkInitializer(const Type* type, Expr* init)
@@ -1091,7 +1087,7 @@ namespace ceresc::sema
 		// 6.5.1.1p4). The pick is sema's, so the selection has to have been checked.
 		if (auto* generic = dynamic_cast<ast::GenericSelectionExpr*>(expr))
 		{
-			if (!generic->selectedExpr() && !_scopes.empty())
+			if (!generic->type() && !_scopes.empty())   // not checked yet; one that matched nothing already said so
 				checkExpr(generic);
 			return generic->selectedExpr() ? evalConstantExpr(generic->selectedExpr()) : std::nullopt;
 		}
@@ -2401,6 +2397,13 @@ namespace ceresc::sema
 		// `(void*)0` - what NULL is - and `(char*)table`: a cast of a constant is a constant.
 		if (const auto* cast = dynamic_cast<const ast::CastExpr*>(expr))
 			return isConstantInitializer(cast->operand());
+		// A _Generic that picks an arithmetic constant is that number. (One that picks an address - a
+		// string, `&x` - is not folded through: the image writes numbers from Expr::constantValue.)
+		if (dynamic_cast<const ast::GenericSelectionExpr*>(expr))
+		{
+			recordConstant(const_cast<Expr*>(expr));
+			return expr->constantValue().has_value();
+		}
 		if (const auto* name = dynamic_cast<const ast::NameExpr*>(expr))
 		{
 			// An array or a function name decays to its own address. (A plain variable is a value, and

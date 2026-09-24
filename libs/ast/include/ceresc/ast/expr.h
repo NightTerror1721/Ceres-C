@@ -855,4 +855,18 @@ namespace ceresc::ast
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<CompoundLiteralExpr>, "CompoundLiteralExpr must be trivially destructible (Arena-allocated)");
+
+	// The string literal that fills an array from `init`: the literal itself, or one alone in braces that
+	// can fill an array of this element type - `char s[] = { "abc" }`, where C makes the braces
+	// transparent (C11 6.7.9p14). nullptr when `init` is neither.
+	inline const StringLiteralExpr* stringFillingArray(const Type* arrayType, const Expr* init) noexcept
+	{
+		if (const auto* literal = dynamic_cast<const StringLiteralExpr*>(init))
+			return literal;
+		const auto* list = dynamic_cast<const InitListExpr*>(init);
+		if (!arrayType || !arrayType->isArray() || !list || list->elements().size() != 1)
+			return nullptr;
+		const auto* inner = dynamic_cast<const StringLiteralExpr*>(list->elements().front());
+		return inner && inner->initializesArrayOf(arrayType->arrayElementType()) ? inner : nullptr;
+	}
 }

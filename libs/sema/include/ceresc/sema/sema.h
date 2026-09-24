@@ -229,9 +229,6 @@ namespace ceresc::sema
 		std::optional<usize> designatedIndex(const ast::Type* type, const ast::Designator& designator);
 		ast::InitListExpr* makeInitList(support::SourceLocation location, const std::vector<ast::Expr*>& elements);
 		ast::Expr* zeroInitializerFor(const ast::Type* type, support::SourceLocation location);
-		// True for a type a string literal may initialize an array OF - `char`/`signed char`/
-		// `unsigned char`, i.e. exactly the one-byte integer types.
-		static bool isCharType(const ast::Type* type) noexcept;
 
 		bool declareSymbol(const Symbol& symbol);
 

@@ -289,15 +289,6 @@ namespace ceresc::codegen
 			return result;
 		}
 
-		// Code unit `index` of a literal whose value holds `elementSize`-byte little-endian units.
-		u32 codeUnitAt(std::string_view bytes, usize index, u32 elementSize)
-		{
-			u32 unit = 0;
-			for (u32 b = 0; b < elementSize; ++b)
-				unit |= static_cast<u32>(static_cast<u8>(bytes[index * elementSize + b])) << (8 * b);
-			return unit;
-		}
-
 		// A string literal's own .rodata object: a u8 array spelled as a CASM string, or for a wide
 		// literal a u16/u32 array of its code units, zero unit last. CASM aligns each to its element.
 		std::string casmStringLet(std::string_view name, std::string_view bytes, u32 elementSize)
@@ -307,19 +298,10 @@ namespace ceresc::codegen
 			const usize count = bytes.size() / elementSize;
 			std::string text = std::format("let {}: u{}[{}] = [", name, elementSize * 8, count + 1);
 			for (usize i = 0; i < count; ++i)
-				text += std::format("{}, ", codeUnitAt(bytes, i, elementSize));
+				text += std::format("{}, ", support::codeUnitAt(bytes, i, elementSize));
 			return text + "0]";
 		}
 
-		// `char s[] = { "abc" }`: braces around a string that fills the array are transparent.
-		const Expr* unwrapBracedString(const Type* type, const Expr* init)
-		{
-			const auto* list = dynamic_cast<const InitListExpr*>(init);
-			if (!type || !type->isArray() || !list || list->elements().size() != 1)
-				return init;
-			const auto* inner = dynamic_cast<const StringLiteralExpr*>(list->elements().front());
-			return inner && inner->initializesArrayOf(type->arrayElementType()) ? inner : init;
-		}
 
 	}
 
@@ -2080,7 +2062,11 @@ namespace ceresc::codegen
 	{
 		if (!type || !init)
 			return std::nullopt;
-		init = unwrapBracedString(type, init);
+		if (type->isArray())
+		{
+			if (const StringLiteralExpr* filling = stringFillingArray(type, init))
+				init = filling;                          // `char s[] = { "abc" }` too
+		}
 
 		// A string literal fills a char array as bytes, terminating zero and all - CASM's own
 		// `let greeting: u8[16] = "Hello, CeresVM!"` (11-Data-Types-and-Literals.md), which pads the
@@ -2101,7 +2087,7 @@ namespace ceresc::codegen
 				std::string text = "[";
 				for (usize i = 0; i < literal->length(); ++i)
 				{
-					const u32 unit = codeUnitAt(literal->value().view(), i, literal->elementSize());
+					const u32 unit = support::codeUnitAt(literal->value().view(), i, literal->elementSize());
 					text += i == 0 ? "" : ", ";
 					text += isSigned ? std::format("{}", static_cast<i32>(unit)) : std::format("{}", unit);
 				}
@@ -2171,7 +2157,11 @@ namespace ceresc::codegen
 		u32 size = type->sizeInBytes();
 		if (offset + size > image.size())
 			return false; // sema already reported the overflow
-		init = unwrapBracedString(type, init);
+		if (type->isArray())
+		{
+			if (const StringLiteralExpr* filling = stringFillingArray(type, init))
+				init = filling;                          // `char s[] = { "abc" }` too
+		}
 
 		// A string literal fills a char ARRAY as bytes; it fills a POINTER with its own address, which
 		// is a symbol the assembler relocates, not a byte value.

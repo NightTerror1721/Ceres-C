@@ -1949,6 +1949,7 @@ TEST(e2e, wide_character_and_string_literals_hold_their_code_units)
 		"int gw[] = L\"q\\u00E9\";"
 		"const unsigned short* gp = u\"hi\";"
 		"char gbraced[] = { \"xyz\" };"
+		"int ggen = _Generic(1u, unsigned int: 7, default: 0);"
 		"int main() {"
 		"    char* term = (char*)0xFF000004;"
 		"    int w[] = L\"h\\u00E9\";"
@@ -1966,9 +1967,10 @@ TEST(e2e, wide_character_and_string_literals_hold_their_code_units)
 		"    *term = \"\\101\\?\"[0] == 'A' && \"\\101\\?\"[1] == '?' ? 'g' : 'x';"
 		"    *term = sizeof(gw) == 12 && gw[1] == 0xE9 && gp[1] == 'i' && gp[2] == 0 ? 'h' : 'x';"
 		"    *term = sizeof(braced) == 4 && braced[2] == 'c' && sizeof(gbraced) == 4 && gbraced[1] == 'y' ? 'i' : 'x';"
+		"    *term = ggen == 7 ? 'j' : 'x';"
 		"    return 0;"
 		"}",
-		"abcdefghi");
+		"abcdefghij");
 }
 
 TEST(e2e, a_local_function_pointer_shadowing_a_function_is_called_through)

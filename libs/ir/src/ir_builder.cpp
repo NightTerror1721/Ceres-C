@@ -1035,14 +1035,8 @@ namespace ceresc::ir
 		// literal's value is already its code units' little-endian bytes, so it is stored the same way.
 		if (type->isArray())
 		{
-			// `char s[] = { "abc" }`: braces around a string that fills the array are transparent.
-			if (auto* braced = dynamic_cast<ast::InitListExpr*>(init); braced && braced->elements().size() == 1)
-			{
-				if (auto* inner = dynamic_cast<ast::StringLiteralExpr*>(braced->elements().front());
-					inner && inner->initializesArrayOf(type->arrayElementType()))
-					init = inner;
-			}
-			if (auto* literal = dynamic_cast<ast::StringLiteralExpr*>(init))
+			// `char s[] = { "abc" }` as well: braces around a string that fills the array are transparent.
+			if (const auto* literal = ast::stringFillingArray(type, init))
 			{
 				std::string_view text = literal->value().view();
 				u32 written = 0;

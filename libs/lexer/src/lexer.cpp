@@ -211,13 +211,16 @@ namespace ceresc::lexer
 				while (isHexDigit(_cursor.peek()))
 					_cursor.advance();
 			}
-			const bool hasExponent = (_cursor.peek() == 'p' || _cursor.peek() == 'P') &&
-				(isDigit(_cursor.peek(1)) || ((_cursor.peek(1) == '+' || _cursor.peek(1) == '-') && isDigit(_cursor.peek(2))));
-			if (hasExponent)
+			// A `p` is part of the literal even with no digits after it (`0x1p`): C reads the whole thing as
+			// one number, so nothing is left over to be taken for an identifier.
+			const bool sawMarker = _cursor.peek() == 'p' || _cursor.peek() == 'P';
+			bool hasExponent = false;
+			if (sawMarker)
 			{
 				_cursor.advance();
 				if (_cursor.peek() == '+' || _cursor.peek() == '-')
 					_cursor.advance();
+				hasExponent = isDigit(_cursor.peek());
 				while (isDigit(_cursor.peek()))
 					_cursor.advance();
 			}
@@ -228,8 +231,12 @@ namespace ceresc::lexer
 			std::string_view mantissa = _cursor.buffer().substr(digitsStart, floatEnd - digitsStart);
 			if (!hasExponent)
 			{
-				_diagnostics.error(DiagId::HexFloatWithoutExponent, startLoc,
-					"hexadecimal floating literal '{}' needs a 'p' exponent", lexeme);
+				if (sawMarker)
+					_diagnostics.error(DiagId::HexFloatWithoutExponent, startLoc,
+						"hexadecimal floating literal '{}' has no digits in its 'p' exponent", lexeme);
+				else
+					_diagnostics.error(DiagId::HexFloatWithoutExponent, startLoc,
+						"hexadecimal floating literal '{}' needs a 'p' exponent", lexeme);
 				return Token::makeLiteralFloat(lexeme, 0.0, startLoc);
 			}
 			if (mantissa.size() == 0 || mantissa.front() == 'p' || mantissa.front() == 'P' ||
@@ -355,28 +362,32 @@ namespace ceresc::lexer
 	u32 Lexer::literalPrefixLength(uoffset offset, support::LiteralEncoding& encoding) const noexcept
 	{
 		// 'L', 'u', 'U' or 'u8' right before a quote. Anything else - 'Lx', 'u8x', a lone 'u' - is the
-		// start of an identifier, which is what it always was.
+		// start of an identifier, which is what it always was, and leaves `encoding` alone.
 		u32 length = 0;
+		support::LiteralEncoding found = support::LiteralEncoding::Plain;
 		switch (_cursor.peek(static_cast<ioffset>(offset)))
 		{
-			case 'L': encoding = support::LiteralEncoding::Wide; length = 1; break;
-			case 'U': encoding = support::LiteralEncoding::Utf32; length = 1; break;
+			case 'L': found = support::LiteralEncoding::Wide; length = 1; break;
+			case 'U': found = support::LiteralEncoding::Utf32; length = 1; break;
 			case 'u':
 				if (_cursor.peek(static_cast<ioffset>(offset + 1)) == '8')
 				{
-					encoding = support::LiteralEncoding::Utf8;
+					found = support::LiteralEncoding::Utf8;
 					length = 2;
 				}
 				else
 				{
-					encoding = support::LiteralEncoding::Utf16;
+					found = support::LiteralEncoding::Utf16;
 					length = 1;
 				}
 				break;
 			default: return 0;
 		}
 		const char quote = _cursor.peek(static_cast<ioffset>(offset + length));
-		return quote == '"' || quote == '\'' ? length : 0;
+		if (quote != '"' && quote != '\'')
+			return 0;
+		encoding = found;
+		return length;
 	}
 
 	Lexer::LiteralUnit Lexer::scanEscapeSequence()
@@ -522,8 +533,9 @@ namespace ceresc::lexer
 		{
 			if (unit.value > support::maxCodeUnit(encoding))
 			{
-				_diagnostics.error(DiagId::EscapeValueOutOfRange, unit.location, "escape sequence value 0x{:X} does not fit a {}-byte {}character",
-					unit.value, size, support::literalPrefix(encoding));
+				_diagnostics.error(DiagId::EscapeValueOutOfRange, unit.location, "escape sequence value 0x{:X} does not fit a {}-byte code unit",
+					unit.value, size);
+				appendCodeUnit(out, 0, size);   // a unit still, so the literal keeps the length it was written with
 				return false;
 			}
 			appendCodeUnit(out, unit.value, size);
@@ -734,6 +746,8 @@ namespace ceresc::lexer
 
 		std::string encoded;
 		encoded.reserve(units.size() * support::codeUnitSize(encoding));
+		// A unit that does not fit is reported and stands as a zero, so the length stays what the source
+		// spells; the program does not compile either way.
 		for (const LiteralUnit& unit : units)
 			encodeLiteralUnit(encoded, unit, encoding);
 

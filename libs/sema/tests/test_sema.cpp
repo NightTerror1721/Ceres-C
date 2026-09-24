@@ -121,6 +121,13 @@ TEST(sema, a_generic_selection_of_a_constant_is_a_constant_expression)
 {
 	CHECK(checkSource("_Static_assert(_Generic(1u, unsigned int: 1, default: 0), \"picks\"); enum { E = _Generic('a', char: 3, default: 1) }; _Static_assert(E == 3, \"e\");"
 		"int f(void) { _Static_assert(_Generic(u'a', unsigned short: 2, default: 0) == 2, \"u\"); return 0; }").ok);
+	CHECK(checkSource("static int s = _Generic(1, int: 2, default: 3); int f(void) { static int t = _Generic('a', char: 4, default: 5); return s + t; }").ok);
+	CheckOutcome noMatch = checkSource("_Static_assert(_Generic(1.5f, int: 1), \"none\");");
+	CHECK(!noMatch.ok);
+	usize matchErrors = 0;
+	for (const std::string& message : noMatch.messages)
+		matchErrors += message.find("_Generic") != std::string::npos || message.find("association") != std::string::npos ? 1 : 0;
+	CHECK(matchErrors <= 1);                            // reported once, not again by the constant fold
 	CheckOutcome notConstant = checkSource("int g; _Static_assert(_Generic(1, int: g, default: 0), \"x\");");
 	CHECK(!notConstant.ok);
 	CHECK(containsMessage(notConstant, "must be a constant expression"));

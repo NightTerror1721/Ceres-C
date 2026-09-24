@@ -226,6 +226,20 @@ TEST(lexer, a_hexadecimal_float_literal_has_a_binary_exponent)
 	CHECK(!diagnostics.hasDiagnostics());
 }
 
+TEST(lexer, a_p_with_no_exponent_digits_stays_in_the_literal)
+{
+	// C reads 0x1p as one (bad) number: nothing is left over for the parser to trip on.
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("0x1p+ 7", testSourceId(), diagnostics, pool);
+	Token bad = lexer.next();
+	CHECK(bad.isLiteralFloat());
+	CHECK_EQ(bad.lexeme(), std::string_view("0x1p+"));
+	CHECK(lexer.next().isLiteralInt());
+	CHECK_EQ(diagnostics.diagnosticCount(), usize{ 1 });
+	CHECK(diagnostics.diagnostics().front().id == support::DiagnosticId::HexFloatWithoutExponent);
+}
+
 TEST(lexer, a_hexadecimal_float_needs_its_exponent)
 {
 	support::DiagnosticEngine diagnostics;

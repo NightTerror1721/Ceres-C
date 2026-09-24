@@ -401,6 +401,12 @@ TEST(ir, global_variable_use_goes_through_globaladdr_not_a_frame_slot)
 
 // ---- string literals ----------------------------------------------------------------------------
 
+TEST(ir, a_wide_string_literal_prints_as_its_code_units)
+{
+	std::string text = moduleIr("unsigned short* main() { return u\"hi\"; }");
+	CHECK(text.find("global \".str0\" = u16[104, 105]\n") != std::string::npos);
+}
+
 TEST(ir, a_string_literal_synthesizes_a_global_label_that_the_module_printer_resolves_to_its_value)
 {
 	std::string text = moduleIr("char* main() { return \"hi\"; }");

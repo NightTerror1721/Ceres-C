@@ -293,17 +293,20 @@ namespace ceresc::ast
 			_output += node.value().view();
 		else
 		{
-			// A wide literal's code units, ASCII as itself and the rest as \x escapes.
+			// A wide literal's code units: printable ASCII as itself, and the rest - a quote, a backslash, and a
+			// hex digit right after an escape, which \x would take as its own - as \x escapes, so the text
+			// reads back as the same units.
 			std::string_view bytes = node.value().view();
+			bool afterEscape = false;
 			for (usize i = 0; i < node.length(); ++i)
 			{
-				u32 unit = 0;
-				for (u32 b = 0; b < node.elementSize(); ++b)
-					unit |= static_cast<u32>(static_cast<u8>(bytes[i * node.elementSize() + b])) << (8 * b);
-				if (unit >= 0x20 && unit <= 0x7E)
-					_output += static_cast<char>(unit);
-				else
+				const u32 unit = support::codeUnitAt(bytes, i, node.elementSize());
+				const bool hexDigit = (unit >= '0' && unit <= '9') || (unit >= 'a' && unit <= 'f') || (unit >= 'A' && unit <= 'F');
+				afterEscape = unit < 0x20 || unit > 0x7E || unit == '"' || unit == '\\' || (afterEscape && hexDigit);
+				if (afterEscape)
 					_output += std::format("\\x{:X}", unit);
+				else
+					_output += static_cast<char>(unit);
 			}
 		}
 		_output += '"';
