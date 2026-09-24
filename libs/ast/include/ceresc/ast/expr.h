@@ -599,6 +599,10 @@ namespace ceresc::ast
 		// evaluates to its first operand, and `constant_p` is a compile-time question answered by
 		// the constant evaluator - both lower away in IrBuilder rather than reaching codegen.
 		Expect, ConstantP,
+		// `__builtin_memcpy(d, s, n)` and `__builtin_memset(d, c, n)`: a call to the unit's own block routine
+		// (codegen's __cc_memcpy/__cc_memset, one MCPY or MSET each), yielding `d`. A call, not an
+		// instruction, so every pass sees what it is - something that writes memory.
+		Memcpy, Memset,
 		// `__builtin_add_overflow(a, b, &r)` and its siblings: store `a op b` into `*r` and return
 		// whether the operation overflowed. Three operands, and they too expand in IrBuilder.
 		AddOverflow, SubOverflow, MulOverflow,
@@ -644,6 +648,8 @@ namespace ceresc::ast
 			case Builtin::FloatFromBits: return "__builtin_float_from_bits";
 			case Builtin::Expect:        return "__builtin_expect";
 			case Builtin::ConstantP:     return "__builtin_constant_p";
+			case Builtin::Memcpy:        return "__builtin_memcpy";
+			case Builtin::Memset:        return "__builtin_memset";
 			case Builtin::AddOverflow:   return "__builtin_add_overflow";
 			case Builtin::SubOverflow:   return "__builtin_sub_overflow";
 			case Builtin::MulOverflow:   return "__builtin_mul_overflow";
@@ -664,7 +670,7 @@ namespace ceresc::ast
 			Builtin::Fmod, Builtin::Sqrt, Builtin::Floor, Builtin::Ceil, Builtin::Trunc, Builtin::Rint,
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
 			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP,
-			Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer,
+			Builtin::Memcpy, Builtin::Memset, Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer,
 			Builtin::MinSigned, Builtin::MaxSigned, Builtin::MinUnsigned, Builtin::MaxUnsigned, Builtin::Flags })
 			if (name == builtinName(builtin))
 				return builtin;
@@ -682,6 +688,7 @@ namespace ceresc::ast
 			case Builtin::MinSigned: case Builtin::MaxSigned: case Builtin::MinUnsigned: case Builtin::MaxUnsigned:
 				return 2;
 			case Builtin::AddOverflow: case Builtin::SubOverflow: case Builtin::MulOverflow:
+			case Builtin::Memcpy: case Builtin::Memset:
 				return 3;
 			case Builtin::StackPointer:
 			case Builtin::Flags:

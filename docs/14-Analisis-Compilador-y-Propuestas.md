@@ -472,6 +472,10 @@ sobre 4096 bytes, **contra las versiones C a `-O2`**):
 | `strchr` | 15 407 | 45 089 | 2.9× |
 | `memchr` | 13 347 | 36 896 | 2.8× |
 
+(Desde CeresASM 6b6372b las rutinas que emite O15 - `__cc_memset`, `__cc_memcpy`, `__cc_strlen`,
+`__cc_memchr_index` - son una sola instrucción de bloque cada una: `mset`, `mcpy`, `mscan`. Los builtins
+`__builtin_memcpy` y `__builtin_memset` llaman a las mismas.)
+
 Y añade: a `-O0` las versiones C tardan **diez veces** lo que a `-O2`. Este dato es el que motiva O15
 (reconocimiento de idiomas de bucle byte→palabra) y refuerza O1/O3/O12: el compilador genera código
 correcto pero deja sobre la mesa un factor ~3 en los bucles que dominan una biblioteca C.

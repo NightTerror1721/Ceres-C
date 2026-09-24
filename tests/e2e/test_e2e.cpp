@@ -1973,6 +1973,34 @@ TEST(e2e, wide_character_and_string_literals_hold_their_code_units)
 		"abcdefghij");
 }
 
+TEST(e2e, the_memcpy_and_memset_builtins_and_the_loop_idioms_run_on_the_block_instructions)
+{
+	runsTheSameAtEveryLevel("block_builtins",
+		"char big[10000];"
+		"char copy[10000];"
+		"int scan(char* s, int n, char c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] == c) break; } return i; }"
+		"int length(char* s) { int i = 0; while (s[i] != 0) { i = i + 1; } return i; }"
+		"void fill(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }"
+		"void forward(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    __builtin_memset(big, 7, sizeof(big));"
+		"    big[9999] = 9;"
+		"    char* back = __builtin_memcpy(copy, big, sizeof(big));"
+		"    *term = back == copy && copy[0] == 7 && copy[5000] == 7 && copy[9999] == 9 ? 'a' : 'x';"
+		"    fill(big, 100, 'q');"
+		"    *term = big[99] == 'q' && big[100] == 7 ? 'b' : 'x';"
+		"    big[100] = 0;"
+		"    *term = length(big) == 100 && scan(big, 100, 'z') == 100 && scan(copy, 10000, 9) == 9999 ? 'c' : 'x';"
+		"    forward(big + 1, big, 50);"                     // overlapping, d > s: repeats the first byte
+		"    *term = big[50] == 'q' && big[1] == 'q' ? 'd' : 'x';"
+		"    fill(big, 0, 'z'); fill(big, -5, 'z');"         // a non-positive count does nothing
+		"    *term = big[0] == 'q' ? 'e' : 'x';"
+		"    return 0;"
+		"}",
+		"abcde");
+}
+
 TEST(e2e, a_local_function_pointer_shadowing_a_function_is_called_through)
 {
 	// Sema resolves `pick` to the parameter, so the call must go through it, not to the global

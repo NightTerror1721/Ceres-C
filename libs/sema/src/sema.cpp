@@ -1798,6 +1798,25 @@ namespace ceresc::sema
 			case Builtin::ConstantP:
 				result = &Type::Int; // a compile-time 1 or 0; the operand is not evaluated
 				break;
+			case Builtin::Memcpy:
+			case Builtin::Memset:
+			{
+				// (void* d, const void* s, size_t n) and (void* d, int c, size_t n), yielding d.
+				std::span<ast::Expr* const> args = node.args();
+				auto typeAt = [&](usize index) -> const Type* { return index < args.size() && args[index] ? decayArray(args[index]->type()) : nullptr; };
+				const bool isCopy = node.builtin() == Builtin::Memcpy;
+				const Type* destination = typeAt(0);
+				const Type* second = typeAt(1);
+				const Type* count = typeAt(2);
+				if (!destination || !destination->isPointer() || (isCopy ? !second || !second->isPointer() : !second || !isIntegerType(second)) ||
+					!count || !isIntegerType(count) || count->isWideInteger())
+				{
+					_diagnostics.error(DiagId::InvalidBuiltinOperand, node.location(), "'{}' takes a destination pointer, {} and a byte count",
+						ast::builtinName(node.builtin()), isCopy ? "a source pointer" : "a byte value");
+				}
+				result = Type::makePointer(_arena, &Type::Void);
+				break;
+			}
 			case Builtin::AddOverflow:
 			case Builtin::SubOverflow:
 			case Builtin::MulOverflow:

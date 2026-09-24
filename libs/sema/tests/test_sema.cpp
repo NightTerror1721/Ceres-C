@@ -117,6 +117,14 @@ TEST(sema, literal_types)
 	CHECK_EQ(typeOfMainLastExpr("int main() { \"hi\"; }"), "char*");
 }
 
+TEST(sema, the_memcpy_and_memset_builtins_check_their_operands)
+{
+	CHECK(checkSource("void f(char* d, const char* s, int n) { char a[4]; void* p = __builtin_memcpy(d, s, n); __builtin_memset(a, 0, sizeof(a)); }").ok);
+	CHECK(!checkSource("void f(char* d, int n) { __builtin_memcpy(d, n, n); }").ok);           // the source is not a pointer
+	CHECK(!checkSource("void f(char* d, char* s) { __builtin_memset(d, s, 4); }").ok);          // nor is the value a number
+	CHECK(!checkSource("void f(char* d) { __builtin_memset(d, 0); }").ok);                      // three operands
+}
+
 TEST(sema, a_generic_selection_of_a_constant_is_a_constant_expression)
 {
 	CHECK(checkSource("_Static_assert(_Generic(1u, unsigned int: 1, default: 0), \"picks\"); enum { E = _Generic('a', char: 3, default: 1) }; _Static_assert(E == 3, \"e\");"

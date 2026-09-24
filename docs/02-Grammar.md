@@ -144,6 +144,7 @@ each one takes. Each lowers to exactly one Ceres instruction.
 | `__builtin_abs(i)` | `abs` | `int` |
 | `__builtin_stack_pointer()` | `mov rd, sp` | `unsigned int`, the current stack pointer |
 | `__builtin_flags()` | `push` (PUSHF) + `pop rd` | `unsigned int`, the flags register (bit 4 is the Interrupt flag) |
+| `__builtin_memcpy(d, s, n)`, `__builtin_memset(d, c, n)` | a call to the unit's own `mcpy` / `mset` routine | `void*`, `d`; a forward copy (overlap with `d` above `s` repeats bytes), and a count read as signed, so one of 2 GiB or more does nothing. Needs a CeresASM with the block instructions (6b6372b) |
 | `__builtin_fabs`, `__builtin_sqrt`, `__builtin_floor`, `__builtin_ceil`, `__builtin_trunc`, `__builtin_rint`, `__builtin_frcp`, `__builtin_frsqrt` | one float instruction each | `float` |
 | `__builtin_fmod`, `__builtin_fmin`, `__builtin_fmax`, `__builtin_copysign` | one float instruction each | `float` |
 | `__builtin_fclass(f)` | `fclass` | `int` classification bitmask |

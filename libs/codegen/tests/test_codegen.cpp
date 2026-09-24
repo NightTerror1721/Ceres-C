@@ -2065,7 +2065,7 @@ TEST(codegen, the_min_max_idiom_flag_off_keeps_the_branch_diamond)
 
 // ---- loop idiom recognition (O15) --------------------------------------------------------------
 
-TEST(codegen, a_recognized_byte_fill_loop_emits_and_calls_the_word_routine)
+TEST(codegen, a_recognized_byte_fill_loop_emits_and_calls_the_block_routine)
 {
 	std::string_view source = "void f(char* p, int n, int c) { for (int i = 0; i < n; i = i + 1) { p[i] = c; } }";
 
@@ -2074,9 +2074,8 @@ TEST(codegen, a_recognized_byte_fill_loop_emits_and_calls_the_word_routine)
 	CHECK(contains(text, "__cc_memset:"));         // ...to a routine the unit carries itself
 	CHECK(!contains(text, "global __cc_memset:")); // file-level, so two units never collide
 	CHECK(text.find("@text") < text.find("__cc_memset:")); // emitted as code, not data
-	CHECK(contains(text, "str  [r0], r5"));        // the routine fills words...
+	CHECK(contains(text, "mset r0, r1, r2"));      // the routine is one block instruction...
 	CHECK(contains(text, "ifle r2, 0, .ccm_done")); // ...but a non-positive count fills nothing
-	CHECK(contains(text, "strb [r0], r1"));        // and the alignment/tail path stores bytes
 
 	// With the idiom off the loop stays a loop: a byte store per element, no routine.
 	std::string plain = atO2Without(source, &support::OptimizationOptions::loopIdioms);
@@ -2084,23 +2083,30 @@ TEST(codegen, a_recognized_byte_fill_loop_emits_and_calls_the_word_routine)
 	CHECK(contains(plain, "strb "));
 }
 
+TEST(codegen, the_memcpy_and_memset_builtins_call_the_block_routines)
+{
+	std::string text = atO2("void* f(char* d, char* s, unsigned n) { __builtin_memset(d, 0, n); return __builtin_memcpy(d, s, n); }");
+	CHECK(contains(text, "call __cc_memset"));
+	CHECK(contains(text, "call __cc_memcpy"));
+	CHECK(contains(text, "mset r0, r1, r2"));
+	CHECK(contains(text, "mcpy r0, r1, r2"));
+	CHECK(contains(atO0("void f(char* d) { __builtin_memset(d, 1, 8); }"), "call __cc_memset"));   // at -O0 too
+}
+
 TEST(codegen, the_emitted_routine_is_not_present_when_no_loop_asks_for_it)
 {
 	CHECK(!contains(atO2("int f(int a) { return a + 1; }"), "__cc_memset"));
 }
 
-TEST(codegen, a_recognized_byte_copy_loop_emits_the_overlap_safe_word_routine)
+TEST(codegen, a_recognized_byte_copy_loop_emits_the_forward_block_routine)
 {
 	std::string_view source = "void f(char* d, char* s, int n) { for (int i = 0; i < n; i = i + 1) { d[i] = s[i]; } }";
 	std::string text = atO2(source);
 	CHECK(contains(text, "call __cc_memcpy"));
 	CHECK(contains(text, "__cc_memcpy:"));
 	CHECK(!contains(text, "global __cc_memcpy:"));
-	CHECK(contains(text, "ldr  r5, [r1]"));   // words are copied...
-	CHECK(contains(text, "ccm2_slow"));       // ...except where overlap makes a byte copy necessary
-	CHECK(contains(text, "ifbe r0, r1"));     // d <= s: forward is safe
-	CHECK(contains(text, "ifae r5, r2"));     // d - s >= n: disjoint
-	CHECK(contains(text, "ccm2_align"));      // same misalignment: align both, then words
+	CHECK(contains(text, "mcpy r0, r1, r2")); // a forward copy, as the loop was, overlap and all
+	CHECK(contains(text, "ifle r2, 0, .ccm2_done"));
 
 	CHECK(!contains(atO2Without(source, &support::OptimizationOptions::loopIdioms), "__cc_memcpy"));
 }
@@ -2112,7 +2118,7 @@ TEST(codegen, recognized_search_loops_emit_and_call_their_word_routines)
 	CHECK(contains(text, "call __cc_strlen"));
 	CHECK(contains(text, "__cc_strlen:"));
 	CHECK(!contains(text, "global __cc_strlen:"));
-	CHECK(contains(text, "0x80808080")); // the zero-byte test the routine scans with
+	CHECK(contains(text, "mscan r1, r2, r3")); // one scan for the zero byte
 
 	std::string_view memchrSource =
 		"int f(char* s, int n, char c) { int i; for (i = 0; i < n; i = i + 1) { if (s[i] == c) break; } return i; }";
@@ -2121,7 +2127,7 @@ TEST(codegen, recognized_search_loops_emit_and_call_their_word_routines)
 	CHECK(contains(memchrText, "__cc_memchr_index:"));
 	CHECK(!contains(memchrText, "global __cc_memchr_index:"));
 	CHECK(contains(memchrText, "ifle r2, 0, .cmi_none")); // a non-positive bound matches nothing
-	CHECK(contains(memchrText, "cmi_align"));             // and an unaligned base still gets words
+	CHECK(contains(memchrText, "mscan r0, r1, r2"));      // one scan for the byte
 
 	// With the idiom off both stay loops.
 	CHECK(!contains(atO2Without(strlenSource, &support::OptimizationOptions::loopIdioms), "__cc_strlen"));

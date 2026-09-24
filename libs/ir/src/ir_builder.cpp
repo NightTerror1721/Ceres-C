@@ -2271,6 +2271,26 @@ namespace ceresc::ir
 			if (argument->type() && argument->type()->isWideInteger())
 				rejectWideFeature(loc, "a 64-bit operand to a builtin");
 
+		// memcpy and memset: a call to the unit's block routine, which codegen carries (one MCPY or MSET),
+		// and the destination as the value. The Params sit immediately before the Call, as codegen reads
+		// them back by position.
+		if (node.builtin() == ast::Builtin::Memcpy || node.builtin() == ast::Builtin::Memset)
+		{
+			IrValue destination = lowerExpr(args[0]);
+			IrValue second = lowerExpr(args[1]);
+			IrValue count = lowerExpr(args[2]);
+			emitVoid(loc, IrParamPayload{ destination, false, false });
+			emitVoid(loc, IrParamPayload{ second, false, false });
+			emitVoid(loc, IrParamPayload{ count, false, false });
+			IrCallPayload payload;
+			payload.callee = node.builtin() == ast::Builtin::Memcpy ? "__cc_memcpy" : "__cc_memset";
+			payload.hasResult = false;
+			payload.argCount = 3;
+			emitVoid(loc, payload);
+			_lastValue = destination;
+			return;
+		}
+
 		// The overflow builtins expand to the operation, a store, and an overflow test:
 		//   add.u:  sum < a                       add.s:  ((a^sum) & (b^sum)) < 0
 		//   sub.u:  a < b                         sub.s:  ((a^b) & (a^diff)) < 0

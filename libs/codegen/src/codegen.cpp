@@ -1382,6 +1382,8 @@ namespace ceresc::codegen
 					case Builtin::AddOverflow:
 					case Builtin::SubOverflow:
 					case Builtin::MulOverflow:
+					case Builtin::Memcpy:       // calls by the time they reach here (ir_builder.cpp)
+					case Builtin::Memset:
 					case Builtin::StackPointer: // handled above, before this switch
 					case Builtin::Flags:        // ... and so is this one
 						break;
@@ -2440,188 +2442,61 @@ namespace ceresc::codegen
 
 	void CodeGen::emitCarriedRoutines()
 	{
-		// The byte-fill loop's word-at-a-time routine (ir_optimizer.cpp's lowerLoopIdioms). A leaf
-		// with no frame: it uses r0-r7 only and returns nothing, so it is just `ret`. The counter is
-		// signed, so a non-positive `n` fills nothing - exactly what the `for (i = 0; i < n; i++)`
-		// it replaces did. File-level (no `global`), so each unit carries its own copy and two units
-		// that both use the idiom never collide at link time.
+		// The loop-idiom routines (ir_optimizer.cpp's lowerLoopIdioms) and the memcpy/memset builtins'
+		// (ir_builder.cpp). Each is one of the machine's block instructions (CeresASM 6b6372b), which do the
+		// whole job a page per step: a leaf with no frame that touches r0-r2 (r7 for the index) and
+		// returns nothing, so it is just `ret` after. The counts are signed, so a non-positive `n` does
+		// nothing - exactly what the `for (i = 0; i < n; i++)` each replaces did. File-level (no `global`),
+		// so each unit carries its own copy and two units that both use one never collide at link time.
 		if (_usesMemset)
 		{
-			_emitter.raw("// emitted because a byte-fill loop was recognized (docs/14 O15)");
+			_emitter.raw("// emitted because a byte-fill loop or __builtin_memset asked for it (docs/14 O15)");
 			_emitter.label("__cc_memset");
 			_emitter.instr("ifle r2, 0, .ccm_done");   // a signed count <= 0 fills nothing
-			_emitter.instr("and  r1, r1, 255");        // keep only the low byte of the fill value
-			_emitter.instr("la   r5, 0x01010101");
-			_emitter.instr("mul  r5, r1, r5");         // replicate it into all four bytes
-			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifeq r6, 0, .ccm_words");  // already aligned: straight to words
-			_emitter.localLabel("ccm_align");
-			_emitter.instr("ifeq r2, 0, .ccm_done");
-			_emitter.instr("strb [r0], r1");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifne r6, 0, .ccm_align"); // bytes to the edge, then fall into the word loop
-			_emitter.localLabel("ccm_words");
-			_emitter.instr("ifbl r2, 4, .ccm_tail");
-			_emitter.instr("str  [r0], r5");
-			_emitter.instr("add  r0, r0, 4");
-			_emitter.instr("sub  r2, r2, 4");
-			_emitter.instr("jp   .ccm_words");
-			_emitter.localLabel("ccm_tail");
-			_emitter.instr("ifeq r2, 0, .ccm_done");
-			_emitter.instr("strb [r0], r1");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("jp   .ccm_tail");
+			_emitter.instr("mset r0, r1, r2");         // the low byte of r1, r2 times from r0
 			_emitter.localLabel("ccm_done");
 			_emitter.instr("ret");
 		}
 
-		// The byte-copy loop's word-at-a-time routine. The C loop it replaces is a FORWARD byte
-		// copy, well defined even when the ranges overlap (with `d > s` it repeats bytes), so this
-		// is not `memcpy`: it copies words only where that is provably the same - `d <= s` (a
-		// forward copy cannot clobber a byte it has not read) or the ranges disjoint - and falls
-		// back to a faithful forward byte copy for the `d > s` overlap. A signed count <= 0 copies
-		// nothing.
+		// The byte-copy loop's routine. The C loop it replaces is a FORWARD byte copy, well defined even
+		// when the ranges overlap (with `d > s` it repeats bytes) - and that is exactly what `mcpy` is
+		// defined to do, so no overlap test is needed.
 		if (_usesMemcpy)
 		{
-			_emitter.raw("// emitted because a byte-copy loop was recognized (docs/14 O15)");
+			_emitter.raw("// emitted because a byte-copy loop or __builtin_memcpy asked for it (docs/14 O15)");
 			_emitter.label("__cc_memcpy");
 			_emitter.instr("ifle r2, 0, .ccm2_done");  // a signed count <= 0 copies nothing
-			_emitter.instr("ifbe r0, r1, .ccm2_fast"); // d <= s: a forward copy is always safe
-			_emitter.instr("sub  r5, r0, r1");         // d > s here, so d - s cannot wrap
-			_emitter.instr("ifae r5, r2, .ccm2_fast"); // d - s >= n: the ranges are disjoint
-			_emitter.localLabel("ccm2_slow");          // d > s and overlapping: faithful byte copy
-			_emitter.instr("ifeq r2, 0, .ccm2_done");
-			_emitter.instr("ldrb r5, [r1]");
-			_emitter.instr("strb [r0], r5");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("add  r1, r1, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("jp   .ccm2_slow");
-			_emitter.localLabel("ccm2_fast");
-			_emitter.instr("xor  r6, r0, r1");
-			_emitter.instr("and  r6, r6, 3");
-			_emitter.instr("ifne r6, 0, .ccm2_tail");  // different misalignments: bytes only
-			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifeq r6, 0, .ccm2_words"); // both already aligned
-			_emitter.localLabel("ccm2_align");         // same misalignment: align both with bytes
-			_emitter.instr("ifeq r2, 0, .ccm2_done");
-			_emitter.instr("ldrb r6, [r1]");
-			_emitter.instr("strb [r0], r6");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("add  r1, r1, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifne r6, 0, .ccm2_align"); // now both word-aligned: fall into the word loop
-			_emitter.localLabel("ccm2_words");
-			_emitter.instr("ifbl r2, 4, .ccm2_tail");
-			_emitter.instr("ldr  r5, [r1]");
-			_emitter.instr("str  [r0], r5");
-			_emitter.instr("add  r0, r0, 4");
-			_emitter.instr("add  r1, r1, 4");
-			_emitter.instr("sub  r2, r2, 4");
-			_emitter.instr("jp   .ccm2_words");
-			_emitter.localLabel("ccm2_tail");
-			_emitter.instr("ifeq r2, 0, .ccm2_done");
-			_emitter.instr("ldrb r5, [r1]");
-			_emitter.instr("strb [r0], r5");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("add  r1, r1, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("jp   .ccm2_tail");
+			_emitter.instr("mcpy r0, r1, r2");         // forward, lowest byte first
 			_emitter.localLabel("ccm2_done");
 			_emitter.instr("ret");
 		}
 
-		// The strlen scan's word-at-a-time routine: the number of bytes before the terminator. It
-		// walks bytes until the pointer is word-aligned, then tests a word at a time for a zero byte
-		// with ((w - 0x01010101) & ~w & 0x80808080), and finishes the word holding the terminator a
-		// byte at a time.
+		// The strlen scan's routine: the number of bytes before the terminator, found by one `mscan` for
+		// a zero byte with no limit of its own.
 		if (_usesStrlen)
 		{
 			_emitter.raw("// emitted because a strlen-style scan was recognized (docs/14 O15)");
 			_emitter.label("__cc_strlen");
 			_emitter.instr("mov  r1, r0");
-			_emitter.localLabel("csl_align");
-			_emitter.instr("and  r2, r1, 3");
-			_emitter.instr("ifeq r2, 0, .csl_words");
-			_emitter.instr("ldrb r2, [r1]");
-			_emitter.instr("ifeq r2, 0, .csl_done");
-			_emitter.instr("add  r1, r1, 1");
-			_emitter.instr("jp   .csl_align");
-			_emitter.localLabel("csl_words");
-			_emitter.instr("la   r3, 0x01010101");
-			_emitter.instr("la   r4, 0x80808080");
-			_emitter.localLabel("csl_wloop");
-			_emitter.instr("ldr  r2, [r1]");
-			_emitter.instr("sub  r5, r2, r3");
-			_emitter.instr("not  r6, r2");
-			_emitter.instr("and  r5, r5, r6");
-			_emitter.instr("and  r5, r5, r4");
-			_emitter.instr("ifne r5, 0, .csl_bytes"); // the terminator is in this word
-			_emitter.instr("add  r1, r1, 4");
-			_emitter.instr("jp   .csl_wloop");
-			_emitter.localLabel("csl_bytes");
-			_emitter.instr("ldrb r2, [r1]");
-			_emitter.instr("ifeq r2, 0, .csl_done");
-			_emitter.instr("add  r1, r1, 1");
-			_emitter.instr("jp   .csl_bytes");
-			_emitter.localLabel("csl_done");
-			_emitter.instr("sub  r0, r1, r0"); // length = end - start
+			_emitter.instr("li   r2, 0");
+			_emitter.instr("la   r3, 0xFFFFFFFF");
+			_emitter.instr("mscan r1, r2, r3");        // r1 = the terminator
+			_emitter.instr("sub  r0, r1, r0");         // length = end - start
 			_emitter.instr("ret");
 		}
 
-		// The memchr scan's word-at-a-time routine: the index of the first byte equal to `c`, or n.
-		// A word is tested for a `c` byte by xoring it with c repeated four times first, so a
-		// matching byte becomes zero, and then running the zero-byte test on the result.
+		// The memchr scan's routine: the index of the first byte equal to `c`, or n. `mscan` leaves the
+		// pointer at the byte, or past the block when there is none, so both answers are that pointer
+		// less the base.
 		if (_usesMemchrIndex)
 		{
 			_emitter.raw("// emitted because a memchr-style scan was recognized (docs/14 O15)");
 			_emitter.label("__cc_memchr_index");
-			_emitter.instr("and  r1, r1, 255");
 			_emitter.instr("mov  r7, r0");             // the base, for the index at the end
 			_emitter.instr("ifle r2, 0, .cmi_none");   // a signed count <= 0 matches nothing
-			_emitter.instr("la   r3, 0x01010101");
-			_emitter.instr("mul  r5, r1, r3");         // c replicated into all four bytes
-			_emitter.instr("la   r4, 0x80808080");
-			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifeq r6, 0, .cmi_words");  // already aligned: straight to words
-			_emitter.localLabel("cmi_align");
-			_emitter.instr("ifeq r2, 0, .cmi_none");
-			_emitter.instr("ldrb r6, [r0]");
-			_emitter.instr("and  r1, r5, 255");
-			_emitter.instr("ifeq r6, r1, .cmi_found");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("and  r6, r0, 3");
-			_emitter.instr("ifne r6, 0, .cmi_align"); // bytes to the edge, then fall into the word loop
-			_emitter.localLabel("cmi_words");
-			_emitter.instr("ifbl r2, 4, .cmi_tail");   // fewer than four bytes left
-			_emitter.instr("ldr  r6, [r0]");
-			_emitter.instr("xor  r6, r6, r5");         // a byte equal to c is now zero
-			_emitter.instr("not  r1, r6");
-			_emitter.instr("sub  r6, r6, r3");
-			_emitter.instr("and  r6, r6, r1");
-			_emitter.instr("and  r6, r6, r4");
-			_emitter.instr("ifne r6, 0, .cmi_tail");   // find it a byte at a time
-			_emitter.instr("add  r0, r0, 4");
-			_emitter.instr("sub  r2, r2, 4");
-			_emitter.instr("jp   .cmi_words");
-			_emitter.localLabel("cmi_tail");
-			_emitter.instr("ifeq r2, 0, .cmi_none");
-			_emitter.instr("ldrb r6, [r0]");
-			_emitter.instr("and  r1, r5, 255");        // c, in case the word loop clobbered r1
-			_emitter.instr("ifeq r6, r1, .cmi_found");
-			_emitter.instr("add  r0, r0, 1");
-			_emitter.instr("sub  r2, r2, 1");
-			_emitter.instr("jp   .cmi_tail");
-			_emitter.localLabel("cmi_found");
-			_emitter.instr("sub  r0, r0, r7");         // index of the match
-			_emitter.instr("ret");
+			_emitter.instr("mscan r0, r1, r2");        // the low byte of r1; r0 at it, or past the block
 			_emitter.localLabel("cmi_none");
-			_emitter.instr("sub  r0, r0, r7");         // == n (or 0 when nothing was scanned)
+			_emitter.instr("sub  r0, r0, r7");         // index of the match, or n (0 when nothing was scanned)
 			_emitter.instr("ret");
 		}
 
