@@ -72,7 +72,24 @@ namespace ceresc::ir
 		for (const auto& function : module.functions())
 			printFunction(*function);
 		for (const IrGlobalString& literal : module.stringLiterals())
-			_output += std::format("global \"{}\" = \"{}\"\n", literal.name, literal.value.view());
+		{
+			if (literal.elementSize == 1)
+			{
+				_output += std::format("global \"{}\" = \"{}\"\n", literal.name, literal.value.view());
+				continue;
+			}
+			// A wide literal: its code units, which as bytes would print as noise.
+			std::string_view bytes = literal.value.view();
+			_output += std::format("global \"{}\" = u{}[", literal.name, literal.elementSize * 8);
+			for (usize i = 0; i + literal.elementSize <= bytes.size(); i += literal.elementSize)
+			{
+				u32 unit = 0;
+				for (u32 b = 0; b < literal.elementSize; ++b)
+					unit |= static_cast<u32>(static_cast<u8>(bytes[i + b])) << (8 * b);
+				_output += std::format("{}{}", i == 0 ? "" : ", ", unit);
+			}
+			_output += "]\n";
+		}
 		return _output;
 	}
 

@@ -66,6 +66,8 @@ namespace ceresc::sema
 		void visit(ast::IntLiteralExpr& node) override;
 		void visit(ast::FloatLiteralExpr& node) override;
 		void visit(ast::CharLiteralExpr& node) override;
+		// The element type of a string literal with this prefix, and so what it points to.
+		static const ast::Type* stringElementType(support::LiteralEncoding encoding) noexcept;
 		void visit(ast::BoolLiteralExpr& node) override;
 		void visit(ast::StringLiteralExpr& node) override;
 		void visit(ast::NameExpr& node) override;

@@ -3,6 +3,7 @@
 #include <charconv>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace ceresc::lexer
 {
@@ -54,6 +55,15 @@ namespace ceresc::lexer
 
 		char c = _cursor.peek();
 
+		// L'x', u"x", U"x", u8"x": a prefixed literal, read before the identifier the prefix would
+		// otherwise start.
+		support::LiteralEncoding encoding = support::LiteralEncoding::Plain;
+		if (u32 prefixLength = literalPrefixLength(0, encoding); prefixLength != 0)
+		{
+			return _cursor.peek(static_cast<ioffset>(prefixLength)) == '"' ? scanStringLiteral(encoding, prefixLength)
+				: scanCharLiteral(encoding, prefixLength);
+		}
+
 		if (isIdentifierStart(c))
 			return scanIdentifierOrKeyword();
 
@@ -61,10 +71,10 @@ namespace ceresc::lexer
 			return scanNumber();
 
 		if (c == '"')
-			return scanStringLiteral();
+			return scanStringLiteral(support::LiteralEncoding::Plain, 0);
 
 		if (c == '\'')
-			return scanCharLiteral();
+			return scanCharLiteral(support::LiteralEncoding::Plain, 0);
 
 		return scanOperatorOrPunctuation();
 	}
@@ -342,61 +352,235 @@ namespace ceresc::lexer
 		return makeIntToken(lexeme, startLoc, 10, digits, isUnsigned, isLongLong, isLong);
 	}
 
-	char Lexer::scanEscapeSequence()
+	u32 Lexer::literalPrefixLength(uoffset offset, support::LiteralEncoding& encoding) const noexcept
 	{
-		// Called right after the backslash has already been consumed.
+		// 'L', 'u', 'U' or 'u8' right before a quote. Anything else - 'Lx', 'u8x', a lone 'u' - is the
+		// start of an identifier, which is what it always was.
+		u32 length = 0;
+		switch (_cursor.peek(static_cast<ioffset>(offset)))
+		{
+			case 'L': encoding = support::LiteralEncoding::Wide; length = 1; break;
+			case 'U': encoding = support::LiteralEncoding::Utf32; length = 1; break;
+			case 'u':
+				if (_cursor.peek(static_cast<ioffset>(offset + 1)) == '8')
+				{
+					encoding = support::LiteralEncoding::Utf8;
+					length = 2;
+				}
+				else
+				{
+					encoding = support::LiteralEncoding::Utf16;
+					length = 1;
+				}
+				break;
+			default: return 0;
+		}
+		const char quote = _cursor.peek(static_cast<ioffset>(offset + length));
+		return quote == '"' || quote == '\'' ? length : 0;
+	}
+
+	Lexer::LiteralUnit Lexer::scanEscapeSequence()
+	{
+		// Called right after the backslash has already been consumed. A named escape, '\x' and an
+		// octal escape give a code unit as written; '\u' and '\U' give a code point, which the
+		// literal's encoding turns into as many units as it takes.
 		SourceLocation loc = currentLocation();
 
 		if (_cursor.isAtEnd() || _cursor.peek() == '\n')
 		{
 			_diagnostics.error(DiagId::UnterminatedEscapeSequence, loc, "unterminated escape sequence");
-			return '\0';
+			return LiteralUnit{ 0, false, loc };
 		}
 
 		char c = _cursor.advance();
+		auto unit = [&](u32 value) { return LiteralUnit{ value, false, loc }; };
 		switch (c)
 		{
-			case 'n': return '\n';
-			case 't': return '\t';
-			case 'r': return '\r';
-			case '0': return '\0';
-			case '\\': return '\\';
-			case '\'': return '\'';
-			case '"': return '"';
-			case 'a': return '\a';
-			case 'b': return '\b';
-			case 'f': return '\f';
-			case 'v': return '\v';
+			case 'n': return unit('\n');
+			case 't': return unit('\t');
+			case 'r': return unit('\r');
+			case '\\': return unit('\\');
+			case '\'': return unit('\'');
+			case '"': return unit('"');
+			case '?': return unit('?');
+			case 'a': return unit('\a');
+			case 'b': return unit('\b');
+			case 'f': return unit('\f');
+			case 'v': return unit('\v');
+			case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7':
+			{
+				// Up to three octal digits: '\0', '\12', '\101'.
+				u32 value = static_cast<u32>(c - '0');
+				for (int digits = 1; digits < 3 && _cursor.peek() >= '0' && _cursor.peek() <= '7'; ++digits)
+					value = value * 8 + static_cast<u32>(_cursor.advance() - '0');
+				return unit(value);
+			}
 			case 'x':
 			{
-				int value = 0;
+				// Every hex digit that follows belongs to the escape, as in C; the value has to fit
+				// one code unit of the literal, which is checked once its encoding is known.
+				u64 value = 0;
 				int digitCount = 0;
-				while (digitCount < 2 && isHexDigit(_cursor.peek()))
+				while (isHexDigit(_cursor.peek()))
 				{
-					value = value * 16 + hexDigitValue(_cursor.advance());
+					value = value * 16 + static_cast<u64>(hexDigitValue(_cursor.advance()));
+					if (value > 0xFFFFFFFFull)
+						value = 0x100000000ull; // sticky: too large for any code unit
 					digitCount++;
 				}
 
 				if (digitCount == 0)
 				{
 					_diagnostics.error(DiagId::HexEscapeHasNoDigits, loc, "\\x used with no following hex digits");
-					return '\0';
+					return unit(0);
 				}
-				return static_cast<char>(value);
+				if (value > 0xFFFFFFFFull)
+				{
+					_diagnostics.error(DiagId::EscapeValueOutOfRange, loc, "hex escape sequence is out of range");
+					return unit(0);
+				}
+				return unit(static_cast<u32>(value));
+			}
+			case 'u':
+			case 'U':
+			{
+				// A universal character name: exactly four ('\u') or eight ('\U') hex digits naming a
+				// Unicode code point, which may not be a surrogate or lie past U+10FFFF.
+				const int wanted = c == 'u' ? 4 : 8;
+				u32 value = 0;
+				int digitCount = 0;
+				while (digitCount < wanted && isHexDigit(_cursor.peek()))
+				{
+					value = value * 16 + static_cast<u32>(hexDigitValue(_cursor.advance()));
+					digitCount++;
+				}
+				if (digitCount != wanted)
+				{
+					_diagnostics.error(DiagId::InvalidUniversalCharacterName, loc, "\\{} needs exactly {} hex digits", c, wanted);
+					return unit(0);
+				}
+				if ((value >= 0xD800 && value <= 0xDFFF) || value > 0x10FFFF)
+				{
+					_diagnostics.error(DiagId::InvalidUniversalCharacterName, loc, "\\{} names U+{:04X}, which is not a Unicode character", c, value);
+					return unit(0);
+				}
+				return LiteralUnit{ value, true, loc };
 			}
 			default:
 				_diagnostics.error(DiagId::UnknownEscapeSequence, loc, "unknown escape sequence '\\{}'", c);
-				return c;
+				return unit(static_cast<u8>(c));
 		}
 	}
 
-	Token Lexer::scanCharLiteral()
+	Lexer::LiteralUnit Lexer::scanSourceCharacter(bool decodeUtf8)
+	{
+		// The source is read as UTF-8. A well-formed sequence is one code point, which a wide literal
+		// re-encodes (L"é" is one wchar_t, 0xE9) and a narrow one writes back as the same bytes; a
+		// byte that does not start one is kept as a code unit of its own.
+		SourceLocation loc = currentLocation();
+		const u8 lead = static_cast<u8>(_cursor.advance());
+		if (!decodeUtf8 || lead < 0x80)
+			return LiteralUnit{ lead, false, loc };
+
+		u32 length = 0;
+		u32 value = 0;
+		u32 minimum = 0;
+		if (lead >= 0xC2 && lead <= 0xDF) { length = 2; value = lead & 0x1Fu; minimum = 0x80; }
+		else if (lead >= 0xE0 && lead <= 0xEF) { length = 3; value = lead & 0x0Fu; minimum = 0x800; }
+		else if (lead >= 0xF0 && lead <= 0xF4) { length = 4; value = lead & 0x07u; minimum = 0x10000; }
+		else
+			return LiteralUnit{ lead, false, loc };
+
+		for (u32 i = 1; i < length; ++i)
+		{
+			const u8 next = static_cast<u8>(_cursor.peek(static_cast<ioffset>(i - 1)));
+			if ((next & 0xC0u) != 0x80u)
+				return LiteralUnit{ lead, false, loc };
+			value = (value << 6) | (next & 0x3Fu);
+		}
+		if (value < minimum || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF))
+			return LiteralUnit{ lead, false, loc };
+
+		_cursor.advance(length - 1);
+		return LiteralUnit{ value, true, loc };
+	}
+
+	namespace
+	{
+		void appendCodeUnit(std::string& out, u32 unit, u32 size)
+		{
+			// Little-endian, like the VM: the bytes are the array's memory image as they stand.
+			for (u32 i = 0; i < size; ++i)
+				out.push_back(static_cast<char>((unit >> (8 * i)) & 0xFFu));
+		}
+	}
+
+	bool Lexer::encodeLiteralUnit(std::string& out, const LiteralUnit& unit, support::LiteralEncoding encoding)
+	{
+		const u32 size = support::codeUnitSize(encoding);
+		if (!unit.isCodePoint)
+		{
+			if (unit.value > support::maxCodeUnit(encoding))
+			{
+				_diagnostics.error(DiagId::EscapeValueOutOfRange, unit.location, "escape sequence value 0x{:X} does not fit a {}-byte {}character",
+					unit.value, size, support::literalPrefix(encoding));
+				return false;
+			}
+			appendCodeUnit(out, unit.value, size);
+			return true;
+		}
+
+		const u32 cp = unit.value;
+		switch (encoding)
+		{
+			case support::LiteralEncoding::Plain:
+			case support::LiteralEncoding::Utf8:
+				if (cp < 0x80)
+					out.push_back(static_cast<char>(cp));
+				else if (cp < 0x800)
+				{
+					out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+					out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+				}
+				else if (cp < 0x10000)
+				{
+					out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+					out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+					out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+				}
+				else
+				{
+					out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+					out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+					out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+					out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+				}
+				return true;
+			case support::LiteralEncoding::Utf16:
+				if (cp < 0x10000)
+					appendCodeUnit(out, cp, 2);
+				else
+				{
+					appendCodeUnit(out, 0xD800u + ((cp - 0x10000u) >> 10), 2);
+					appendCodeUnit(out, 0xDC00u + ((cp - 0x10000u) & 0x3FFu), 2);
+				}
+				return true;
+			default:
+				appendCodeUnit(out, cp, 4);
+				return true;
+		}
+	}
+
+	Token Lexer::scanCharLiteral(support::LiteralEncoding encoding, u32 prefixLength)
 	{
 		SourceLocation startLoc = currentLocation();
 		uoffset startPos = _cursor.position();
+		if (prefixLength != 0)
+			_cursor.advance(prefixLength);
 		_cursor.advance(); // opening '
 
-		char value = '\0';
+		LiteralUnit unit{ 0, false, startLoc };
+		bool haveUnit = false;
 
 		if (_cursor.peek() == '\'')
 		{
@@ -412,12 +596,15 @@ namespace ceresc::lexer
 			if (_cursor.peek() == '\\')
 			{
 				_cursor.advance();
-				value = scanEscapeSequence();
+				unit = scanEscapeSequence();
 			}
 			else
 			{
-				value = _cursor.advance();
+				// A plain 'é' stays two bytes, and so the multi-character error below, as before; a
+				// prefixed one is the code point the prefix encodes.
+				unit = scanSourceCharacter(encoding != support::LiteralEncoding::Plain);
 			}
+			haveUnit = true;
 
 			if (_cursor.peek() == '\'')
 			{
@@ -436,24 +623,60 @@ namespace ceresc::lexer
 		}
 
 		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
-		return Token::makeLiteralChar(lexeme, value, startLoc);
+
+		// One code unit of the literal's encoding, and its value as the literal's type has it: a
+		// plain char is signed, so '\xFF' is -1; wchar_t is int; the others are unsigned.
+		u32 value = 0;
+		if (haveUnit)
+		{
+			std::string encoded;
+			if (encodeLiteralUnit(encoded, unit, encoding))
+			{
+				const u32 size = support::codeUnitSize(encoding);
+				if (encoded.size() != size)
+				{
+					_diagnostics.error(DiagId::CharacterNotRepresentable, startLoc, "character literal {} needs {} code units; it can hold one",
+						lexeme, encoded.size() / size);
+				}
+				else
+				{
+					for (u32 i = 0; i < size; ++i)
+						value |= static_cast<u32>(static_cast<u8>(encoded[i])) << (8 * i);
+				}
+			}
+		}
+
+		TokenValue::CharValue typed = 0;
+		switch (encoding)
+		{
+			case support::LiteralEncoding::Plain: typed = static_cast<signed char>(static_cast<u8>(value)); break;
+			case support::LiteralEncoding::Wide: typed = static_cast<i32>(value); break;
+			default: typed = static_cast<TokenValue::CharValue>(value); break;
+		}
+		return Token::makeLiteralChar(lexeme, typed, startLoc, encoding);
 	}
 
-	Token Lexer::scanStringLiteral()
+	Token Lexer::scanStringLiteral(support::LiteralEncoding encoding, u32 prefixLength)
 	{
 		SourceLocation startLoc = currentLocation();
 		uoffset startPos = _cursor.position();
 
-		std::string decoded;
+		std::vector<LiteralUnit> units;
 		uoffset endPos = startPos;
 
 		// C joins adjacent string literals into one, before the grammar ever sees them - which is
 		// what makes `"a" "b"` a single 3-byte object rather than a syntax error, and what lets a
 		// long string be written over several lines. One token comes out of the whole run, so the
 		// parser, sizeof and the .rodata entry all see exactly what the program meant to write.
+		//
+		// The pieces are read as code points and escapes first and encoded once the run is over,
+		// because an unprefixed piece takes the prefix of any other piece (C11 6.4.5p5): "a" L"b"
+		// is a wide string, "a" included. Two different prefixes cannot be joined.
 		for (;;)
 		{
 			SourceLocation pieceLoc = currentLocation();
+			if (prefixLength != 0)
+				_cursor.advance(prefixLength);
 			_cursor.advance(); // opening "
 			bool terminated = false;
 
@@ -470,11 +693,11 @@ namespace ceresc::lexer
 				if (c == '\\')
 				{
 					_cursor.advance();
-					decoded.push_back(scanEscapeSequence());
+					units.push_back(scanEscapeSequence());
 				}
 				else
 				{
-					decoded.push_back(_cursor.advance());
+					units.push_back(scanSourceCharacter(true));
 				}
 			}
 
@@ -493,16 +716,33 @@ namespace ceresc::lexer
 			// skipped exactly the same run on its next call, and putting the cursor back would mean
 			// skipTrivia() reporting an unterminated block comment here and then again there.
 			skipTrivia();
-			if (_cursor.isAtEnd() || _cursor.peek() != '"')
+			if (_cursor.isAtEnd())
 				break;
+			support::LiteralEncoding nextEncoding = support::LiteralEncoding::Plain;
+			prefixLength = _cursor.peek() == '"' ? 0 : literalPrefixLength(0, nextEncoding);
+			if (_cursor.peek(static_cast<ioffset>(prefixLength)) != '"')
+				break;
+			if (prefixLength != 0 && nextEncoding != encoding)
+			{
+				if (encoding == support::LiteralEncoding::Plain)
+					encoding = nextEncoding;
+				else
+					_diagnostics.error(DiagId::MixedStringLiteralPrefixes, currentLocation(), "cannot join a {}\"...\" string literal to a {}\"...\" one",
+						support::literalPrefix(nextEncoding), support::literalPrefix(encoding));
+			}
 		}
 
+		std::string encoded;
+		encoded.reserve(units.size() * support::codeUnitSize(encoding));
+		for (const LiteralUnit& unit : units)
+			encodeLiteralUnit(encoded, unit, encoding);
+
 		std::string_view lexeme = _cursor.buffer().substr(startPos, endPos - startPos);
-		support::PooledString interned = _stringPool.intern(decoded);
+		support::PooledString interned = _stringPool.intern(encoded);
 		if (!interned)
 			_diagnostics.error(DiagId::StringPoolExhausted, startLoc, "out of memory interning string literal");
 
-		return Token::makeLiteralString(lexeme, interned, startLoc);
+		return Token::makeLiteralString(lexeme, interned, startLoc, encoding);
 	}
 
 	Token Lexer::scanOperatorOrPunctuation()

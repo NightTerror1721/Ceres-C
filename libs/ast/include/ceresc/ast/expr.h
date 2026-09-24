@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ceresc/support/literal_encoding.h>
 #include <ceresc/support/source_location.h>
 #include <ceresc/support/string_pool.h>
 #include "type.h"
@@ -142,13 +143,17 @@ namespace ceresc::ast
 	class CharLiteralExpr final : public Expr
 	{
 	private:
-		char _value;
+		i64 _value; // as the literal's type has it: '\xFF' is -1, u'\xFFFF' is 65535
+		support::LiteralEncoding _encoding;
 
 	public:
-		CharLiteralExpr(support::SourceLocation location, char value) noexcept : Expr(location), _value(value) {}
+		CharLiteralExpr(support::SourceLocation location, i64 value, support::LiteralEncoding encoding = support::LiteralEncoding::Plain) noexcept :
+			Expr(location), _value(value), _encoding(encoding) {}
 
 	public:
-		char value() const noexcept { return _value; }
+		i64 value() const noexcept { return _value; }
+		// The L/u/U/u8 prefix, which gives the literal its type (support/literal_encoding.h).
+		support::LiteralEncoding encoding() const noexcept { return _encoding; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<CharLiteralExpr>, "CharLiteralExpr must be trivially destructible (Arena-allocated)");
@@ -171,12 +176,35 @@ namespace ceresc::ast
 	{
 	private:
 		support::PooledString _value; // interned - escapes change the literal's length, so this can't be a raw view into the source buffer (see token.h's TokenValue)
+		support::LiteralEncoding _encoding;
 
 	public:
-		StringLiteralExpr(support::SourceLocation location, support::PooledString value) noexcept : Expr(location), _value(value) {}
+		StringLiteralExpr(support::SourceLocation location, support::PooledString value, support::LiteralEncoding encoding = support::LiteralEncoding::Plain) noexcept :
+			Expr(location), _value(value), _encoding(encoding) {}
 
 	public:
+		// The code units as little-endian bytes, without the terminating zero: for a plain or u8
+		// literal, its characters; for a u, U or L one, elementSize() bytes per unit.
 		support::PooledString value() const noexcept { return _value; }
+		support::LiteralEncoding encoding() const noexcept { return _encoding; }
+		u32 elementSize() const noexcept { return support::codeUnitSize(_encoding); }
+		// Code units, not counting the terminating zero.
+		usize length() const noexcept { return _value.view().size() / elementSize(); }
+		// Whether this literal can fill an array of `element` (C11 6.7.9p14-15): a plain or u8 one a
+		// character array, a wide one an array of its own element type - char16_t (unsigned short),
+		// char32_t (unsigned int) or wchar_t (int), qualified or not.
+		bool initializesArrayOf(const Type* element) const noexcept
+		{
+			if (!element)
+				return false;
+			switch (_encoding)
+			{
+				case support::LiteralEncoding::Utf16: return element->isUShort();
+				case support::LiteralEncoding::Utf32: return element->isUInt();
+				case support::LiteralEncoding::Wide: return element->isInt();
+				default: return element->isChar() || element->isSChar() || element->isUChar();
+			}
+		}
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<StringLiteralExpr>, "StringLiteralExpr must be trivially destructible (Arena-allocated)");

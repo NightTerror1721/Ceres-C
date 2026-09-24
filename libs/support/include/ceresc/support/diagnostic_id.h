@@ -65,6 +65,10 @@ namespace ceresc::support
 		IntegerLiteralOutOfRange      = kDiagnosticWarningBit | 15,
 		InvalidOctalDigit             = 16,
 		HexFloatWithoutExponent       = 17,
+		InvalidUniversalCharacterName = 18,
+		EscapeValueOutOfRange         = 19,
+		CharacterNotRepresentable     = 20,
+		MixedStringLiteralPrefixes    = 21,
 
 		// ---- 1xxx  preprocessor ---------------------------------------------------------------
 		IfExpressionSyntax              = 1001,

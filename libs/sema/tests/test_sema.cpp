@@ -117,6 +117,36 @@ TEST(sema, literal_types)
 	CHECK_EQ(typeOfMainLastExpr("int main() { \"hi\"; }"), "char*");
 }
 
+TEST(sema, a_literal_prefix_selects_the_character_type)
+{
+	// wchar_t is int, char16_t unsigned short, char32_t unsigned int, C23's char8_t unsigned char;
+	// a u8 string keeps char elements.
+	CHECK_EQ(typeOfMainLastExpr("int main() { L'a'; }"), "int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { u'a'; }"), "unsigned short");
+	CHECK_EQ(typeOfMainLastExpr("int main() { U'a'; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { u8'a'; }"), "unsigned char");
+	CHECK_EQ(typeOfMainLastExpr("int main() { L\"a\"; }"), "int*");
+	CHECK_EQ(typeOfMainLastExpr("int main() { u\"a\"; }"), "unsigned short*");
+	CHECK_EQ(typeOfMainLastExpr("int main() { U\"a\"; }"), "unsigned int*");
+	CHECK_EQ(typeOfMainLastExpr("int main() { u8\"a\"; }"), "char*");
+}
+
+TEST(sema, a_wide_string_initializes_an_array_of_its_own_element_type)
+{
+	CHECK(checkSource("int w[3] = L\"ab\"; unsigned short s[] = u\"abc\"; unsigned int t[] = { U\"xy\" }; char c[] = u8\"x\";").ok);
+	CHECK(checkSource("const int w[] = L\"ab\" \"cd\";").ok);
+
+	CheckOutcome wrongElement = checkSource("char c[3] = L\"ab\";");
+	CHECK(!wrongElement.ok);
+	CHECK(containsMessage(wrongElement, "requires an array of 'int'"));
+	CHECK(!checkSource("int w[3] = \"ab\";").ok);
+	CHECK(!checkSource("unsigned int w[3] = u\"ab\";").ok);
+
+	CheckOutcome tooLong = checkSource("int w[2] = L\"ab\";");
+	CHECK(!tooLong.ok);
+	CHECK(containsMessage(tooLong, "needs 3 element(s)"));
+}
+
 TEST(sema, literal_suffixes_select_the_type)
 {
 	// `u`/`U` makes an integer literal unsigned; `f`/`F` makes a float (and forces a digit run to one).

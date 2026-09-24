@@ -422,6 +422,8 @@ namespace ceresc::preprocessor
 				if (commentState || (c == '/' && i + 1 < current.size() && current[i + 1] == '*')) { usize end = current.find("*/", i + (commentState ? 0 : 2)); usize stop = end == std::string::npos ? current.size() : end + 2; next.append(current, i, stop - i); i = stop; commentState = end == std::string::npos; continue; }
 				if (!isIdentifierStart(c)) { next += c; ++i; continue; }
 				usize start = i; while (i < current.size() && isIdentifierChar(current[i])) ++i; std::string name(current.substr(start, i - start));
+				// L"x", u'x', U"x", u8"x": the prefix of a literal, never a macro name, even if one is defined.
+				if ((name == "L" || name == "u" || name == "U" || name == "u8") && i < current.size() && (current[i] == '"' || current[i] == '\'')) { next += name; continue; }
 				auto found = _macros.find(name); if (found == _macros.end()) { next += name; continue; }
 				const Macro& macro = found->second;
 				if (macro.builtin != Builtin::None) { next += expandBuiltin(macro.builtin, location); changed = true; continue; }

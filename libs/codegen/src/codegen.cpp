@@ -289,6 +289,38 @@ namespace ceresc::codegen
 			return result;
 		}
 
+		// Code unit `index` of a literal whose value holds `elementSize`-byte little-endian units.
+		u32 codeUnitAt(std::string_view bytes, usize index, u32 elementSize)
+		{
+			u32 unit = 0;
+			for (u32 b = 0; b < elementSize; ++b)
+				unit |= static_cast<u32>(static_cast<u8>(bytes[index * elementSize + b])) << (8 * b);
+			return unit;
+		}
+
+		// A string literal's own .rodata object: a u8 array spelled as a CASM string, or for a wide
+		// literal a u16/u32 array of its code units, zero unit last. CASM aligns each to its element.
+		std::string casmStringLet(std::string_view name, std::string_view bytes, u32 elementSize)
+		{
+			if (elementSize <= 1)
+				return std::format("let {}: u8[{}] = \"{}\"", name, bytes.size() + 1, escapeCasmString(bytes));
+			const usize count = bytes.size() / elementSize;
+			std::string text = std::format("let {}: u{}[{}] = [", name, elementSize * 8, count + 1);
+			for (usize i = 0; i < count; ++i)
+				text += std::format("{}, ", codeUnitAt(bytes, i, elementSize));
+			return text + "0]";
+		}
+
+		// `char s[] = { "abc" }`: braces around a string that fills the array are transparent.
+		const Expr* unwrapBracedString(const Type* type, const Expr* init)
+		{
+			const auto* list = dynamic_cast<const InitListExpr*>(init);
+			if (!type || !type->isArray() || !list || list->elements().size() != 1)
+				return init;
+			const auto* inner = dynamic_cast<const StringLiteralExpr*>(list->elements().front());
+			return inner && inner->initializesArrayOf(type->arrayElementType()) ? inner : init;
+		}
+
 	}
 
 	// ---- small helpers ----------------------------------------------------------------------------
@@ -2028,9 +2060,7 @@ namespace ceresc::codegen
 	{
 		for (const StringLiteralExpr* literal : _initializerStringOrder)
 		{
-			std::string_view value = literal->value().view();
-			_emitter.raw(std::format("let {}: u8[{}] = \"{}\"",
-				_initializerStringNames.at(literal), value.size() + 1, escapeCasmString(value)));
+			_emitter.raw(casmStringLet(_initializerStringNames.at(literal), literal->value().view(), literal->elementSize()));
 		}
 	}
 
@@ -2050,6 +2080,7 @@ namespace ceresc::codegen
 	{
 		if (!type || !init)
 			return std::nullopt;
+		init = unwrapBracedString(type, init);
 
 		// A string literal fills a char array as bytes, terminating zero and all - CASM's own
 		// `let greeting: u8[16] = "Hello, CeresVM!"` (11-Data-Types-and-Literals.md), which pads the
@@ -2062,6 +2093,20 @@ namespace ceresc::codegen
 		{
 			if (!type->isArray())
 				return addressConstantSymbol(init); // a POINTER takes the literal's address
+			if (literal->elementSize() != 1)
+			{
+				// A wide literal fills its array with code units, as a value list; wchar_t is int, so
+				// an L literal's units are written signed.
+				const bool isSigned = type->arrayElementType() && type->arrayElementType()->isInt();
+				std::string text = "[";
+				for (usize i = 0; i < literal->length(); ++i)
+				{
+					const u32 unit = codeUnitAt(literal->value().view(), i, literal->elementSize());
+					text += i == 0 ? "" : ", ";
+					text += isSigned ? std::format("{}", static_cast<i32>(unit)) : std::format("{}", unit);
+				}
+				return text + "]";
+			}
 			if (type->arrayElementType() && type->arrayElementType()->sizeInBytes() == 1)
 				return std::format("\"{}\"", escapeCasmString(literal->value().view()));
 
@@ -2126,6 +2171,7 @@ namespace ceresc::codegen
 		u32 size = type->sizeInBytes();
 		if (offset + size > image.size())
 			return false; // sema already reported the overflow
+		init = unwrapBracedString(type, init);
 
 		// A string literal fills a char ARRAY as bytes; it fills a POINTER with its own address, which
 		// is a symbol the assembler relocates, not a byte value.
@@ -2398,8 +2444,7 @@ namespace ceresc::codegen
 	{
 		for (const IrGlobalString& literal : module.stringLiterals())
 		{
-			std::string_view value = literal.value.view();
-			_emitter.raw(std::format("let {}: u8[{}] = \"{}\"", mangledName(literal.name), value.size() + 1, escapeCasmString(value)));
+			_emitter.raw(casmStringLet(mangledName(literal.name), literal.value.view(), literal.elementSize));
 		}
 	}
 

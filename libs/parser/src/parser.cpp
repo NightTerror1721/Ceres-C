@@ -642,8 +642,9 @@ namespace ceresc::parser
 			case TokenKind::LiteralChar:
 			{
 				auto value = _current.charValue();
+				auto encoding = _current.encoding();
 				advance();
-				return _arena.create<ast::CharLiteralExpr>(location, value);
+				return _arena.create<ast::CharLiteralExpr>(location, value, encoding);
 			}
 			case TokenKind::LiteralBool:
 			{
@@ -654,8 +655,9 @@ namespace ceresc::parser
 			case TokenKind::LiteralString:
 			{
 				auto value = _current.stringValue();
+				auto encoding = _current.encoding();
 				advance();
-				return _arena.create<ast::StringLiteralExpr>(location, value);
+				return _arena.create<ast::StringLiteralExpr>(location, value, encoding);
 			}
 			case TokenKind::LParen:
 			{
@@ -2287,14 +2289,19 @@ namespace ceresc::parser
 	{
 		if (!element || !initializer)
 			return -1;
-		// `char s[] = "abc"` - the characters and the terminating NUL
+		// `char s[] = "abc"` - the characters and the terminating NUL; `int w[] = L"abc"` the same in
+		// wide code units
 		if (const auto* text = dynamic_cast<const ast::StringLiteralExpr*>(initializer))
-		{
-			bool isCharElement = element->isChar() || element->isSChar() || element->isUChar();
-			return isCharElement ? static_cast<i64>(text->value().view().size()) + 1 : -1;
-		}
+			return text->initializesArrayOf(element) ? static_cast<i64>(text->length()) + 1 : -1;
 		if (const auto* list = dynamic_cast<const ast::InitListExpr*>(initializer))
 		{
+			// `char s[] = { "abc" }` - braces around a string that fills the array are transparent.
+			if (list->elements().size() == 1)
+			{
+				if (const auto* text = dynamic_cast<const ast::StringLiteralExpr*>(list->elements().front());
+					text && text->initializesArrayOf(element))
+					return static_cast<i64>(text->length()) + 1;
+			}
 			// An array of arrays takes one brace group per row (`int m[][2] = { {1,2}, {3,4} }`); a flat
 			// list would need the row width to be divided by, which this subset's initializers do not do.
 			//

@@ -1941,6 +1941,36 @@ TEST(e2e, hexadecimal_and_long_double_float_literals_have_their_value)
 		"abc");
 }
 
+TEST(e2e, wide_character_and_string_literals_hold_their_code_units)
+{
+	// Local and global arrays, a static one, pointers to a literal's own copy, and the values of
+	// the prefixed character literals as their types have them.
+	runsTheSameAtEveryLevel("wide_literals",
+		"int gw[] = L\"q\\u00E9\";"
+		"const unsigned short* gp = u\"hi\";"
+		"char gbraced[] = { \"xyz\" };"
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    int w[] = L\"h\\u00E9\";"
+		"    unsigned short s[] = u\"a\\U0001F600\";"
+		"    unsigned int* p = U\"xyz\";"
+		"    static int g[4] = L\"ab\";"
+		"    char u8s[] = u8\"\\u00E9\";"
+		"    char braced[] = { \"abc\" };"
+		"    *term = sizeof(w) == 12 && w[1] == 0xE9 && w[2] == 0 ? 'a' : 'x';"
+		"    *term = sizeof(s) == 8 && s[1] == 0xD83D && s[2] == 0xDE00 && s[3] == 0 ? 'b' : 'x';"
+		"    *term = p[0] == 'x' && p[2] == 'z' && p[3] == 0 ? 'c' : 'x';"
+		"    *term = g[1] == 'b' && g[2] == 0 && g[3] == 0 ? 'd' : 'x';"
+		"    *term = sizeof(u8s) == 3 && (unsigned char)u8s[0] == 0xC3 && (unsigned char)u8s[1] == 0xA9 ? 'e' : 'x';"
+		"    *term = L'\\xFFFFFFFF' == -1 && u'\\xFFFF' == 65535 && u8'\\xFF' == 255 && '\\xFF' == -1 ? 'f' : 'x';"
+		"    *term = \"\\101\\?\"[0] == 'A' && \"\\101\\?\"[1] == '?' ? 'g' : 'x';"
+		"    *term = sizeof(gw) == 12 && gw[1] == 0xE9 && gp[1] == 'i' && gp[2] == 0 ? 'h' : 'x';"
+		"    *term = sizeof(braced) == 4 && braced[2] == 'c' && sizeof(gbraced) == 4 && gbraced[1] == 'y' ? 'i' : 'x';"
+		"    return 0;"
+		"}",
+		"abcdefghi");
+}
+
 TEST(e2e, a_local_function_pointer_shadowing_a_function_is_called_through)
 {
 	// Sema resolves `pick` to the parameter, so the call must go through it, not to the global

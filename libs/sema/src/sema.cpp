@@ -273,17 +273,21 @@ namespace ceresc::sema
 		if (type && type->isArray() && dynamic_cast<ast::StringLiteralExpr*>(init))
 		{
 			checkExpr(init); // still annotate the literal - libs/ir reads its PooledString, not its type
-			if (!isCharType(type->arrayElementType()))
+			auto* literal = static_cast<ast::StringLiteralExpr*>(init);
+			if (!literal->initializesArrayOf(type->arrayElementType()))
 			{
-				_diagnostics.error(DiagId::StringInitializerNeedsCharArray, init->location(), "initializing '{}' with a string literal requires an array of 'char'", typeName(type));
+				if (literal->encoding() == support::LiteralEncoding::Plain)
+					_diagnostics.error(DiagId::StringInitializerNeedsCharArray, init->location(), "initializing '{}' with a string literal requires an array of 'char'", typeName(type));
+				else
+					_diagnostics.error(DiagId::StringInitializerNeedsCharArray, init->location(), "initializing '{}' with a {}\"...\" string literal requires an array of '{}'",
+						typeName(type), support::literalPrefix(literal->encoding()), typeName(stringElementType(literal->encoding())));
 				return;
 			}
-			auto* literal = static_cast<ast::StringLiteralExpr*>(init);
-			usize needed = literal->value().view().size() + 1; // + the terminating zero
+			usize needed = literal->length() + 1; // + the terminating zero
 			if (needed > type->arraySize())
 			{
-				_diagnostics.error(DiagId::StringInitializerTooLong, init->location(), "string literal needs {} byte(s) including its terminating zero, but '{}' holds {}",
-					needed, typeName(type), type->arraySize());
+				_diagnostics.error(DiagId::StringInitializerTooLong, init->location(), "string literal needs {} {} including its terminating zero, but '{}' holds {}",
+					needed, literal->elementSize() == 1 ? "byte(s)" : "element(s)", typeName(type), type->arraySize());
 			}
 			return;
 		}
@@ -532,8 +536,8 @@ namespace ceresc::sema
 		if (type && type->isArray())
 		{
 			const Type* elementType = type->arrayElementType();
-			if (elements.size() == 1 && elementType && isCharType(elementType) &&
-				dynamic_cast<ast::StringLiteralExpr*>(elements.front()))
+			if (const auto* only = elements.size() == 1 ? dynamic_cast<ast::StringLiteralExpr*>(elements.front()) : nullptr;
+				only && only->initializesArrayOf(elementType))
 			{
 				// Braces around a character-array string initializer are transparent.
 				checkInitializer(type, elements.front());
@@ -724,8 +728,8 @@ namespace ceresc::sema
 		if (formatAt >= args.size())
 			return;
 		const auto* literal = dynamic_cast<const ast::StringLiteralExpr*>(args[formatAt]);
-		if (!literal)
-			return; // a format made at run time cannot be read here
+		if (!literal || literal->elementSize() != 1)
+			return; // a format made at run time cannot be read here, and a wide one is not a char format
 		const std::string_view text = literal->value().view();
 		const bool isScanf = function.formatKind() == ast::FormatKind::Scanf;
 		const bool checkArguments = function.formatFirst() != 0;
@@ -1199,10 +1203,26 @@ namespace ceresc::sema
 		_lastExprType = &Type::Float;
 	}
 
+	const Type* Sema::stringElementType(support::LiteralEncoding encoding) noexcept
+	{
+		// wchar_t is int, char16_t unsigned short and char32_t unsigned int; a u8 STRING keeps C17's
+		// char elements (support/literal_encoding.h).
+		switch (encoding)
+		{
+			case support::LiteralEncoding::Utf16: return &Type::UShort;
+			case support::LiteralEncoding::Utf32: return &Type::UInt;
+			case support::LiteralEncoding::Wide: return &Type::Int;
+			default: return &Type::Char;
+		}
+	}
+
 	void Sema::visit(ast::CharLiteralExpr& node)
 	{
-		node.setType(&Type::Char);
-		_lastExprType = &Type::Char;
+		// A plain character literal is a char here (an int in C, but every use widens it the same
+		// way); u8'x' is C23's char8_t, unsigned char; the wide ones are their string's element.
+		const Type* type = node.encoding() == support::LiteralEncoding::Utf8 ? &Type::UChar : stringElementType(node.encoding());
+		node.setType(type);
+		_lastExprType = type;
 	}
 
 	void Sema::visit(ast::BoolLiteralExpr& node)
@@ -1213,7 +1233,7 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::StringLiteralExpr& node)
 	{
-		const Type* resultType = Type::makePointer(_arena, &Type::Char);
+		const Type* resultType = Type::makePointer(_arena, stringElementType(node.encoding()));
 		node.setType(resultType);
 		_lastExprType = resultType;
 	}

@@ -507,6 +507,157 @@ TEST(lexer, simple_string_literal)
 	CHECK(!diagnostics.hasDiagnostics());
 }
 
+TEST(lexer, a_prefixed_character_literal_has_its_encoding_and_typed_value)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	// The last one is L'é' written in UTF-8: one wchar_t, 0xE9.
+	Lexer lexer("L'a' u'b' U'c' u8'd' L'\\xFFFFFFFF' u'\\xFFFF' '\\xFF' U'\\U0001F600' L'\xC3\xA9'", testSourceId(), diagnostics, pool);
+
+	struct Expected { support::LiteralEncoding encoding; i64 value; };
+	const Expected expected[] = {
+		{ support::LiteralEncoding::Wide, 'a' },
+		{ support::LiteralEncoding::Utf16, 'b' },
+		{ support::LiteralEncoding::Utf32, 'c' },
+		{ support::LiteralEncoding::Utf8, 'd' },
+		{ support::LiteralEncoding::Wide, -1 },       // wchar_t is int
+		{ support::LiteralEncoding::Utf16, 65535 },
+		{ support::LiteralEncoding::Plain, -1 },      // char is signed
+		{ support::LiteralEncoding::Utf32, 0x1F600 },
+		{ support::LiteralEncoding::Wide, 0xE9 },
+	};
+	for (const Expected& e : expected)
+	{
+		Token t = lexer.next();
+		CHECK(t.isLiteralChar());
+		CHECK(t.encoding() == e.encoding);
+		const i64 value = t.charValue();
+		CHECK_EQ(value, e.value);
+	}
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_prefixed_string_literal_holds_its_code_units_little_endian)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("u\"a\\u00E9\" ; U\"\\U0001F600\" ; L\"hi\" ; u8\"\\u00E9\" ; u\"\\U0001F600\" ; L\"\xC3\xA9\"", testSourceId(), diagnostics, pool);
+
+	struct Expected { support::LiteralEncoding encoding; std::string_view bytes; };
+	const Expected expected[] = {
+		{ support::LiteralEncoding::Utf16, std::string_view("a\0\xE9\0", 4) },
+		{ support::LiteralEncoding::Utf32, std::string_view("\0\xF6\x01\0", 4) },
+		{ support::LiteralEncoding::Wide, std::string_view("h\0\0\0i\0\0\0", 8) },
+		{ support::LiteralEncoding::Utf8, std::string_view("\xC3\xA9", 2) },
+		{ support::LiteralEncoding::Utf16, std::string_view("\x3D\xD8\x00\xDE", 4) },  // a surrogate pair
+		{ support::LiteralEncoding::Wide, std::string_view("\xE9\0\0\0", 4) },        // UTF-8 source, one unit
+	};
+	for (const Expected& e : expected)
+	{
+		Token t = lexer.next();
+		CHECK(t.isLiteralString());
+		CHECK(t.encoding() == e.encoding);
+		CHECK(t.stringValue().view() == e.bytes);
+		lexer.next(); // ;
+	}
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, octal_and_question_mark_escapes_and_long_hex_escapes)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	// \101 is 'A', \12 a newline, \0 a zero, \? a '?', \1234 is \123 then '4'; a hex escape takes
+	// every hex digit, which a wide literal has room for.
+	Lexer lexer("\"\\101\\12\\0\\?\\1234\" ; L\"\\x10FFFF\"", testSourceId(), diagnostics, pool);
+
+	Token narrow = lexer.next();
+	CHECK(narrow.stringValue().view() == std::string_view("A\n\0?S4", 6));
+	lexer.next(); // ;
+	Token wide = lexer.next();
+	CHECK(wide.stringValue().view() == std::string_view("\xFF\xFF\x10\0", 4));
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_hex_escape_too_large_for_its_code_unit_is_an_error)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"\\x41B\"", testSourceId(), diagnostics, pool);
+	lexer.next();
+	CHECK(diagnostics.hasErrors());
+	CHECK(diagnostics.diagnostics().front().id == support::DiagnosticId::EscapeValueOutOfRange);
+}
+
+TEST(lexer, an_unprefixed_piece_takes_the_prefix_of_the_run)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("\"a\" L\"b\" ; u\"c\" \"d\"", testSourceId(), diagnostics, pool);
+
+	Token first = lexer.next();
+	CHECK(first.encoding() == support::LiteralEncoding::Wide);
+	CHECK(first.stringValue().view() == std::string_view("a\0\0\0b\0\0\0", 8));
+	lexer.next(); // ;
+	Token second = lexer.next();
+	CHECK(second.encoding() == support::LiteralEncoding::Utf16);
+	CHECK(second.stringValue().view() == std::string_view("c\0d\0", 4));
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, two_different_prefixes_cannot_be_joined)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("u\"a\" U\"b\"", testSourceId(), diagnostics, pool);
+	CHECK(lexer.next().isLiteralString());
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(diagnostics.hasErrors());
+	CHECK(diagnostics.diagnostics().front().id == support::DiagnosticId::MixedStringLiteralPrefixes);
+}
+
+TEST(lexer, a_prefix_letter_not_followed_by_a_quote_is_an_identifier)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("L u U u8 Lx u8x L 'a'", testSourceId(), diagnostics, pool);
+	for (int i = 0; i < 7; ++i)
+		CHECK(lexer.next().isIdentifier());
+	Token c = lexer.next();
+	CHECK(c.isLiteralChar());
+	CHECK(c.encoding() == support::LiteralEncoding::Plain);
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, a_character_that_needs_two_code_units_does_not_fit_a_character_literal)
+{
+	// U+1F600 needs a surrogate pair in UTF-16, and U+00E9 two bytes in UTF-8.
+	for (const char* source : { "u'\\U0001F600'", "'\\u00E9'", "u8'\\u00E9'" })
+	{
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		Lexer lexer(source, testSourceId(), diagnostics, pool);
+		CHECK(lexer.next().isLiteralChar());
+		CHECK(diagnostics.hasErrors());
+		CHECK(diagnostics.diagnostics().front().id == support::DiagnosticId::CharacterNotRepresentable);
+	}
+}
+
+TEST(lexer, a_universal_character_name_needs_its_digits_and_a_real_code_point)
+{
+	for (const char* source : { "\"\\u12\"", "\"\\uD800\"", "\"\\U00110000\"" })
+	{
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		Lexer lexer(source, testSourceId(), diagnostics, pool);
+		lexer.next();
+		CHECK(diagnostics.hasErrors());
+		CHECK(diagnostics.diagnostics().front().id == support::DiagnosticId::InvalidUniversalCharacterName);
+	}
+}
+
 TEST(lexer, string_literal_decodes_escapes_in_its_value_but_keeps_the_raw_lexeme)
 {
 	support::DiagnosticEngine diagnostics;

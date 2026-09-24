@@ -83,7 +83,7 @@ namespace ceresc::ir
 			if (const auto* x = dynamic_cast<const ast::CharLiteralExpr*>(a))
 			{
 				const auto* y = dynamic_cast<const ast::CharLiteralExpr*>(b);
-				return y && x->value() == y->value();
+				return y && x->value() == y->value() && x->encoding() == y->encoding();
 			}
 			if (const auto* x = dynamic_cast<const ast::BoolLiteralExpr*>(a))
 			{
@@ -1031,9 +1031,17 @@ namespace ceresc::ir
 
 		// `char s[8] = "hola"` - the literal's own bytes go straight into the array, terminating
 		// zero and all, and whatever is left over zero-fills. Nothing reaches .rodata for this one:
-		// unlike every other use of a string literal, no pointer to a shared copy is taken.
+		// unlike every other use of a string literal, no pointer to a shared copy is taken. A wide
+		// literal's value is already its code units' little-endian bytes, so it is stored the same way.
 		if (type->isArray())
 		{
+			// `char s[] = { "abc" }`: braces around a string that fills the array are transparent.
+			if (auto* braced = dynamic_cast<ast::InitListExpr*>(init); braced && braced->elements().size() == 1)
+			{
+				if (auto* inner = dynamic_cast<ast::StringLiteralExpr*>(braced->elements().front());
+					inner && inner->initializesArrayOf(type->arrayElementType()))
+					init = inner;
+			}
 			if (auto* literal = dynamic_cast<ast::StringLiteralExpr*>(init))
 			{
 				std::string_view text = literal->value().view();
@@ -1691,7 +1699,7 @@ namespace ceresc::ir
 	{
 		std::string label = std::format(".str{}", _nextStringLiteralId++);
 		std::string_view name = internLabel(label);
-		_module.addStringLiteral(name, node.value());
+		_module.addStringLiteral(name, node.value(), node.elementSize());
 		_lastValue = emitGlobalAddr(node.location(), name);
 	}
 

@@ -394,25 +394,43 @@ namespace ceresc::lexer
 		Token scanIdentifierOrKeyword();
 		Token scanNumber();
 		Token scanRadixInteger(SourceLocation startLoc, uoffset startPos, int base);
-		Token scanCharLiteral();
+		// `prefixLength` characters of L/u/U/u8 prefix come before the quote.
+		Token scanCharLiteral(support::LiteralEncoding encoding, u32 prefixLength);
 		// One token for a whole run of adjacent string literals - C's translation phase 6, which
 		// happens before anything parses. `"a" "b"` and a literal split over three lines are each
 		// one Token::LiteralString whose value is the pieces joined.
-		Token scanStringLiteral();
+		Token scanStringLiteral(support::LiteralEncoding encoding, u32 prefixLength);
 		Token scanOperatorOrPunctuation();
 
-		char scanEscapeSequence();
+		// The length of an L, u, U or u8 prefix `offset` characters ahead that is followed by a quote,
+		// with its encoding in `encoding`; 0 when there is none.
+		u32 literalPrefixLength(uoffset offset, support::LiteralEncoding& encoding) const noexcept;
+
+		// One element of a character or string literal before it is encoded: either a code unit
+		// written as such (a byte of the source, \x, octal, a named escape) or a Unicode code point
+		// (a UTF-8 sequence of the source, \u, \U) that the literal's encoding spells.
+		struct LiteralUnit
+		{
+			u32 value;
+			bool isCodePoint;
+			SourceLocation location;
+		};
+		LiteralUnit scanEscapeSequence();
+		// One character of the source; a UTF-8 sequence is one code point when `decodeUtf8`.
+		LiteralUnit scanSourceCharacter(bool decodeUtf8);
+		// Appends `unit` to `out` as the little-endian code units of `encoding`; false (and a
+		// diagnostic) when a code unit written as such does not fit one.
+		bool encodeLiteralUnit(std::string& out, const LiteralUnit& unit, support::LiteralEncoding encoding);
 
 		Token makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong, bool isLong);
 		Token makeFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc);
 		// A hexadecimal float (`0x1.8p3`): `digits` is what follows the 0x, up to the suffix.
 		Token makeHexFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc);
 
-		// Consumes an integer literal's trailing suffix, which may combine `u`/`U` and `ll`/`LL` in
-		// either order (`42u`, `42ll`, `42ull`, `42llu`) - at most one of each, exactly as C's
-		// integer-suffix grammar allows. A lone `l`/`L` is deliberately NOT consumed: this subset has
-		// no `long` literal suffix (docs/06-Known-Limitations.md), so leaving it behind keeps the old
-		// "identifier after the number" error rather than silently dropping a suffix.
+		// Consumes an integer literal's trailing suffix, which may combine `u`/`U` with `l`/`L` or
+		// `ll`/`LL` in either order (`42u`, `42l`, `42ul`, `42ll`, `42ull`, `42llu`) - at most one
+		// of each, exactly as C's integer-suffix grammar allows. The two letters of `ll` must match
+		// case, so `1lL` is `1l` followed by an identifier.
 		void scanIntegerSuffix(bool& isUnsigned, bool& isLongLong, bool& isLong) noexcept;
 
 	private:

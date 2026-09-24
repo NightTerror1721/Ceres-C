@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ceresc/support/types.h>
+#include <ceresc/support/literal_encoding.h>
 #include <ceresc/support/source_location.h>
 #include <ceresc/support/string_pool.h>
 #include <variant>
@@ -144,7 +145,9 @@ namespace ceresc::lexer
 	public:
 		using IntegralValue = u64;
 		using FloatingValue = f64;
-		using CharValue = char;
+		// A character literal's value as its type has it: a plain char sign-extended ('\xFF' is -1),
+		// a wchar_t as an int, the unsigned ones zero-extended.
+		using CharValue = i64;
 		using BoolValue = bool;
 		using StringValue = support::PooledString;
 		using ValueVariant = std::variant<std::monostate, IntegralValue, FloatingValue, CharValue, BoolValue, StringValue>;
@@ -201,6 +204,7 @@ namespace ceresc::lexer
 		bool			 _isLongLong = false; // an integer literal's `ll`/`LL` suffix
 		bool			 _isLong     = false; // an integer literal's `l`/`L` suffix
 		bool			 _isDecimal  = true;  // an integer literal written in decimal (not 0x, 0b or octal)
+		support::LiteralEncoding _encoding = support::LiteralEncoding::Plain; // a character or string literal's L/u/U/u8 prefix
 
 	public:
 		constexpr Token() noexcept = default;
@@ -215,7 +219,7 @@ namespace ceresc::lexer
 
 	private:
 		constexpr Token(TokenKind kind, std::string_view lexeme, TokenValue value, SourceLocation location, bool isUnsigned = false, bool isLongLong = false,
-			bool isLong = false, bool isDecimal = true) noexcept :
+			bool isLong = false, bool isDecimal = true, support::LiteralEncoding encoding = support::LiteralEncoding::Plain) noexcept :
 			_kind(kind),
 			_lexeme(lexeme),
 			_value(value),
@@ -223,7 +227,8 @@ namespace ceresc::lexer
 			_isUnsigned(isUnsigned),
 			_isLongLong(isLongLong),
 			_isLong(isLong),
-			_isDecimal(isDecimal)
+			_isDecimal(isDecimal),
+			_encoding(encoding)
 		{}
 
 	public:
@@ -245,6 +250,9 @@ namespace ceresc::lexer
 		// types to try (the unsigned ones too), so `0xFFFFFFFF` is an unsigned int where
 		// `4294967295` is a long long.
 		constexpr bool isDecimal() const noexcept { return _isDecimal; }
+		// The prefix of a character or string literal - L, u, U or u8 - which sets its code-unit
+		// width and its type (support/literal_encoding.h). Plain for every other token.
+		constexpr support::LiteralEncoding encoding() const noexcept { return _encoding; }
 
 		constexpr TokenValue::IntegralValue integralValue() const noexcept { return _value.getIntegral(); }
 		constexpr TokenValue::FloatingValue floatingValue() const noexcept { return _value.getFloating(); }
@@ -424,9 +432,12 @@ namespace ceresc::lexer
 		static forceinline constexpr Token makeLiteralInt(std::string_view lexeme, TokenValue::IntegralValue value, SourceLocation location, bool isUnsigned = false, bool isLongLong = false,
 			bool isLong = false, bool isDecimal = true) noexcept { return Token(TokenKind::LiteralInt, lexeme, TokenValue::makeIntegral(value), location, isUnsigned, isLongLong, isLong, isDecimal); }
 		static forceinline constexpr Token makeLiteralFloat(std::string_view lexeme, TokenValue::FloatingValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralFloat, lexeme, TokenValue::makeFloating(value), location); }
-		static forceinline constexpr Token makeLiteralChar(std::string_view lexeme, TokenValue::CharValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralChar, lexeme, TokenValue::makeChar(value), location); }
+		static forceinline constexpr Token makeLiteralChar(std::string_view lexeme, TokenValue::CharValue value, SourceLocation location,
+			support::LiteralEncoding encoding = support::LiteralEncoding::Plain) noexcept { return Token(TokenKind::LiteralChar, lexeme, TokenValue::makeChar(value), location, false, false, false, true, encoding); }
 		static forceinline constexpr Token makeLiteralBool(std::string_view lexeme, TokenValue::BoolValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralBool, lexeme, TokenValue::makeBool(value), location); }
-		static forceinline constexpr Token makeLiteralString(std::string_view lexeme, TokenValue::StringValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralString, lexeme, TokenValue::makeString(value), location); }
+		// A wide string's value holds its code units as little-endian bytes, without the terminator.
+		static forceinline constexpr Token makeLiteralString(std::string_view lexeme, TokenValue::StringValue value, SourceLocation location,
+			support::LiteralEncoding encoding = support::LiteralEncoding::Plain) noexcept { return Token(TokenKind::LiteralString, lexeme, TokenValue::makeString(value), location, false, false, false, true, encoding); }
 		static forceinline constexpr Token makeIdentifier(std::string_view lexeme, SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Identifier, lexeme, location); }
 
 		static forceinline constexpr Token makeKwVoid(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::KwVoid, "void", location); }

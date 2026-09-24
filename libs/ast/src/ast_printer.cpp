@@ -260,7 +260,13 @@ namespace ceresc::ast
 
 	void AstPrinter::visit(CharLiteralExpr& node)
 	{
-		char c = node.value();
+		_output += support::literalPrefix(node.encoding());
+		if (node.encoding() != support::LiteralEncoding::Plain && (node.value() < 0x20 || node.value() > 0x7E))
+		{
+			_output += std::format("'\\x{:X}'", static_cast<u32>(node.value()));
+			return;
+		}
+		char c = static_cast<char>(node.value());
 		_output += '\'';
 		switch (c)
 		{
@@ -281,8 +287,25 @@ namespace ceresc::ast
 
 	void AstPrinter::visit(StringLiteralExpr& node)
 	{
+		_output += support::literalPrefix(node.encoding());
 		_output += '"';
-		_output += node.value().view();
+		if (node.elementSize() == 1)
+			_output += node.value().view();
+		else
+		{
+			// A wide literal's code units, ASCII as itself and the rest as \x escapes.
+			std::string_view bytes = node.value().view();
+			for (usize i = 0; i < node.length(); ++i)
+			{
+				u32 unit = 0;
+				for (u32 b = 0; b < node.elementSize(); ++b)
+					unit |= static_cast<u32>(static_cast<u8>(bytes[i * node.elementSize() + b])) << (8 * b);
+				if (unit >= 0x20 && unit <= 0x7E)
+					_output += static_cast<char>(unit);
+				else
+					_output += std::format("\\x{:X}", unit);
+			}
+		}
 		_output += '"';
 	}
 

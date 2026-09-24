@@ -335,7 +335,8 @@ namespace ceresc::ir
 	struct IrGlobalString
 	{
 		std::string_view name;
-		support::PooledString value;
+		support::PooledString value; // the code units as little-endian bytes, without the terminator
+		u32 elementSize = 1;         // 2 for a u"" literal, 4 for U"" and L""
 	};
 
 	// A `static` local: spelled inside a function, but stored like a file-scope variable, because it
@@ -386,9 +387,9 @@ namespace ceresc::ir
 			return *_functions.back();
 		}
 
-		void addStringLiteral(std::string_view name, support::PooledString value)
+		void addStringLiteral(std::string_view name, support::PooledString value, u32 elementSize = 1)
 		{
-			_stringLiterals.push_back(IrGlobalString{ name, value });
+			_stringLiterals.push_back(IrGlobalString{ name, value, elementSize });
 		}
 
 		void addStaticLocal(std::string_view name, const ast::VarDecl* decl)
