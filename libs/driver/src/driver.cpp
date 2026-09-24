@@ -721,6 +721,8 @@ namespace ceresc::driver
 		linkArgs.insert(linkArgs.end(), objectPaths.begin(), objectPaths.end());
 		linkArgs.insert(linkArgs.end(), objectInputs.begin(), objectInputs.end());
 		linkArgs.insert(linkArgs.end(), archiveInputs.begin(), archiveInputs.end());
+		if (options.symbolTable)
+			linkArgs.push_back("--symtab");
 		linkArgs.push_back("-o");
 		linkArgs.push_back(programPath.string());
 		int linkResult = runSubprocess(ceresBinary, linkArgs);

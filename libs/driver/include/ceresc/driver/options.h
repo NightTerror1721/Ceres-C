@@ -67,6 +67,7 @@ namespace ceresc::driver
 
 		std::string ceresPath;       // --ceres-path <dir or executable> - empty means "CERES_PATH, then PATH" (ceres_locator.h)
 		std::vector<std::string> runArguments;   // --run-arg <arg>, in order: more for `ceres run` after the program's name
+		bool symbolTable = false;                // --symtab: `ceres link --symtab`, a table of the code's names in the program
 		bool warningsAsErrors = false; // -Werror
 		bool showVersion = false;    // --version: print the version and stop, before anything else
 		// --stats / -fstats: after compiling each unit, print what the IR optimizer did to it

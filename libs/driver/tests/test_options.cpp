@@ -463,6 +463,14 @@ TEST(options, the_usage_text_mentions_objects_archives_and_declarations)
 	CHECK(contains(result.output, "--emit-decls"));
 }
 
+TEST(options, symtab_asks_the_link_for_a_symbol_table)
+{
+	ParseResult with = parse({ "ceresc", "main.c", "--run", "--symtab" });
+	CHECK(with.options.has_value() && with.options->symbolTable);
+	ParseResult without = parse({ "ceresc", "main.c", "--run" });
+	CHECK(without.options.has_value() && !without.options->symbolTable);
+}
+
 TEST(options, run_arg_collects_the_extra_arguments_for_ceres_run_in_order)
 {
 	ParseResult result = parse({ "ceresc", "main.c", "--run", "--run-arg", "--port", "--run-arg", "0=stick.img" });

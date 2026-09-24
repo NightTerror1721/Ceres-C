@@ -37,6 +37,7 @@ alongside the compiled ones, which is how a routine written in assembly becomes 
 | `--clean-keep-casm` | After a successful `--run`, remove generated `.decls.casm`, `.cobj`, and `.cres`, keeping generated `.casm` for inspection or reuse. |
 | `--decls <file.casm>` | Declarations of what a `.cobj` or `.car` defines: every generated unit imports it. Repeatable. |
 | `--emit-decls <file.casm>` | Write the declarations of what **this** build defines, so a library can publish them for `--decls`. Written even for a lone unit. |
+| `--symtab` | Links the program with `ceres link --symtab`: a table of its code's global names and their addresses, between `__symtab_start` and `__symtab_end`, which the STDLIB's `ceres/backtrace.h` and fault reports read to name functions. Used only with `--run`. |
 | `--run-arg <arg>` | Repeatable: one more argument for `ceres run`, after the program's name, in order. For what only `ceres run` can do - `--run-arg --port --run-arg 0=stick.img` plugs a file into a peripheral port, `--run-arg --disk --run-arg disk.img` backs the disk. Used only with `--run`. |
 | `--ceres-path <dir\|file>` | Where to find `ceres`: the directory that holds it, or the executable itself. Without it the `CERES_PATH` variable says, and then `PATH` — see [Finding `ceres`](#finding-ceres). |
 | `-Werror` | Treat warnings as errors. A `#pragma warning(...)` outranks it in both directions - see [11-Diagnostics.md](11-Diagnostics.md). |
