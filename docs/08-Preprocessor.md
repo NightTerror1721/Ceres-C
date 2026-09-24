@@ -156,6 +156,8 @@ includes them:
 | `__STDC__` | `1`. |
 | `__STDC_HOSTED__` | `0`. |
 | `__CERESC__` | `1` — this compiler, as opposed to any other. |
+| `_Noreturn` | `__attribute__((__noreturn__))`: the C11 keyword, as the attribute that means the same. |
+| `_Alignof` | `alignof`: the C11 keyword, as the one this compiler already has. |
 | `__BASE_FILE__` | The `.c` the translation unit started from, as a string literal. |
 | `__INCLUDE_LEVEL__` | `0` in that `.c`, `1` in a header it includes, `2` one deeper, and so on. |
 | `__COUNTER__` | `0`, then `1`, then `2` — a number nobody else has had, per expansion. |

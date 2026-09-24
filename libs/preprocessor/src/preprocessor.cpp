@@ -237,6 +237,12 @@ namespace ceresc::preprocessor
 		// headers a line sits, and a fresh number per expansion for building a name that cannot
 		// collide with another the same macro made.
 		object("__CERESC__", "1");
+
+		// Two C11 keywords that are spellings of something this compiler already has: `_Noreturn` is the
+		// noreturn attribute, which is read in every place the keyword can stand, and `_Alignof` is
+		// `alignof`. As macros, <stdnoreturn.h> and <stdalign.h> can be three lines each.
+		object("_Noreturn", "__attribute__((__noreturn__))");
+		object("_Alignof", "alignof");
 		builtin("__BASE_FILE__", Builtin::BaseFile);
 		builtin("__INCLUDE_LEVEL__", Builtin::IncludeLevel);
 		builtin("__COUNTER__", Builtin::Counter);

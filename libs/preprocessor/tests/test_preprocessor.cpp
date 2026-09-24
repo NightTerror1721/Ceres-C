@@ -754,6 +754,17 @@ TEST(preprocessor, the_predefined_macros_are_ordinary_entries_in_the_macro_table
 	CHECK(contains(result.text, "int fileIsGone;"));
 }
 
+TEST(preprocessor, the_c11_keywords_noreturn_and_alignof_are_predefined_spellings)
+{
+	TempDirectory dir;
+	std::string path = dir.write("main.c", "_Noreturn void stop(void);\nint a = _Alignof(int);\n");
+
+	Result result = expand(path);
+	CHECK(result.ok);
+	CHECK(contains(result.text, "__attribute__((__noreturn__)) void stop(void);"));
+	CHECK(contains(result.text, "int a = alignof(int);"));
+}
+
 TEST(preprocessor, a_command_line_define_goes_in_on_top_of_a_predefined_macro)
 {
 	// Not an error, and not ignored: naming one on the command line is the program's own decision.
