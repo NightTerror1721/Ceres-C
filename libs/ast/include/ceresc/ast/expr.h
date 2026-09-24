@@ -101,9 +101,13 @@ namespace ceresc::ast
 		u64 _value;
 		bool _isUnsigned;
 		bool _isLongLong;
+		bool _isLong;
+		bool _isDecimal;
 
 	public:
-		IntLiteralExpr(support::SourceLocation location, u64 value, bool isUnsigned = false, bool isLongLong = false) noexcept : Expr(location), _value(value), _isUnsigned(isUnsigned), _isLongLong(isLongLong) {}
+		IntLiteralExpr(support::SourceLocation location, u64 value, bool isUnsigned = false, bool isLongLong = false,
+			bool isLong = false, bool isDecimal = true) noexcept :
+			Expr(location), _value(value), _isUnsigned(isUnsigned), _isLongLong(isLongLong), _isLong(isLong), _isDecimal(isDecimal) {}
 
 	public:
 		u64 value() const noexcept { return _value; }
@@ -113,6 +117,10 @@ namespace ceresc::ast
 		// True when the literal was written with an `ll`/`LL` suffix (`42ll`) - what sema reads to
 		// give it type `long long` instead of `long`/`int`.
 		bool isLongLong() const noexcept { return _isLongLong; }
+		// True for a single `l`/`L` suffix (`42l`, `42ul`): `long`, which is 32 bits here.
+		bool isLong() const noexcept { return _isLong; }
+		// False for a hex, binary or octal literal, which C lets take the unsigned types too.
+		bool isDecimal() const noexcept { return _isDecimal; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<IntLiteralExpr>, "IntLiteralExpr must be trivially destructible (Arena-allocated)");

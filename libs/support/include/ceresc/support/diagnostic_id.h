@@ -60,9 +60,10 @@ namespace ceresc::support
 		UnterminatedStringLiteral     = 12,
 		StringPoolExhausted           = 13,
 		UnexpectedCharacter           = 14,
-		// A decimal literal with an `ll`/`LL` suffix whose value fits a u64 but not a signed
-		// `long long`. C gives such a literal no type; this compiler keeps its 64-bit bit pattern.
+		// A decimal literal (without `u`) whose value fits a u64 but not a signed `long long`. C
+		// gives such a literal no type; this compiler keeps its 64-bit bit pattern.
 		IntegerLiteralOutOfRange      = kDiagnosticWarningBit | 15,
+		InvalidOctalDigit             = 16,
 
 		// ---- 1xxx  preprocessor ---------------------------------------------------------------
 		IfExpressionSyntax              = 1001,

@@ -199,6 +199,8 @@ namespace ceresc::lexer
 		SourceLocation	 _location	= {};
 		bool			 _isUnsigned = false; // an integer literal's `u`/`U` suffix
 		bool			 _isLongLong = false; // an integer literal's `ll`/`LL` suffix
+		bool			 _isLong     = false; // an integer literal's `l`/`L` suffix
+		bool			 _isDecimal  = true;  // an integer literal written in decimal (not 0x, 0b or octal)
 
 	public:
 		constexpr Token() noexcept = default;
@@ -212,13 +214,16 @@ namespace ceresc::lexer
 		constexpr bool operator==(const Token&) const noexcept = default;
 
 	private:
-		constexpr Token(TokenKind kind, std::string_view lexeme, TokenValue value, SourceLocation location, bool isUnsigned = false, bool isLongLong = false) noexcept :
+		constexpr Token(TokenKind kind, std::string_view lexeme, TokenValue value, SourceLocation location, bool isUnsigned = false, bool isLongLong = false,
+			bool isLong = false, bool isDecimal = true) noexcept :
 			_kind(kind),
 			_lexeme(lexeme),
 			_value(value),
 			_location(location),
 			_isUnsigned(isUnsigned),
-			_isLongLong(isLongLong)
+			_isLongLong(isLongLong),
+			_isLong(isLong),
+			_isDecimal(isDecimal)
 		{}
 
 	public:
@@ -234,6 +239,12 @@ namespace ceresc::lexer
 		// names the 64-bit type. Paired with isUnsigned() it picks between `long long` and
 		// `unsigned long long`; alone it is `long long`.
 		constexpr bool isLongLong() const noexcept { return _isLongLong; }
+		// True for an integer literal written with a single `l`/`L` suffix (`42l`, `42UL`): `long`.
+		constexpr bool isLong() const noexcept { return _isLong; }
+		// False for an integer literal written in hex, binary or octal. C gives those a longer list of
+		// types to try (the unsigned ones too), so `0xFFFFFFFF` is an unsigned int where
+		// `4294967295` is a long long.
+		constexpr bool isDecimal() const noexcept { return _isDecimal; }
 
 		constexpr TokenValue::IntegralValue integralValue() const noexcept { return _value.getIntegral(); }
 		constexpr TokenValue::FloatingValue floatingValue() const noexcept { return _value.getFloating(); }
@@ -410,7 +421,8 @@ namespace ceresc::lexer
 	public:
 		static forceinline constexpr Token makeInvalid(std::string_view lexeme, SourceLocation location) noexcept { return makeWithoutValue(TokenKind::Invalid, lexeme, location); }
 		static forceinline constexpr Token makeEndOfFile(SourceLocation location) noexcept { return makeWithoutValue(TokenKind::EndOfFile, {}, location); }
-		static forceinline constexpr Token makeLiteralInt(std::string_view lexeme, TokenValue::IntegralValue value, SourceLocation location, bool isUnsigned = false, bool isLongLong = false) noexcept { return Token(TokenKind::LiteralInt, lexeme, TokenValue::makeIntegral(value), location, isUnsigned, isLongLong); }
+		static forceinline constexpr Token makeLiteralInt(std::string_view lexeme, TokenValue::IntegralValue value, SourceLocation location, bool isUnsigned = false, bool isLongLong = false,
+			bool isLong = false, bool isDecimal = true) noexcept { return Token(TokenKind::LiteralInt, lexeme, TokenValue::makeIntegral(value), location, isUnsigned, isLongLong, isLong, isDecimal); }
 		static forceinline constexpr Token makeLiteralFloat(std::string_view lexeme, TokenValue::FloatingValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralFloat, lexeme, TokenValue::makeFloating(value), location); }
 		static forceinline constexpr Token makeLiteralChar(std::string_view lexeme, TokenValue::CharValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralChar, lexeme, TokenValue::makeChar(value), location); }
 		static forceinline constexpr Token makeLiteralBool(std::string_view lexeme, TokenValue::BoolValue value, SourceLocation location) noexcept { return Token(TokenKind::LiteralBool, lexeme, TokenValue::makeBool(value), location); }

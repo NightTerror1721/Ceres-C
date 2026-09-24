@@ -628,8 +628,10 @@ namespace ceresc::parser
 				auto value = _current.integralValue();
 				bool isUnsigned = _current.isUnsigned();
 				bool isLongLong = _current.isLongLong();
+				bool isLong = _current.isLong();
+				bool isDecimal = _current.isDecimal();
 				advance();
-				return _arena.create<ast::IntLiteralExpr>(location, value, isUnsigned, isLongLong);
+				return _arena.create<ast::IntLiteralExpr>(location, value, isUnsigned, isLongLong, isLong, isDecimal);
 			}
 			case TokenKind::LiteralFloat:
 			{

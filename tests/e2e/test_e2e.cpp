@@ -1903,6 +1903,28 @@ TEST(e2e, an_argument_through_a_pointer_is_converted_to_the_parameter_type)
 		"abcd");
 }
 
+TEST(e2e, integer_literals_keep_their_value_with_every_prefix_and_suffix)
+{
+	// The value survives the type C gives it: 4294967296 is not 0 and 0xFFFFFFFF is not -1 once they
+	// reach a long long, and 0755 is octal.
+	runsTheSameAtEveryLevel("literal_types",
+		"int main() {"
+		"    char* term = (char*)0xFF000004;"
+		"    long long big = 4294967296;"
+		"    long long mask = 0xFFFFFFFF;"
+		"    unsigned long ul = 4000000000UL;"
+		"    long l = -5L;"
+		"    *term = big == 4294967296LL ? 'a' : 'x';"
+		"    *term = mask == 4294967295LL ? 'b' : 'x';"
+		"    *term = 0755 == 493 && 010 == 8 && 0 == 00 ? 'c' : 'x';"
+		"    *term = ul / 2 == 2000000000u && l * 2 == -10 ? 'd' : 'x';"
+		"    *term = -1 < 0xFFFFFFFF ? 'x' : 'e';"      // 0xFFFFFFFF is unsigned: -1 converts to it
+		"    *term = 2147483648 > 0 ? 'f' : 'x';"       // a long long, not INT_MIN
+		"    return 0;"
+		"}",
+		"abcdef");
+}
+
 TEST(e2e, a_local_function_pointer_shadowing_a_function_is_called_through)
 {
 	// Sema resolves `pick` to the parameter, so the call must go through it, not to the global

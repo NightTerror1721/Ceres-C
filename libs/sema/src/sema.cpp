@@ -1140,14 +1140,53 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::IntLiteralExpr& node)
 	{
-		// An `ll`/`LL` suffix selects a 64-bit type (`long long`, or `unsigned long long` with a
-		// `u`/`U` as well); otherwise a `u`/`U` suffix selects `unsigned` and an unsuffixed literal
-		// is `int` (no widening to `long` exists in this subset - see type.h).
-		const Type* type;
+		// C's table (6.4.4.1): the literal's type is the first of a list in which its value fits,
+		// and the list depends on the suffix and on whether it was written in decimal - a hex,
+		// binary or octal literal may be unsigned without saying so. int and long are 32 bits here,
+		// long long 64, so `4294967296` is a long long and `0xFFFFFFFF` an unsigned int.
+		static const Type* const kPlain[]        = { &Type::Int, &Type::Long, &Type::LongLong };
+		static const Type* const kPlainRadix[]   = { &Type::Int, &Type::UInt, &Type::Long, &Type::ULong, &Type::LongLong, &Type::ULongLong };
+		static const Type* const kUnsigned[]     = { &Type::UInt, &Type::ULong, &Type::ULongLong };
+		static const Type* const kLong[]         = { &Type::Long, &Type::LongLong };
+		static const Type* const kLongRadix[]    = { &Type::Long, &Type::ULong, &Type::LongLong, &Type::ULongLong };
+		static const Type* const kULong[]        = { &Type::ULong, &Type::ULongLong };
+		static const Type* const kLongLong[]     = { &Type::LongLong };
+		static const Type* const kLongLongRadix[] = { &Type::LongLong, &Type::ULongLong };
+		static const Type* const kULongLong[]    = { &Type::ULongLong };
+
+		std::span<const Type* const> candidates;
 		if (node.isLongLong())
-			type = node.isUnsigned() ? &Type::ULongLong : &Type::LongLong;
+			candidates = node.isUnsigned() ? std::span<const Type* const>(kULongLong)
+				: node.isDecimal() ? std::span<const Type* const>(kLongLong) : std::span<const Type* const>(kLongLongRadix);
+		else if (node.isLong())
+			candidates = node.isUnsigned() ? std::span<const Type* const>(kULong)
+				: node.isDecimal() ? std::span<const Type* const>(kLong) : std::span<const Type* const>(kLongRadix);
 		else
-			type = node.isUnsigned() ? &Type::UInt : &Type::Int;
+			candidates = node.isUnsigned() ? std::span<const Type* const>(kUnsigned)
+				: node.isDecimal() ? std::span<const Type* const>(kPlain) : std::span<const Type* const>(kPlainRadix);
+
+		const u64 value = node.value();
+		auto fits = [&](const Type* candidate)
+		{
+			switch (candidate->kind())
+			{
+				case TypeKind::Int: case TypeKind::Long:   return value <= 0x7FFFFFFFull;
+				case TypeKind::UInt: case TypeKind::ULong: return value <= 0xFFFFFFFFull;
+				case TypeKind::LongLong:                   return value <= 0x7FFFFFFFFFFFFFFFull;
+				default:                                   return true;
+			}
+		};
+		// A decimal literal past every signed type on its list keeps its 64-bit bit pattern as a long
+		// long; the lexer already warned (W0015).
+		const Type* type = candidates.back();
+		for (const Type* candidate : candidates)
+		{
+			if (fits(candidate))
+			{
+				type = candidate;
+				break;
+			}
+		}
 		node.setType(type);
 		_lastExprType = type;
 	}

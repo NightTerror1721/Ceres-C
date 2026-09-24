@@ -270,8 +270,8 @@ TEST(lexer, the_u_and_ll_suffixes_combine_in_either_order)
 
 TEST(lexer, the_two_ls_of_an_ll_suffix_must_match_case)
 {
-	// C's integer-suffix grammar is `ll` or `LL`, never `lL`/`Ll`; a mismatched pair is not consumed,
-	// so the number stays an `int` and the leftover letters are an identifier the parser rejects.
+	// C's integer-suffix grammar is `ll` or `LL`, never `lL`/`Ll`: `1lL` is `1l` (a long) and then
+	// an identifier `L` the parser rejects.
 	support::DiagnosticEngine diagnostics;
 	support::StringPool pool;
 	Lexer lexer("1lL 2Ll", testSourceId(), diagnostics, pool);
@@ -281,6 +281,7 @@ TEST(lexer, the_two_ls_of_an_ll_suffix_must_match_case)
 		Token number = lexer.next();
 		CHECK(number.isLiteralInt());
 		CHECK(!number.isLongLong());
+		CHECK(number.isLong());
 		CHECK_EQ(number.integralValue(), expected);
 
 		Token identifier = lexer.next();
@@ -288,24 +289,57 @@ TEST(lexer, the_two_ls_of_an_ll_suffix_must_match_case)
 	}
 }
 
-TEST(lexer, a_single_l_suffix_is_not_consumed)
+TEST(lexer, a_single_l_suffix_marks_an_integer_literal_long)
 {
-	// This subset has no `long` literal suffix (docs/06-Known-Limitations.md), so `1l` stays `1`
-	// followed by an identifier `l` - the parser rejects that, rather than the lexer silently
-	// dropping the suffix and handing back a plain `int` literal.
+	// Alone and with `u` in either order and either case, for decimal, hex, binary and octal.
 	support::DiagnosticEngine diagnostics;
 	support::StringPool pool;
-	Lexer lexer("1l", testSourceId(), diagnostics, pool);
+	Lexer lexer("1l 2L 3ul 4lu 5UL 6Lu 0xFFl 0b11L 017l", testSourceId(), diagnostics, pool);
 
-	Token number = lexer.next();
-	CHECK(number.isLiteralInt());
-	CHECK(!number.isLongLong());
-	CHECK(!number.isUnsigned());
-	CHECK_EQ(number.integralValue(), u64(1));
+	const bool unsignedOnes[] = { false, false, true, true, true, true, false, false, false };
+	for (bool isUnsigned : unsignedOnes)
+	{
+		Token number = lexer.next();
+		CHECK(number.isLiteralInt());
+		CHECK(number.isLong());
+		CHECK(!number.isLongLong());
+		CHECK_EQ(number.isUnsigned(), isUnsigned);
+	}
+	CHECK(lexer.next().isEndOfFile());
+	CHECK(!diagnostics.hasDiagnostics());
+}
 
-	Token identifier = lexer.next();
-	CHECK(identifier.isIdentifier());
-	CHECK_EQ(identifier.lexeme(), std::string_view("l"));
+TEST(lexer, a_leading_zero_makes_an_octal_literal)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("0 00 0755 010u 0777ll 1.5 0.5 09.5 0e1", testSourceId(), diagnostics, pool);
+
+	CHECK_EQ(lexer.next().integralValue(), u64(0));
+	CHECK_EQ(lexer.next().integralValue(), u64(0));
+	Token mode = lexer.next();
+	CHECK_EQ(mode.integralValue(), u64(0755));
+	CHECK(!mode.isDecimal());
+	Token eight = lexer.next();
+	CHECK_EQ(eight.integralValue(), u64(8));
+	CHECK(eight.isUnsigned());
+	Token wide = lexer.next();
+	CHECK_EQ(wide.integralValue(), u64(511));
+	CHECK(wide.isLongLong());
+	// A leading zero before a '.' or an exponent is still a decimal float.
+	for (int i = 0; i < 4; ++i)
+		CHECK(lexer.next().isLiteralFloat());
+	CHECK(!diagnostics.hasDiagnostics());
+}
+
+TEST(lexer, an_octal_literal_rejects_an_8_or_a_9)
+{
+	support::DiagnosticEngine diagnostics;
+	support::StringPool pool;
+	Lexer lexer("018", testSourceId(), diagnostics, pool);
+	CHECK(lexer.next().isLiteralInt());
+	CHECK(diagnostics.hasErrors());
+	CHECK_EQ(static_cast<u16>(diagnostics.diagnostics().front().id), static_cast<u16>(support::DiagnosticId::InvalidOctalDigit));
 }
 
 TEST(lexer, a_negative_decimal_signed_ll_literal_warns_but_keeps_its_bits)

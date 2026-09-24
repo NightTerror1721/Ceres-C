@@ -254,14 +254,6 @@ The `__builtin_` prefix is reserved to the implementation in C, so no existing p
 these names — and because they are only recognized in call position, one that uses the spelling for
 a variable of its own still works.
 
-### No `long` literal suffix
-
-`u`/`U` makes an integer literal unsigned, `ll`/`LL` makes it 64-bit (`long long`, or `unsigned long
-long` with `u`/`U` as well, in either order: `42ull`, `42llu`), and `f`/`F` makes a float literal (or
-forces a digit run to one, `1f`). The single `l`/`L` suffix is still not accepted, because there is
-no `long` literal suffix to name here — a lone `l` after a number is an identifier, so `1l` is `1`
-followed by `l`, not a literal.
-
 ### Division by zero does not fault
 
 The VM sets its Trap flag and leaves the destination register untouched, and nothing reads that flag

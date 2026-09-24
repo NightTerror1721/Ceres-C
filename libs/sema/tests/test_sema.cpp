@@ -127,6 +127,29 @@ TEST(sema, literal_suffixes_select_the_type)
 	CHECK_EQ(typeOfMainLastExpr("int main() { 1F; }"), "float");
 }
 
+TEST(sema, an_integer_literal_takes_the_first_type_of_its_list_it_fits)
+{
+	// C's table: unsuffixed decimal is int, long, long long; hex, binary and octal also try the
+	// unsigned types; l starts at long; u at unsigned int. int and long are 32 bits here.
+	CHECK_EQ(typeOfMainLastExpr("int main() { 2147483647; }"), "int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 2147483648; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 4294967296; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0x7FFFFFFF; }"), "int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0xFFFFFFFF; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 037777777777; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0x100000000; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0xFFFFFFFFFFFFFFFF; }"), "unsigned long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42u; }"), "unsigned int");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 4294967296u; }"), "unsigned long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42l; }"), "long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42L; }"), "long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 3000000000L; }"), "long long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0xFFFFFFFFL; }"), "unsigned long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42ul; }"), "unsigned long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 42LU; }"), "unsigned long");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 0x8000000000000000LL; }"), "unsigned long long");
+}
+
 TEST(sema, long_long_literal_suffix_selects_the_64_bit_type)
 {
 	// `ll`/`LL` names `long long`; with `u`/`U` as well it is `unsigned long long`, in either order.

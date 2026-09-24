@@ -403,7 +403,7 @@ namespace ceresc::lexer
 
 		char scanEscapeSequence();
 
-		Token makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong);
+		Token makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong, bool isLong);
 		Token makeFloatToken(std::string_view lexeme, std::string_view digits, SourceLocation loc);
 
 		// Consumes an integer literal's trailing suffix, which may combine `u`/`U` and `ll`/`LL` in
@@ -411,7 +411,7 @@ namespace ceresc::lexer
 		// integer-suffix grammar allows. A lone `l`/`L` is deliberately NOT consumed: this subset has
 		// no `long` literal suffix (docs/06-Known-Limitations.md), so leaving it behind keeps the old
 		// "identifier after the number" error rather than silently dropping a suffix.
-		void scanIntegerSuffix(bool& isUnsigned, bool& isLongLong) noexcept;
+		void scanIntegerSuffix(bool& isUnsigned, bool& isLongLong, bool& isLong) noexcept;
 
 	private:
 		static constexpr bool isIdentifierStart(char c) noexcept { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }

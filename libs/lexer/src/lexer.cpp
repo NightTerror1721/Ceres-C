@@ -90,7 +90,7 @@ namespace ceresc::lexer
 		return Token::makeIdentifier(lexeme, startLoc);
 	}
 
-	Token Lexer::makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong)
+	Token Lexer::makeIntToken(std::string_view lexeme, SourceLocation loc, int base, std::string_view digits, bool isUnsigned, bool isLongLong, bool isLong)
 	{
 		TokenValue::IntegralValue value = 0;
 		auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
@@ -101,41 +101,49 @@ namespace ceresc::lexer
 			// silently wrapping to a different number.
 			_diagnostics.error(DiagId::IntegerLiteralTooLarge, loc, "integer literal is too large to represent");
 		}
-		else if (base == 10 && isLongLong && !isUnsigned && value > static_cast<u64>((std::numeric_limits<i64>::max)()))
+		else if (base == 10 && !isUnsigned && value > static_cast<u64>((std::numeric_limits<i64>::max)()))
 		{
-			// In range for u64 but out of range for a signed `long long`. C gives an out-of-range
-			// DECIMAL literal no type; for a hex/binary constant the suffix list includes
-			// `unsigned long long`, so `0xFFFFFFFFFFFFFFFFLL` is a legal unsigned value and is not
-			// reported. A warning and a 64-bit reinterpretation is the useful answer for decimal.
+			// In range for u64 but out of range for a signed `long long`, whatever the suffix (none,
+			// `l` or `ll`). C gives an out-of-range DECIMAL literal no type; for a hex, binary or
+			// octal constant the list includes `unsigned long long`, so `0xFFFFFFFFFFFFFFFF` is a
+			// legal unsigned value and is not reported. A warning and a 64-bit reinterpretation is
+			// the useful answer for decimal.
 			_diagnostics.warning(DiagId::IntegerLiteralOutOfRange, loc,
 				"integer literal {} is too large for a signed 'long long'; it is treated as its 64-bit bit pattern",
 				digits);
 		}
 
-		return Token::makeLiteralInt(lexeme, value, loc, isUnsigned, isLongLong);
+		return Token::makeLiteralInt(lexeme, value, loc, isUnsigned, isLongLong, isLong, base == 10);
 	}
 
-	void Lexer::scanIntegerSuffix(bool& isUnsigned, bool& isLongLong) noexcept
+	void Lexer::scanIntegerSuffix(bool& isUnsigned, bool& isLongLong, bool& isLong) noexcept
 	{
-		// C's integer-suffix: at most one `u`/`U` and at most one `ll`/`LL`, in either order. Two
-		// passes is enough for every legal combination (`u`, `ll`, `ull`, `llu`); anything left after
-		// them (a third suffix letter, a lone `l`, `lL` mixed with digits...) is an identifier of its
-		// own and the parser rejects it exactly as before. The two `l`s must match case, as C's
-		// grammar requires (`ll` or `LL`, never `lL`/`Ll`).
+		// C's integer-suffix: at most one `u`/`U` and at most one of `l`/`L` and `ll`/`LL`, in
+		// either order. Two passes is enough for every legal combination (`u`, `l`, `ll`, `ul`,
+		// `lu`, `ull`, `llu`); anything left after them (a third suffix letter, `lL` mixed...) is an
+		// identifier of its own and the parser rejects it. The two `l`s of `ll` must match case, as
+		// C's grammar requires (`ll` or `LL`, never `lL`/`Ll`): `1lL` is `1l` followed by `L`.
 		for (int pass = 0; pass < 2; ++pass)
 		{
-			if (!isUnsigned && (_cursor.peek() == 'u' || _cursor.peek() == 'U'))
+			const char c = _cursor.peek();
+			if (!isUnsigned && (c == 'u' || c == 'U'))
 			{
 				isUnsigned = true;
 				_cursor.advance();
 				continue;
 			}
-			if (!isLongLong && ((_cursor.peek() == 'l' && _cursor.peek(1) == 'l') ||
-				(_cursor.peek() == 'L' && _cursor.peek(1) == 'L')))
+			if (!isLongLong && !isLong && (c == 'l' || c == 'L'))
 			{
-				isLongLong = true;
 				_cursor.advance();
-				_cursor.advance();
+				if (_cursor.peek() == c)
+				{
+					isLongLong = true;
+					_cursor.advance();
+				}
+				else
+				{
+					isLong = true;
+				}
 				continue;
 			}
 			break;
@@ -174,7 +182,8 @@ namespace ceresc::lexer
 		// apply to a radix literal.
 		bool isUnsigned = false;
 		bool isLongLong = false;
-		scanIntegerSuffix(isUnsigned, isLongLong);
+		bool isLong = false;
+		scanIntegerSuffix(isUnsigned, isLongLong, isLong);
 
 		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
 		std::string_view digits = _cursor.buffer().substr(digitsStart, digitsEnd - digitsStart);
@@ -188,7 +197,7 @@ namespace ceresc::lexer
 			return Token::makeLiteralInt(lexeme, 0, startLoc);
 		}
 
-		return makeIntToken(lexeme, startLoc, base, digits, isUnsigned, isLongLong);
+		return makeIntToken(lexeme, startLoc, base, digits, isUnsigned, isLongLong, isLong);
 	}
 
 	Token Lexer::scanNumber()
@@ -236,6 +245,7 @@ namespace ceresc::lexer
 		uoffset digitsEnd = _cursor.position();
 		bool isUnsigned = false;
 		bool isLongLong = false;
+		bool isLong = false;
 		if (isFloat)
 		{
 			if (_cursor.peek() == 'f' || _cursor.peek() == 'F')
@@ -248,7 +258,7 @@ namespace ceresc::lexer
 		}
 		else
 		{
-			scanIntegerSuffix(isUnsigned, isLongLong);
+			scanIntegerSuffix(isUnsigned, isLongLong, isLong);
 		}
 
 		std::string_view lexeme = _cursor.buffer().substr(startPos, _cursor.position() - startPos);
@@ -256,7 +266,24 @@ namespace ceresc::lexer
 
 		if (isFloat)
 			return makeFloatToken(lexeme, digits, startLoc);
-		return makeIntToken(lexeme, startLoc, 10, digits, isUnsigned, isLongLong);
+
+		// A leading 0 followed by more digits is C's octal prefix: `0755` is 493, not seven hundred
+		// and fifty-five. (A lone `0` is octal too, and the same zero either way.) An 8 or a 9 in one
+		// is an error rather than a silent decimal.
+		if (digits.size() > 1 && digits.front() == '0')
+		{
+			std::string_view octal = digits.substr(1);
+			for (char digit : octal)
+			{
+				if (digit == '8' || digit == '9')
+				{
+					_diagnostics.error(DiagId::InvalidOctalDigit, startLoc, "invalid digit '{}' in octal literal '{}'", digit, lexeme);
+					return Token::makeLiteralInt(lexeme, 0, startLoc, isUnsigned, isLongLong, isLong, false);
+				}
+			}
+			return makeIntToken(lexeme, startLoc, 8, octal, isUnsigned, isLongLong, isLong);
+		}
+		return makeIntToken(lexeme, startLoc, 10, digits, isUnsigned, isLongLong, isLong);
 	}
 
 	char Lexer::scanEscapeSequence()
