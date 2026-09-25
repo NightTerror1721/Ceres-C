@@ -130,12 +130,15 @@ namespace ceresc::ast
 	{
 	private:
 		f64 _value; // stored as f64 until sema truncates to f32 - see token.h's TokenValue
+		bool _single = false; // an f or F suffix: float even where double is a type of its own (-fsoft-double)
 
 	public:
-		FloatLiteralExpr(support::SourceLocation location, f64 value) noexcept : Expr(location), _value(value) {}
+		FloatLiteralExpr(support::SourceLocation location, f64 value, bool single = false) noexcept :
+			Expr(location), _value(value), _single(single) {}
 
 	public:
 		f64 value() const noexcept { return _value; }
+		bool isSingle() const noexcept { return _single; }
 		void accept(AstVisitor& visitor) override;
 	};
 	static_assert(TriviallyDestructible<FloatLiteralExpr>, "FloatLiteralExpr must be trivially destructible (Arena-allocated)");

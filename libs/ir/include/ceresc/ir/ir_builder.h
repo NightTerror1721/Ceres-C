@@ -179,6 +179,7 @@ namespace ceresc::ir
 		support::Arena& _arena;
 		support::DiagnosticEngine& _diagnostics;
 		support::OptimizationOptions _options;
+		bool _softDouble = false;
 
 		IrModule _module;
 		IrFunction* _currentFunction = nullptr;
@@ -243,6 +244,30 @@ namespace ceresc::ir
 		// Reports E5002 the first time a 64-bit operation this phase does not implement would be
 		// lowered (F3.1b). A no-op for a supported one; see _reportedWideInteger.
 		void rejectWideFeature(support::SourceLocation loc, std::string_view what);
+
+		// -fsoft-double: a double is a wide value (the address of its two words, like a 64-bit integer) whose
+		// every operation is a call to one of the standard library's __f64_* routines (ceres/f64.h). The one
+		// thing the types alone do not say is C's promotion of a float passed through '...' to double.
+	public:
+		void setSoftDouble(bool on) noexcept { _softDouble = on; }
+
+	private:
+		enum class SoftKind : u8 { Word, Float, Wide };
+		struct SoftArg
+		{
+			IrValue value;
+			SoftKind kind;
+		};
+		// A call to a __f64_* routine: its arguments, already computed, and what it returns.
+		IrValue callSoftDouble(support::SourceLocation loc, std::string_view name, SoftKind result, std::initializer_list<SoftArg> args);
+		IrValue convertSoftDouble(support::SourceLocation loc, IrValue value, const ast::Type* fromType, const ast::Type* toType);
+		IrValue lowerDoubleArithmetic(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* lhsType,
+			const ast::Type* rhsType, IrValue lhsVal, IrValue rhsVal);
+		IrValue lowerDoubleCompare(support::SourceLocation loc, ast::BinaryOp op, IrValue a, IrValue b);
+		IrValue doubleConstant(support::SourceLocation loc, f64 value);
+		// Whether a value of type `from` already is a value of `to` as the two words it is kept in - so a store
+		// can copy it - rather than something to convert (a long long going into a double, or back).
+		static bool sameWideKind(const ast::Type* from, const ast::Type* to) noexcept;
 
 		IrValue lowerExpr(ast::Expr* expr);
 		void lowerStmt(ast::Stmt* stmt);

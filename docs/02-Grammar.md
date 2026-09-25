@@ -10,7 +10,7 @@ here is, by definition, a syntax error.
 
 | Area | What is supported |
 | --- | --- |
-| Types | `void`, `bool`, `char`, `short`, `int`, `long`, `long long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. `long long`/`unsigned long long` are real 8-byte types; `double` and `long double` are accepted and capped to `float`, with a warning. |
+| Types | `void`, `bool`, `char`, `short`, `int`, `long`, `long long`, `float`. `signed`/`unsigned` and `short`/`long` combine with `int`/`char` as in C. `long long`/`unsigned long long` are real 8-byte types; `double` and `long double` are accepted and capped to `float`, with a warning - or, with `-fsoft-double`, are a real 8-byte IEEE double done in software ([06-Known-Limitations.md](06-Known-Limitations.md)). |
 | Qualifiers | `const`, `volatile` and `restrict`, on either side of the type-spec and after a `*`. |
 | Storage classes | `static`, `extern`, `auto`, `register` and the `inline` function specifier. |
 | Derived types | Pointers, fixed-size arrays (1D and 2D; the size is an integer literal or arithmetic on literals, `[64]`, `[4 * 512]`, `[1 << 6]`, `[BUF + 8]` once macros expand; a variable's outermost size may be left out and taken from its initializer, `int a[] = {1, 2, 3}`, `char s[] = "hi"`, `int m[][2] = {{1, 2}, {3, 4}}`), `struct`, `union`, `enum`, `typedef`, and function types — so function pointers, including arrays of them and functions that return them. |

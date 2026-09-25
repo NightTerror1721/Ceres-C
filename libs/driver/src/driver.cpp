@@ -495,6 +495,8 @@ namespace ceresc::driver
 				preprocess.addIncludeDirectory(directory);
 			for (const auto& [name, value] : options.defines)
 				preprocess.define(name, value);
+			if (options.softDouble)
+				preprocess.define("__CERES_SOFT_DOUBLE__", "1");
 
 			preprocessor::PreprocessedSource expanded = preprocess.run(inputPath);
 			// Preprocessor diagnostics already point at their original files; only later phases need
@@ -533,6 +535,7 @@ namespace ceresc::driver
 			support::StringPool pool;
 			lexer::Lexer lexer(buffer->buffer(), sourceId, diagnostics, pool);
 			parser::Parser parser(lexer, arena, diagnostics);
+			parser.setSoftDouble(options.softDouble);
 			ast::TranslationUnit* unit = parser.parseTranslationUnit();
 
 			if (diagnostics.hasErrors())
@@ -542,6 +545,7 @@ namespace ceresc::driver
 			}
 
 			sema::Sema sema(arena, diagnostics);
+			sema.setSoftDouble(options.softDouble);
 			bool semaOk = sema.check(*unit);
 			printer.flush(std::cerr);
 			if (!semaOk)
@@ -555,6 +559,7 @@ namespace ceresc::driver
 
 			// ---- middle and back end ---------------------------------------------------------------
 			ir::IrBuilder builder(arena, diagnostics, options.optimization);
+			builder.setSoftDouble(options.softDouble);
 			ir::IrModule module = builder.build(*unit);
 			// IrBuilder can report a diagnostic of its own (F3.1a's E5002 for a 64-bit value it
 			// cannot lower yet): the IR it produced is not something to optimize or hand to codegen,

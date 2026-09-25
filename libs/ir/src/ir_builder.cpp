@@ -182,6 +182,7 @@ namespace ceresc::ir
 				return 0;
 			switch (type->kind())
 			{
+				case TypeKind::Double: return 110;
 				case TypeKind::Float: return 100;
 				case TypeKind::ULongLong: return 62;
 				case TypeKind::LongLong: return 61;
@@ -689,7 +690,7 @@ namespace ceresc::ir
 			return;
 		}
 
-		if (fromType && fromType->isWideInteger())
+		if (fromType && fromType->isWide())
 		{
 			// A wide source is already the address of the eight bytes. Its volatility governs the
 			// LOADS (a `volatile long long` read has to stay observable); callers that have already
@@ -711,9 +712,129 @@ namespace ceresc::ir
 		emitStore(loc, offsetAddress(loc, destAddr, 4), IrMemSize::Word, high, false, isVolatile);
 	}
 
+	// ---- -fsoft-double -----------------------------------------------------------------------------
+
+	bool IrBuilder::sameWideKind(const Type* from, const Type* to) noexcept
+	{
+		if (!from || !to)
+			return false;
+		return (from->isWideInteger() && to->isWideInteger()) || (from->isDouble() && to->isDouble());
+	}
+
+	IrValue IrBuilder::doubleConstant(support::SourceLocation loc, f64 value)
+	{
+		u64 bits = std::bit_cast<u64>(value);
+		return makeWideValue(loc, emitConstInt(loc, static_cast<i64>(static_cast<u32>(bits))),
+			emitConstInt(loc, static_cast<i64>(static_cast<u32>(bits >> 32))));
+	}
+
+	IrValue IrBuilder::callSoftDouble(support::SourceLocation loc, std::string_view name, SoftKind result,
+		std::initializer_list<SoftArg> args)
+	{
+		// The same shape a CallExpr to a declared function lowers to: the wide result's home first, then the
+		// Params immediately before the Call (codegen reads them back by position), then the two words stored.
+		IrValue wideResultAddr{};
+		if (result == SoftKind::Wide)
+			wideResultAddr = emitFrameAddr(loc, newStructTempSlot(8));
+		for (const SoftArg& arg : args)
+			emitVoid(loc, IrParamPayload{ arg.value, arg.kind == SoftKind::Float, false, arg.kind == SoftKind::Wide });
+		IrCallPayload payload;
+		payload.hasResult = true;
+		payload.isFloat = result == SoftKind::Float;
+		payload.hasWideResult = result == SoftKind::Wide;
+		payload.callee = name;
+		payload.argCount = static_cast<u32>(args.size());
+		payload.result = _currentFunction->newTemp();
+		if (result == SoftKind::Wide)
+			payload.resultHigh = _currentFunction->newTemp();
+		emitVoid(loc, payload);
+		if (result != SoftKind::Wide)
+			return payload.result;
+		emitStore(loc, wideResultAddr, IrMemSize::Word, payload.result);
+		emitStore(loc, offsetAddress(loc, wideResultAddr, 4), IrMemSize::Word, payload.resultHigh);
+		return wideResultAddr;
+	}
+
+	IrValue IrBuilder::convertSoftDouble(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
+	{
+		bool fromDouble = fromType && fromType->isDouble();
+		bool toDouble = toType && toType->isDouble();
+		if (fromDouble && toDouble)
+			return value;
+		if (toDouble)
+		{
+			if (fromType && fromType->isFloat())
+				return callSoftDouble(loc, "__f64_from_f32", SoftKind::Wide, { { value, SoftKind::Float } });
+			if (fromType && fromType->isWideInteger())
+				return callSoftDouble(loc, fromType->isSigned() ? "__f64_from_i64" : "__f64_from_u64", SoftKind::Wide,
+					{ { value, SoftKind::Wide } });
+			// Any other scalar is a word by now, extended as its type says (a char or a bool already is one).
+			bool isUnsigned = fromType && !fromType->isSigned() && !fromType->isEnum();
+			return callSoftDouble(loc, isUnsigned ? "__f64_from_u32" : "__f64_from_i32", SoftKind::Wide,
+				{ { value, SoftKind::Word } });
+		}
+		// From a double.
+		if (!toType)
+			return callSoftDouble(loc, "__f64_to_i32", SoftKind::Word, { { value, SoftKind::Wide } });
+		if (toType->isFloat())
+			return callSoftDouble(loc, "__f64_to_f32", SoftKind::Float, { { value, SoftKind::Wide } });
+		if (toType->isBool())
+		{
+			// C asks whether it compares unequal to zero: a NaN does (the order is 2), -0 does not.
+			IrValue order = callSoftDouble(loc, "__f64_cmp", SoftKind::Word,
+				{ { value, SoftKind::Wide }, { doubleConstant(loc, 0.0), SoftKind::Wide } });
+			return emitUnOp(loc, IrUnOp::ToBool, order);
+		}
+		if (toType->isWideInteger())
+			return callSoftDouble(loc, toType->isSigned() ? "__f64_to_i64" : "__f64_to_u64", SoftKind::Wide,
+				{ { value, SoftKind::Wide } });
+		// A word-sized integer, then narrowed to a char or a short by the ordinary rules.
+		bool isUnsigned = !toType->isSigned() && !toType->isPointer() && !toType->isEnum();
+		IrValue word = callSoftDouble(loc, isUnsigned ? "__f64_to_u32" : "__f64_to_i32", SoftKind::Word, { { value, SoftKind::Wide } });
+		return convertForStore(loc, word, isUnsigned ? &Type::UInt : &Type::Int, toType);
+	}
+
+	IrValue IrBuilder::lowerDoubleArithmetic(support::SourceLocation loc, BinaryOp op, const Type* lhsType,
+		const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
+	{
+		IrValue a = convertSoftDouble(loc, lhsVal, lhsType, &Type::Double);
+		IrValue b = convertSoftDouble(loc, rhsVal, rhsType, &Type::Double);
+		std::string_view name;
+		switch (op)
+		{
+			case BinaryOp::Add: name = "__f64_add"; break;
+			case BinaryOp::Sub: name = "__f64_sub"; break;
+			case BinaryOp::Mul: name = "__f64_mul"; break;
+			case BinaryOp::Div: name = "__f64_div"; break;
+			default:
+				rejectWideFeature(loc, "this operator on a double");   // sema has refused it already
+				return a;
+		}
+		return callSoftDouble(loc, name, SoftKind::Wide, { { a, SoftKind::Wide }, { b, SoftKind::Wide } });
+	}
+
+	IrValue IrBuilder::lowerDoubleCompare(support::SourceLocation loc, BinaryOp op, IrValue a, IrValue b)
+	{
+		// __f64_cmp orders the two as -1, 0 or 1, and says 2 when either is a NaN - which every relation but
+		// != then fails, as IEEE has it. a > b is b < a, and a >= b is b <= a.
+		if (op == BinaryOp::Gt || op == BinaryOp::Ge)
+		{
+			std::swap(a, b);
+			op = op == BinaryOp::Gt ? BinaryOp::Lt : BinaryOp::Le;
+		}
+		IrValue order = callSoftDouble(loc, "__f64_cmp", SoftKind::Word, { { a, SoftKind::Wide }, { b, SoftKind::Wide } });
+		switch (op)
+		{
+			case BinaryOp::Lt: return emitCmp(loc, IrCmpPredicate::Eq, order, emitConstInt(loc, -1), false);
+			case BinaryOp::Le: return emitCmp(loc, IrCmpPredicate::Le, order, emitConstInt(loc, 0), false);
+			case BinaryOp::Eq: return emitCmp(loc, IrCmpPredicate::Eq, order, emitConstInt(loc, 0), false);
+			default:           return emitCmp(loc, IrCmpPredicate::Ne, order, emitConstInt(loc, 0), false);
+		}
+	}
+
 	IrValue IrBuilder::materializeWide(support::SourceLocation loc, IrValue value, const Type* fromType)
 	{
-		if (fromType && fromType->isWideInteger())
+		if (fromType && fromType->isWide())
 			return value;
 		IrValue addr = emitFrameAddr(loc, newStructTempSlot(8));
 		emitWideStore(loc, addr, value, fromType, false);
@@ -1064,12 +1185,12 @@ namespace ceresc::ir
 				emitMemoryCopy(loc, offsetAddress(loc, baseAddr, offset), lowerExpr(init), totalSize, align);
 				return;
 			}
-			if (type->isWideInteger())
+			if (type->isWide())
 			{
 				// A wide source is copied as its own address (its volatility rides on the loads); a
 				// scalar or float source is converted first. Keeping the two apart is what stops the
 				// DESTINATION's qualifier from governing the source's reads.
-				if (init->type() && init->type()->isWideInteger())
+				if (sameWideKind(init->type(), type))
 					emitWideStore(loc, offsetAddress(loc, baseAddr, offset), lowerExpr(init), init->type(), type->isVolatile());
 				else
 					emitWideStore(loc, offsetAddress(loc, baseAddr, offset),
@@ -1324,7 +1445,7 @@ namespace ceresc::ir
 		// address is simply how this IR represents it, and whoever consumes it knows to copy from
 		// there rather than treat it as a pointer value.
 		const Type* type = expr->type();
-		if (type && (type->isArray() || type->isAggregate() || type->isWideInteger()))
+		if (type && (type->isArray() || type->isAggregate() || type->isWide()))
 			return lowerAddress(expr);
 		// A function decays to a pointer to itself, and its address IS its value - there is nothing
 		// to load through. Same shape as the array case above, and the same reason: a function type
@@ -1366,6 +1487,14 @@ namespace ceresc::ir
 
 		support::SourceLocation loc = cond->location();
 		IrValue value = lowerExpr(cond);
+		// A double is true unless it compares equal to zero: -0 is false, a NaN is true (__f64_cmp says 2).
+		if (cond->type() && cond->type()->isDouble())
+		{
+			IrValue order = callSoftDouble(loc, "__f64_cmp", SoftKind::Word,
+				{ { value, SoftKind::Wide }, { doubleConstant(loc, 0.0), SoftKind::Wide } });
+			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, false, order, emitConstInt(loc, 0), trueBlock, falseBlock });
+			return;
+		}
 		// A 64-bit condition is true when either word is non-zero (there is no -0 to worry about),
 		// which is one `or` and the same branch the scalar case already takes.
 		if (cond->type() && cond->type()->isWideInteger())
@@ -1410,6 +1539,8 @@ namespace ceresc::ir
 	{
 		if (type && type->isFloat())
 			return value;
+		if (type && type->isDouble())
+			return convertSoftDouble(loc, value, type, &Type::Float);
 		// A wide operand is converted to float through the same helper a cast uses - the whole
 		// 64-bit value, not the address's low word.
 		if (type && type->isWideInteger())
@@ -1419,6 +1550,9 @@ namespace ceresc::ir
 
 	IrValue IrBuilder::convertForStore(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
 	{
+		if ((toType && toType->isDouble()) || (fromType && fromType->isDouble()))
+			return convertSoftDouble(loc, value, fromType, toType);
+
 		bool toWide = toType && toType->isWideInteger();
 		bool fromWide = fromType && fromType->isWideInteger();
 
@@ -1572,6 +1706,9 @@ namespace ceresc::ir
 	IrValue IrBuilder::lowerArithmetic(support::SourceLocation loc, BinaryOp op, const Type* resultType,
 		const Type* lhsType, const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
 	{
+		if (resultType && resultType->isDouble())
+			return lowerDoubleArithmetic(loc, op, lhsType, rhsType, lhsVal, rhsVal);
+
 		// A 64-bit result has its own lowering (the two-word pair) - see lowerWideArithmetic().
 		if (resultType && resultType->isWideInteger())
 			return lowerWideArithmetic(loc, op, resultType, lhsType, rhsType, lhsVal, rhsVal);
@@ -1676,6 +1813,11 @@ namespace ceresc::ir
 
 	void IrBuilder::visit(ast::FloatLiteralExpr& node)
 	{
+		if (node.type() && node.type()->isDouble())
+		{
+			_lastValue = doubleConstant(node.location(), node.value());
+			return;
+		}
 		_lastValue = emitConstFloat(node.location(), static_cast<f32>(node.value()));
 	}
 
@@ -1720,7 +1862,7 @@ namespace ceresc::ir
 
 		// F3.4: a 64-bit result comes back in two registers/words. The caller gets a fresh 8-byte
 		// temp, which codegen fills with the two returned words; the CallExpr's value is that temp.
-		bool returnsWide = hasResult && resultType->isWideInteger();
+		bool returnsWide = hasResult && resultType->isWide();
 		IrValue wideResultAddr{};
 		if (returnsWide)
 			wideResultAddr = emitFrameAddr(loc, newStructTempSlot(8));
@@ -1805,7 +1947,7 @@ namespace ceresc::ir
 			// to its low word, and only a wide one marks the Param wide. When the callee is unknown
 			// (an indirect call through a function pointer), the argument's own type is all there is,
 			// so a wide argument is passed as its pair.
-			bool wideArg = paramType ? paramType->isWideInteger() : (argType && argType->isWideInteger());
+			bool wideArg = paramType ? paramType->isWide() : (argType && argType->isWide());
 			if (isIndirectStruct(argType))
 			{
 				// By value, without a by-value register class: copy the argument into a slot of the
@@ -1836,8 +1978,16 @@ namespace ceresc::ir
 			IrValue value = lowerExpr(arg);
 			if (paramType)
 				value = convertForStore(loc, value, argType, paramType);
+			// Through '...' a float goes as a double, as C has it - where there is a double (-fsoft-double).
+			const Type* passedType = paramType ? paramType : argType;
+			if (!paramType && _softDouble && argType && argType->isFloat())
+			{
+				value = convertSoftDouble(loc, value, argType, &Type::Double);
+				passedType = &Type::Double;
+				wideArg = true;
+			}
 			argValues.push_back(value);
-			argIsFloat.push_back(argType && argType->isFloat());
+			argIsFloat.push_back(passedType && passedType->isFloat());
 			argIsWide.push_back(wideArg);
 		}
 
@@ -1922,6 +2072,16 @@ namespace ceresc::ir
 			case UnaryOp::Negate:
 			{
 				const Type* operandType = node.operand()->type();
+				if (operandType && operandType->isDouble())
+				{
+					// -x flips the sign bit and nothing else, a NaN's included: no call needed.
+					IrValue a = lowerExpr(node.operand());
+					bool isVolatile = operandType->isVolatile();
+					IrValue high = loadWideWord(loc, a, true, isVolatile);
+					_lastValue = makeWideValue(loc, loadWideWord(loc, a, false, isVolatile),
+						emitBinOp(loc, IrBinOp::Xor, high, emitConstInt(loc, static_cast<i64>(0x80000000u)), true));
+					return;
+				}
 				if (operandType && operandType->isWideInteger())
 				{
 					IrValue a = materializeWide(loc, lowerExpr(node.operand()), operandType);
@@ -1961,6 +2121,19 @@ namespace ceresc::ir
 			{
 				const Type* type = node.operand()->type();
 				bool isIncrement = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PostIncrement);
+				if (type && type->isDouble())
+				{
+					IrValue addr = lowerAddress(node.operand());
+					bool isVolatile = type->isVolatile();
+					bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
+					IrValue snapshot = makeWideValue(loc, loadWideWord(loc, addr, false, isVolatile),
+						loadWideWord(loc, addr, true, isVolatile));
+					IrValue newValue = callSoftDouble(loc, isIncrement ? "__f64_add" : "__f64_sub", SoftKind::Wide,
+						{ { snapshot, SoftKind::Wide }, { doubleConstant(loc, 1.0), SoftKind::Wide } });
+					emitWideStore(loc, addr, newValue, &Type::Double, isVolatile);
+					_lastValue = isPre ? newValue : snapshot;
+					return;
+				}
 				if (type && type->isWideInteger())
 				{
 					IrValue addr = lowerAddress(node.operand());
@@ -2032,6 +2205,13 @@ namespace ceresc::ir
 				// A float on either side makes the whole comparison a float one, with a wide operand
 				// converted whole by toFloatIfNeeded(). It has to be checked before the wide case:
 				// `wide < 1.5f` is a float comparison, not a 64-bit integer one.
+				if ((lhsType && lhsType->isDouble()) || (rhsType && rhsType->isDouble()))
+				{
+					IrValue a = convertSoftDouble(loc, lhs, lhsType, &Type::Double);
+					IrValue b = convertSoftDouble(loc, rhs, rhsType, &Type::Double);
+					_lastValue = lowerDoubleCompare(loc, node.op(), a, b);
+					return;
+				}
 				bool cmpIsFloat = (lhsType && lhsType->isFloat()) || (rhsType && rhsType->isFloat());
 				if (cmpIsFloat)
 				{
@@ -2094,7 +2274,7 @@ namespace ceresc::ir
 			return;
 		}
 
-		if (targetType && targetType->isWideInteger())
+		if (targetType && targetType->isWide())
 		{
 			// A wide target is eight bytes, never a scalar store: `x = y` is a two-word copy (or an
 			// extension of a scalar y), and `x op= y` computes the wide result first. The value of
@@ -2106,7 +2286,7 @@ namespace ceresc::ir
 				// scalar or float source is converted first - so the DESTINATION's qualifier never
 				// governs the source's reads.
 				const Type* valueType = node.value()->type();
-				if (valueType && valueType->isWideInteger())
+				if (sameWideKind(valueType, targetType))
 				{
 					IrValue value = lowerExpr(node.value());
 					IrValue destAddr = lowerAddress(node.target());
@@ -2129,8 +2309,9 @@ namespace ceresc::ir
 			const Type* promotedType = commonArithmeticType(targetType, node.value()->type());
 			IrValue value = lowerArithmetic(loc, binaryOp, promotedType, targetType, node.value()->type(), addr, rhs);
 			// A float promoted type (`long long x; x += 1.5f;`) converts back down to the wide
-			// target, exactly as `x = x + 1.5f;` does - otherwise the store would refuse it.
-			if (promotedType && promotedType->isFloat())
+			// target, exactly as `x = x + 1.5f;` does - otherwise the store would refuse it. So does a
+			// double one into a long long (`x += 0.5`), and anything into a double.
+			if (promotedType && (promotedType->isFloat() || !sameWideKind(promotedType, targetType)))
 			{
 				IrValue converted = convertForStore(loc, value, promotedType, targetType);
 				emitWideStore(loc, addr, converted, targetType, targetType->isVolatile());
@@ -2268,7 +2449,7 @@ namespace ceresc::ir
 		// one), so a 64-bit operand has no encoding - refuse it rather than use the address's low
 		// word. `__builtin_expect` above is the exception, since it just forwards its operand.
 		for (ast::Expr* argument : args)
-			if (argument->type() && argument->type()->isWideInteger())
+			if (argument->type() && argument->type()->isWide())
 				rejectWideFeature(loc, "a 64-bit operand to a builtin");
 
 		// memcpy and memset: a call to the unit's block routine, which codegen carries (one MCPY or MSET),
@@ -2392,6 +2573,17 @@ namespace ceresc::ir
 				// occupies exactly one outgoing stack word (docs/09-Variadic-Convention.md), which
 				// is what sema's "must be a 4-byte scalar" check on the type guarantees.
 				const Type* argumentType = node.argumentType();
+				if (argumentType && argumentType->isWide())
+				{
+					// A 64-bit argument - a long long, or a double under -fsoft-double - takes two words, low first:
+					// they are copied out into a pair of the reader's own, and the cursor moves eight bytes.
+					IrValue cursor = emitLoad(loc, listAddr, IrMemSize::Word);
+					IrValue low = emitLoad(loc, cursor, IrMemSize::Word);
+					IrValue high = emitLoad(loc, offsetAddress(loc, cursor, 4), IrMemSize::Word);
+					_lastValue = makeWideValue(loc, low, high);
+					emitStore(loc, listAddr, IrMemSize::Word, emitBinOp(loc, IrBinOp::Add, cursor, emitConstInt(loc, 8), false, false));
+					return;
+				}
 				bool isFloat = argumentType && argumentType->isFloat();
 				IrValue cursor = emitLoad(loc, listAddr, IrMemSize::Word);
 				IrValue value = emitLoad(loc, cursor, IrMemSize::Word, isFloat);
@@ -2542,14 +2734,14 @@ namespace ceresc::ir
 		// the already-terminated block, i.e. an unreachable one, and both arms would then read a
 		// temp that never runs.
 		IrValue wideResultAddr{};
-		if (node.type() && node.type()->isWideInteger())
+		if (node.type() && node.type()->isWide())
 			wideResultAddr = emitFrameAddr(loc, newStructTempSlot(8));
 
 		lowerCondition(node.cond(), &thenBlock, &elseBlock);
 
 		// A wide result is an 8-byte object, so both arms copy their two words into one temp rather
 		// than `Copy` a single value into a register.
-		if (node.type() && node.type()->isWideInteger())
+		if (node.type() && node.type()->isWide())
 		{
 			IrValue resultAddr = wideResultAddr;
 			// One arm: a wide expression is its own address (copied, its volatility on the loads); a
@@ -2557,7 +2749,7 @@ namespace ceresc::ir
 			auto emitWideArm = [&](support::SourceLocation armLoc, IrValue dest, ast::Expr* arm, const Type* resultType)
 			{
 				const Type* armType = arm->type();
-				if (armType && armType->isWideInteger())
+				if (sameWideKind(armType, resultType))
 					emitWideStore(armLoc, dest, lowerExpr(arm), armType, false);
 				else
 					emitWideStore(armLoc, dest, convertForStore(armLoc, lowerExpr(arm), armType, resultType), resultType, false);
@@ -2744,7 +2936,7 @@ namespace ceresc::ir
 
 		const Type* returnType = _currentFunction->returnType();
 
-		if (returnType && returnType->isWideInteger())
+		if (returnType && returnType->isWide())
 		{
 			// F3.4: a 64-bit return goes back in two words (ret0 low, ret1 high). The value is the
 			// address of the pair, so load its two words into an IrWideReturnPayload. A `volatile`
@@ -3118,7 +3310,7 @@ namespace ceresc::ir
 			return;
 
 		const Type* type = node.type();
-		if (type && type->isWideInteger())
+		if (type && type->isWide())
 		{
 			// A wide local is eight bytes; its initializer (a plain expression or a brace list) is
 			// written as the two words by the same path a struct's field goes through.

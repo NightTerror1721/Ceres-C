@@ -179,6 +179,7 @@ namespace ceresc::ast
 			case TypeKind::LongLong: return prefix + "long long";
 			case TypeKind::ULongLong: return prefix + "unsigned long long";
 			case TypeKind::Float: return prefix + "float";
+			case TypeKind::Double: return prefix + "double";
 			case TypeKind::Pointer:
 			{
 				// A pointer's OWN qualifiers are written after the star, not before it: `int* const`

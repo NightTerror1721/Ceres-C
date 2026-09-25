@@ -16,6 +16,7 @@ namespace ceresc::driver
 				"  -O3                 accepted as an alias for -O2\n"
 				"  -Os                 like -O1 but for size: no inlining, no jump tables\n"
 				"  -Og                 like -O1 but for debugging: no inlining, no frame-slot reuse\n"
+				"  -fsoft-double       double is a real 64-bit IEEE double, done in software (ceres/f64.h)\n"
 				"  -f<opt>/-fno-<opt>  turn one optimization on/off, overriding -O in argument order:\n";
 
 			for (const support::OptimizationFlag& flag : support::optimizationFlags())
@@ -153,6 +154,11 @@ namespace ceresc::driver
 				// here, and failing a build over a habit every other C compiler tolerates helps
 				// nobody. If a genuinely more aggressive tier ever exists, this is where it lands.
 				options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
+				continue;
+			}
+			if (arg == "-fsoft-double" || arg == "-fno-soft-double")
+			{
+				options.softDouble = arg == "-fsoft-double";
 				continue;
 			}
 			if (arg.starts_with("-f"))

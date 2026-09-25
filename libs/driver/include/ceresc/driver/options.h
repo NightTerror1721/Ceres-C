@@ -70,6 +70,10 @@ namespace ceresc::driver
 		std::vector<std::string> programArguments;   // after --: the program's own argv[1...], passed on as `ceres run ... -- <args>`
 		bool symbolTable = false;                // --symtab: `ceres link --symtab`, a table of the code's names in the program
 		bool warningsAsErrors = false; // -Werror
+		// -fsoft-double: `double` is a real IEEE binary64, every operation on it a call to the standard
+		// library's __f64_* routines (ceres/f64.h), and __CERES_SOFT_DOUBLE__ is defined. Without it `double`
+		// is `float` (this machine's only floating-point type) and a program pays nothing.
+		bool softDouble = false;
 		bool showVersion = false;    // --version: print the version and stop, before anything else
 		// --stats / -fstats: after compiling each unit, print what the IR optimizer did to it
 		// (instruction counts before and after, calls inlined, jump tables) on stderr.

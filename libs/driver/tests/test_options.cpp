@@ -494,3 +494,13 @@ TEST(options, run_arg_collects_the_extra_arguments_for_ceres_run_in_order)
 	CHECK_EQ(result.options->runArguments[1], std::string{ "0=stick.img" });
 	CHECK(!parse({ "ceresc", "main.c", "--run", "--run-arg" }).options.has_value());
 }
+
+TEST(options, soft_double_is_off_unless_asked_for)
+{
+	ParseResult plain = parse({ "main.c" });
+	CHECK(plain.options.has_value() && !plain.options->softDouble);
+	ParseResult soft = parse({ "main.c", "-fsoft-double" });
+	CHECK(soft.options.has_value() && soft.options->softDouble);
+	ParseResult undone = parse({ "main.c", "-fsoft-double", "-fno-soft-double" });
+	CHECK(undone.options.has_value() && !undone.options->softDouble);
+}

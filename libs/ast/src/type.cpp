@@ -14,8 +14,9 @@
 // has no native 64-bit register (see type.h's own note). `long long`/`unsigned long long` ARE
 // 8 bytes with alignment 8 (F3.1a), even though no register holds one: their width is a fact about
 // the C type, and the back end legalizes a wide value to a (lo, hi) pair when it lowers one (F3.1b;
-// until then IrBuilder refuses to lower it - see type.h). `double`/`long double` do not reach here
-// as a kind of their own: the parser caps both to Float. Enum is always int-sized, same as most C
+// until then IrBuilder refuses to lower it - see type.h). `double`/`long double` are Double - eight
+// bytes aligned like long long - only under -fsoft-double; otherwise the parser caps both to Float.
+// Enum is always int-sized, same as most C
 // ABIs - it does not need a StructDecl-style computed layout.
 //
 // Both walks take an explicit recursion depth and bail out past a small limit instead of
@@ -53,6 +54,7 @@ namespace ceresc::ast
 				case TypeKind::LongLong: return 8;
 				case TypeKind::ULongLong: return 8;
 				case TypeKind::Float: return 4;
+				case TypeKind::Double: return 8;
 				case TypeKind::Pointer: return 4;
 				// A function type is not an OBJECT type: nothing holds one, so it has no size. Zero is
 				// the same answer Void gives, and for the same reason. A POINTER to one is four bytes
@@ -109,7 +111,7 @@ namespace ceresc::ast
 				// 64-bit integers align to 8 even though no register is 8 bytes: `long long a[2]`
 				// and a struct field have to land where the C ABI says, and the back end's
 				// word-pair copy can always fall back to narrower pieces for an unaligned pointer.
-				case TypeKind::LongLong: case TypeKind::ULongLong: return 8;
+				case TypeKind::LongLong: case TypeKind::ULongLong: case TypeKind::Double: return 8;
 				case TypeKind::Float: return 4;
 				case TypeKind::Pointer: return 4;
 				case TypeKind::Array: return alignmentOf(type->arrayElementType(), depth + 1);
@@ -247,6 +249,7 @@ namespace ceresc::ast
 			case TypeKind::LongLong: return type->isVolatile() ? &Type::ConstVolatileLongLong : &Type::ConstLongLong;
 			case TypeKind::ULongLong: return type->isVolatile() ? &Type::ConstVolatileULongLong : &Type::ConstULongLong;
 			case TypeKind::Float:  return type->isVolatile() ? &Type::ConstVolatileFloat : &Type::ConstFloat;
+			case TypeKind::Double: return type->isVolatile() ? &Type::ConstVolatileDouble : &Type::ConstDouble;
 			default:
 				break;
 		}
@@ -275,6 +278,7 @@ namespace ceresc::ast
 			case TypeKind::LongLong: return &Type::LongLong;
 			case TypeKind::ULongLong: return &Type::ULongLong;
 			case TypeKind::Float:  return &Type::Float;
+			case TypeKind::Double: return &Type::Double;
 			default:
 				break;
 		}
@@ -299,6 +303,7 @@ namespace ceresc::ast
 			case TypeKind::LongLong: return type->isConst() ? &Type::ConstVolatileLongLong : &Type::VolatileLongLong;
 			case TypeKind::ULongLong: return type->isConst() ? &Type::ConstVolatileULongLong : &Type::VolatileULongLong;
 			case TypeKind::Float: return type->isConst() ? &Type::ConstVolatileFloat : &Type::VolatileFloat;
+			case TypeKind::Double: return type->isConst() ? &Type::ConstVolatileDouble : &Type::VolatileDouble;
 			default: return makeCompound(arena, type->kind(), type->isConst(), true, type->isRestrict(), type->_payload, type->_arraySize);
 		}
 	}

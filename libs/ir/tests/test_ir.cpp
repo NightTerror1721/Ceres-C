@@ -1579,3 +1579,67 @@ TEST(ir, the_arguments_of_an_indirect_call_stay_contiguous_with_it)
 	CHECK(lines[callLine - 1].find("param ") != std::string::npos);
 	CHECK(lines[callLine - 2].find("param ") != std::string::npos);
 }
+
+namespace
+{
+	// functionIr() with -fsoft-double: double is Type::Double, and every operation on it a call.
+	std::string softDoubleIr(std::string_view source, std::string_view functionName = "main")
+	{
+		support::Arena arena;
+		support::DiagnosticEngine diagnostics;
+		support::StringPool pool;
+		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
+		parser::Parser parser(lexer, arena, diagnostics);
+		parser.setSoftDouble(true);
+		ast::TranslationUnit* unit = parser.parseTranslationUnit();
+		CHECK(unit != nullptr);
+		if (!unit)
+			return "<parse-failed>";
+		sema::Sema sema(arena, diagnostics);
+		sema.setSoftDouble(true);
+		CHECK(sema.check(*unit));
+		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
+		builder.setSoftDouble(true);
+		ir::IrModule module = builder.build(*unit);
+		CHECK(!diagnostics.hasErrors());
+		for (const auto& function : module.functions())
+			if (function->name() == functionName)
+				return ir::IrPrinter{}.print(*function);
+		return "<function-not-found>";
+	}
+}
+
+TEST(ir, a_soft_double_operation_is_a_call_to_its_f64_routine)
+{
+	CHECK(contains(softDoubleIr("double f(double a, double b) { return a + b; }", "f"), " __f64_add,"));
+	CHECK(contains(softDoubleIr("double f(double a, double b) { return a / b; }", "f"), " __f64_div,"));
+	CHECK(contains(softDoubleIr("double f(double a) { a *= 3; return a; }", "f"), " __f64_mul,"));
+	CHECK(contains(softDoubleIr("double f(double a) { return a++; }", "f"), " __f64_add,"));
+	std::string compare = softDoubleIr("int f(double a, double b) { return a > b; }", "f");
+	CHECK(contains(compare, " __f64_cmp,"));
+	CHECK(contains(softDoubleIr("int f(double a) { if (a) return 1; return 0; }", "f"), " __f64_cmp,"));
+	// -x flips the sign bit in place: no call at all.
+	CHECK(!contains(softDoubleIr("double f(double a) { return -a; }", "f"), "call"));
+}
+
+TEST(ir, soft_double_conversions_call_the_right_routine)
+{
+	CHECK(contains(softDoubleIr("int f(double a) { return a; }", "f"), " __f64_to_i32,"));
+	CHECK(contains(softDoubleIr("unsigned f(double a) { return a; }", "f"), " __f64_to_u32,"));
+	CHECK(contains(softDoubleIr("float f(double a) { return a; }", "f"), " __f64_to_f32,"));
+	CHECK(contains(softDoubleIr("long long f(double a) { return a; }", "f"), " __f64_to_i64,"));
+	CHECK(contains(softDoubleIr("double f(int x) { return x; }", "f"), " __f64_from_i32,"));
+	CHECK(contains(softDoubleIr("double f(unsigned long long x) { return x; }", "f"), " __f64_from_u64,"));
+	CHECK(contains(softDoubleIr("double f(float x) { return x; }", "f"), " __f64_from_f32,"));
+	CHECK(contains(softDoubleIr("int f(void) { return sizeof(double); }", "f"), "const 8"));
+	CHECK(contains(softDoubleIr("int f(void) { return sizeof(1.0); }", "f"), "const 8"));      // an unsuffixed literal is a double
+	CHECK(contains(softDoubleIr("int f(void) { return sizeof(1.0f); }", "f"), "const 4"));
+}
+
+TEST(ir, a_float_through_the_ellipsis_goes_as_a_soft_double)
+{
+	std::string text = softDoubleIr("int v(int n, ...); int main() { return v(1, 1.5f); }");
+	CHECK(contains(text, " __f64_from_f32,"));
+	// Without -fsoft-double double is float, and nothing is called.
+	CHECK(!contains(functionIr("double f(double a, double b) { return a * b + 1.0; }", "f"), "__f64"));
+}

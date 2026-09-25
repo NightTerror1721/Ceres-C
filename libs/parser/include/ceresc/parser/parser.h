@@ -133,6 +133,9 @@ namespace ceresc::parser
 	public:
 		explicit Parser(lexer::Lexer& lexer, support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept;
 
+		// -fsoft-double: `double` and `long double` are a real binary64 (Type::Double), not float.
+		void setSoftDouble(bool on) noexcept { _softDouble = on; }
+
 	public:
 		// Entry points. parseExpression()/parseTypeName() are Fase 2; parseTranslationUnit()/
 		// parseExternalDecl()/parseStatement() are Fase 3 - see the header comment above for what
@@ -476,6 +479,7 @@ namespace ceresc::parser
 		// _allowUnsizedArray around its applyDeclarator() call, which then builds the array with size 0 and
 		// sets _unsizedArrayPending; finishVarDecl() replaces it with the real length once the initializer
 		// has been read. Everywhere else (a struct member, a typedef, a cast) the omitted size is still an error.
+		bool _softDouble = false;
 		bool _allowUnsizedArray = false;
 		bool _unsizedArrayPending = false;
 		// `struct S { int n; int a[]; };` - a flexible array member: an unsized array allowed as a

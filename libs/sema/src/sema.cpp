@@ -114,7 +114,7 @@ namespace ceresc::sema
 			case TypeKind::Bool: case TypeKind::Char: case TypeKind::UChar: case TypeKind::SChar:
 			case TypeKind::Short: case TypeKind::UShort: case TypeKind::Int: case TypeKind::UInt:
 			case TypeKind::Long: case TypeKind::ULong:
-			case TypeKind::LongLong: case TypeKind::ULongLong: case TypeKind::Float:
+			case TypeKind::LongLong: case TypeKind::ULongLong: case TypeKind::Float: case TypeKind::Double:
 			case TypeKind::Enum: // an enum is an integer type in real C - see integerPromote()
 				return true;
 			default:
@@ -124,7 +124,7 @@ namespace ceresc::sema
 
 	bool Sema::isIntegerType(const Type* type) noexcept
 	{
-		return isArithmeticType(type) && type->kind() != TypeKind::Float;
+		return isArithmeticType(type) && !type->isFloating();
 	}
 
 	bool Sema::isScalarType(const Type* type) noexcept
@@ -361,8 +361,8 @@ namespace ceresc::sema
 			Expr* inner = first ? zeroInitializerFor(first, location) : static_cast<Expr*>(_arena.create<ast::IntLiteralExpr>(location, u64{ 0 }));
 			return makeInitList(location, { inner });
 		}
-		if (type && type->isFloat())
-			return _arena.create<ast::FloatLiteralExpr>(location, 0.0);
+		if (type && type->isFloating())
+			return _arena.create<ast::FloatLiteralExpr>(location, 0.0, type->isFloat());
 		return _arena.create<ast::IntLiteralExpr>(location, u64{ 0 });
 	}
 
@@ -693,6 +693,7 @@ namespace ceresc::sema
 			Pointee4,    // ... to a 4-byte one
 			Pointee8,    // ... to an 8-byte one (%lld)
 			FloatPointer,// ... to a float
+			DoublePointer,// ... to a double (%lf under -fsoft-double)
 			AnyPointer,  // scanf %p: where a pointer is stored
 		};
 
@@ -711,6 +712,7 @@ namespace ceresc::sema
 				case FormatWant::Pointee4:     return "an 'int *'";
 				case FormatWant::Pointee8:     return "a 'long long *'";
 				case FormatWant::FloatPointer: return "a 'float *'";
+				case FormatWant::DoublePointer: return "a 'double *'";
 				case FormatWant::AnyPointer:   return "a 'void **' (or a pointer to a 4-byte integer)";
 			}
 			return "";
@@ -743,7 +745,7 @@ namespace ceresc::sema
 			{
 				case FormatWant::Int:          return type && isIntegerType(type) && type->sizeInBytes() <= 4;
 				case FormatWant::LongLong:     return integerOfSize(type, 8);
-				case FormatWant::Float:        return type && type->isFloat();
+				case FormatWant::Float:        return type && type->isFloating();   // a float goes as a double where there is one
 				case FormatWant::String:       return integerOfSize(pointee, 1);
 				case FormatWant::Pointer:      return type && type->isPointer();
 				case FormatWant::IntPointer:   return integerOfSize(pointee, 4);
@@ -752,6 +754,7 @@ namespace ceresc::sema
 				case FormatWant::Pointee4:     return integerOfSize(pointee, 4);
 				case FormatWant::Pointee8:     return integerOfSize(pointee, 8);
 				case FormatWant::FloatPointer: return pointee && pointee->isFloat();
+				case FormatWant::DoublePointer: return pointee && pointee->isDouble();
 				case FormatWant::AnyPointer:   return pointee && (pointee->isPointer() || integerOfSize(pointee, 4));
 			}
 			return false;
@@ -897,7 +900,7 @@ namespace ceresc::sema
 							: shorts == 1 ? FormatWant::Pointee2 : FormatWant::Pointee4;
 						break;
 					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
-						want = FormatWant::FloatPointer;
+						want = longs > 0 && _softDouble ? FormatWant::DoublePointer : FormatWant::FloatPointer;
 						break;
 					case 'c': case 's': case '[':
 						want = longs > 0 ? FormatWant::Pointee4 : FormatWant::Pointee1;   // %lc, %ls, %l[: wchar_t
@@ -973,6 +976,7 @@ namespace ceresc::sema
 				return 0;
 			switch (type->kind())
 			{
+				case TypeKind::Double: return 110;
 				case TypeKind::Float: return 100;
 				// The 64-bit integers outrank every 32-bit one (and `unsigned long long` outranks
 				// `long long`, as in C), so `long long + long` is `long long` and
@@ -1202,10 +1206,12 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::FloatLiteralExpr& node)
 	{
-		// This subset has no `double` (see type.h) - an unsuffixed float literal is type `float`
-		// by definition here, not the `double` real C would give it.
-		node.setType(&Type::Float);
-		_lastExprType = &Type::Float;
+		// Without -fsoft-double there is no `double` (see type.h) - an unsuffixed float literal is type
+		// `float` by definition here, not the `double` real C would give it. With it, C's rule: a double
+		// unless the literal says f.
+		const Type* type = _softDouble && !node.isSingle() ? &Type::Double : &Type::Float;
+		node.setType(type);
+		_lastExprType = type;
 	}
 
 	const Type* Sema::stringElementType(support::LiteralEncoding encoding) noexcept
@@ -1309,7 +1315,8 @@ namespace ceresc::sema
 					typeName(argType), typeName(params[i].type));
 			}
 			else if (isArithmeticType(argType) && isArithmeticType(params[i].type) &&
-				(argType->isFloat() != params[i].type->isFloat()))
+				(argType->isFloating() != params[i].type->isFloating()) &&
+				!argType->isDouble() && !params[i].type->isDouble())   // a double converts in software, either way
 			{
 				_diagnostics.error(DiagId::IntegerFloatArgument, args[i]->location(), "implicit conversion between integer and float call arguments is not supported");
 			}
@@ -1930,7 +1937,7 @@ namespace ceresc::sema
 				if (!isScalarType(argumentType) || argumentType->isVoid())
 					_diagnostics.error(DiagId::VaArgType, node.location(), "'__builtin_va_arg' cannot read type '{}': only scalar types are passed through '...'",
 						typeName(argumentType));
-				else if (argumentType->sizeInBytes() != 4)
+				else if (argumentType->sizeInBytes() != 4 && !argumentType->isWide())   // a long long or a double: two words
 					_diagnostics.error(DiagId::VaArgType, node.location(),
 						"'__builtin_va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
 						typeName(argumentType));

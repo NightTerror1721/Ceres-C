@@ -54,6 +54,7 @@ namespace ceresc::ast
 		LongLong,
 		ULongLong,
 		Float,
+		Double, // only under -fsoft-double: a binary64 in software; otherwise `double` is Float
 		Pointer,
 		Array,
 		Struct,
@@ -145,6 +146,12 @@ namespace ceresc::ast
 		// kinds it is true for.
 		constexpr bool isWideInteger() const noexcept { return isLongLong() || isULongLong(); }
 		constexpr bool isFloat() const noexcept { return _kind == TypeKind::Float; }
+		// -fsoft-double's double: eight bytes kept like a 64-bit integer (the address of its two words, passed and
+		// returned as a pair) whose every operation is a call to the standard library's __f64_* routines.
+		constexpr bool isDouble() const noexcept { return _kind == TypeKind::Double; }
+		constexpr bool isFloating() const noexcept { return isFloat() || isDouble(); }
+		// A value that lives as a two-word pair: a 64-bit integer or a soft double.
+		constexpr bool isWide() const noexcept { return isWideInteger() || isDouble(); }
 
 		constexpr bool isPointer() const noexcept { return _kind == TypeKind::Pointer; }
 		constexpr bool isArray() const noexcept { return _kind == TypeKind::Array; }
@@ -248,6 +255,7 @@ namespace ceresc::ast
 		static const Type LongLong, ConstLongLong, VolatileLongLong, ConstVolatileLongLong;
 		static const Type ULongLong, ConstULongLong, VolatileULongLong, ConstVolatileULongLong;
 		static const Type Float, ConstFloat, VolatileFloat, ConstVolatileFloat;
+		static const Type Double, ConstDouble, VolatileDouble, ConstVolatileDouble;
 	};
 
 	inline constexpr Type Type::Void{ TypeKind::Void, false, false };
@@ -303,6 +311,10 @@ namespace ceresc::ast
 	inline constexpr Type Type::ConstFloat{ TypeKind::Float, true, false };
 	inline constexpr Type Type::VolatileFloat{ TypeKind::Float, false, true };
 	inline constexpr Type Type::ConstVolatileFloat{ TypeKind::Float, true, true };
+	inline constexpr Type Type::Double{ TypeKind::Double, false, false };
+	inline constexpr Type Type::ConstDouble{ TypeKind::Double, true, false };
+	inline constexpr Type Type::VolatileDouble{ TypeKind::Double, false, true };
+	inline constexpr Type Type::ConstVolatileDouble{ TypeKind::Double, true, true };
 
 	static_assert(TriviallyDestructible<Type>, "Type must be trivially destructible");
 }

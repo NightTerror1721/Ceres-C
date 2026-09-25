@@ -120,6 +120,15 @@ them: `double` and `long double` are spellings of `float`, and the parser says s
 The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
 NAME is then an ordinary name for the capped type and says nothing further.
 
+**Unless `-fsoft-double` is given.** Then `double` and `long double` are a real IEEE 754 binary64 of eight bytes,
+kept like a `long long` (two words, passed and returned as a pair) and computed in software: every `+ - * /`, every
+comparison and every conversion to or from `double` is a call to one of the standard library's `__f64_*` routines
+(`ceres/f64.h`), rounded to nearest-even with subnormals, infinities and NaN; `-x` flips the sign bit inline. An
+unsuffixed floating literal is then a `double`, as in C (`1.0f` stays a `float`), a `float` passed through `...` is
+promoted to `double`, `__builtin_va_arg(ap, double)` reads two words, a `double` global is folded at compile time in
+the host's own binary64, and `__CERES_SOFT_DOUBLE__` is defined. It costs a call per operation, so it is for the
+programs that need the precision; the standard library built with the same option prints and reads doubles whole.
+
 ### Arithmetic in a static initializer
 
 A global or a `static` is initialized from a constant expression, and arithmetic on constants is one: `static int n = 2 + 3;`,

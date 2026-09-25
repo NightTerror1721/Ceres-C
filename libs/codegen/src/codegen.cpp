@@ -253,6 +253,47 @@ namespace ceresc::codegen
 			return std::nullopt;
 		}
 
+		// A double initializer (-fsoft-double), folded in the host's own binary64: the same IEEE arithmetic, rounded
+		// the same way, as __f64_* would do at run time.
+		std::optional<f64> foldGlobalDouble(const Expr* expr)
+		{
+			if (expr && expr->constantValue())
+				return static_cast<f64>(*expr->constantValue());
+			if (const auto* lit = dynamic_cast<const FloatLiteralExpr*>(expr))
+				return lit->isSingle() ? static_cast<f64>(static_cast<f32>(lit->value())) : lit->value();
+			if (const auto* lit = dynamic_cast<const IntLiteralExpr*>(expr))
+				return lit->isUnsigned() ? static_cast<f64>(lit->value()) : static_cast<f64>(static_cast<i64>(lit->value()));
+			if (const auto* unary = dynamic_cast<const UnaryExpr*>(expr); unary && unary->op() == UnaryOp::Negate)
+			{
+				std::optional<f64> operand = foldGlobalDouble(unary->operand());
+				return operand ? std::optional<f64>(-*operand) : std::nullopt;
+			}
+			if (const auto* cast = dynamic_cast<const CastExpr*>(expr))
+			{
+				// A cast to float on the way rounds to float, as it would at run time.
+				std::optional<f64> operand = foldGlobalDouble(cast->operand());
+				if (operand && cast->type() && cast->type()->isFloat())
+					return static_cast<f64>(static_cast<f32>(*operand));
+				return operand;
+			}
+			if (const auto* binary = dynamic_cast<const BinaryExpr*>(expr))
+			{
+				std::optional<f64> a = foldGlobalDouble(binary->lhs());
+				std::optional<f64> b = foldGlobalDouble(binary->rhs());
+				if (!a || !b)
+					return std::nullopt;
+				switch (binary->op())
+				{
+					case BinaryOp::Add: return *a + *b;
+					case BinaryOp::Sub: return *a - *b;
+					case BinaryOp::Mul: return *a * *b;
+					case BinaryOp::Div: return *a / *b;
+					default: return std::nullopt;
+				}
+			}
+			return std::nullopt;
+		}
+
 		// The text of a float initializer. CASM types a literal by how it is SPELLED, and std::format
 		// prints 1.0f as "1": the assembler then refuses it for an f32 ("Expected a literal value of type
 		// f32"). So every finite value that would read as an integer gets a ".0".
@@ -1970,7 +2011,7 @@ namespace ceresc::codegen
 			dimensions.push_back(element->arraySize());
 			element = element->arrayElementType();
 		}
-		if (!element || element->isAggregate() || element->isWideInteger() || dimensions.empty())
+		if (!element || element->isAggregate() || element->isWide() || dimensions.empty())
 			return {}; // not this shape - the caller falls back to a flat word array
 
 		std::string name = fieldTypeName(element->sizeInBytes(), element->isFloat());
@@ -2240,7 +2281,17 @@ namespace ceresc::codegen
 
 		// One scalar, written little-endian (02-Memory.md) in its own declared width.
 		u64 bits = 0;
-		if (type->isFloat())
+		if (type->isDouble())
+		{
+			std::optional<f64> value = foldGlobalDouble(init);
+			if (!value)
+			{
+				outOffender = init;
+				return false;
+			}
+			bits = std::bit_cast<u64>(*value);
+		}
+		else if (type->isFloat())
 		{
 			std::optional<f32> value = foldGlobalFloat(init);
 			if (!value)
@@ -2370,7 +2421,7 @@ namespace ceresc::codegen
 		// A 64-bit scalar is two words, little-endian (`u32[2] = [lo, hi]`), which a single CASM
 		// integer literal could not spell. A wide ARRAY or struct goes through the flat-word path
 		// above, which already writes the bytes correctly.
-		if (type->isWideInteger())
+		if (type->isWide())
 		{
 			std::string let = exported ? "global let" : "let";
 			std::string name{ symbolName };
@@ -2380,13 +2431,27 @@ namespace ceresc::codegen
 				_emitter.raw(std::format("{} {}: u32[2]   // {}", let, name, comment));
 				return;
 			}
-			std::optional<i64> value = foldGlobalInt(decl.initializer());
-			if (!value)
+			u64 bits = 0;
+			if (type->isDouble())
 			{
-				reportUnrepresentableInitializer(decl, decl.initializer());
-				return;
+				std::optional<f64> value = foldGlobalDouble(decl.initializer());
+				if (!value)
+				{
+					reportUnrepresentableInitializer(decl, decl.initializer());
+					return;
+				}
+				bits = std::bit_cast<u64>(*value);
 			}
-			u64 bits = static_cast<u64>(*value);
+			else
+			{
+				std::optional<i64> value = foldGlobalInt(decl.initializer());
+				if (!value)
+				{
+					reportUnrepresentableInitializer(decl, decl.initializer());
+					return;
+				}
+				bits = static_cast<u64>(*value);
+			}
 			_emitter.raw(std::format("{} {}: u32[2] = [0x{:08X}, 0x{:08X}]   // {}",
 				let, name, static_cast<u32>(bits), static_cast<u32>(bits >> 32), comment));
 			return;

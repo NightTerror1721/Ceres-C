@@ -636,8 +636,10 @@ namespace ceresc::parser
 			case TokenKind::LiteralFloat:
 			{
 				auto value = _current.floatingValue();
+				std::string_view lexeme = _current.lexeme();
+				bool single = !lexeme.empty() && (lexeme.back() == 'f' || lexeme.back() == 'F');
 				advance();
-				return _arena.create<ast::FloatLiteralExpr>(location, value);
+				return _arena.create<ast::FloatLiteralExpr>(location, value, single);
 			}
 			case TokenKind::LiteralChar:
 			{
@@ -897,7 +899,7 @@ namespace ceresc::parser
 				advance();
 				// The one place `long` does not introduce an integer at all.
 				if (match(TokenKind::KwDouble))
-					return cappedToMachineWidth(location, "long double", "float", &Type::Float);
+					return _softDouble ? &Type::Double : cappedToMachineWidth(location, "long double", "float", &Type::Float);
 				if (match(TokenKind::KwLong))
 				{
 					match(TokenKind::KwInt);
@@ -908,7 +910,7 @@ namespace ceresc::parser
 			}
 			case TokenKind::KwDouble:
 				advance();
-				return cappedToMachineWidth(location, "double", "float", &Type::Float);
+				return _softDouble ? &Type::Double : cappedToMachineWidth(location, "double", "float", &Type::Float);
 			case TokenKind::KwInt: advance(); return &Type::Int;
 			case TokenKind::KwSigned:
 			case TokenKind::KwUnsigned:

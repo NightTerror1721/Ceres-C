@@ -50,6 +50,11 @@ namespace ceresc::sema
 	{
 	public:
 		Sema(support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept;
+
+		// -fsoft-double: an unsuffixed floating literal is a double (Type::Double), as in C, and scanf's %lf
+		// stores one.
+		void setSoftDouble(bool on) noexcept { _softDouble = on; }
+		bool softDouble() const noexcept { return _softDouble; }
 		Sema(const Sema&) = delete;
 		Sema(Sema&&) = delete;
 		~Sema() override = default;
@@ -156,6 +161,7 @@ namespace ceresc::sema
 
 	private:
 		support::Arena& _arena;
+		bool _softDouble = false;
 		support::DiagnosticEngine& _diagnostics;
 
 		std::vector<std::unique_ptr<Scope>> _scopes; // stack; back() is the innermost, front() the global scope
