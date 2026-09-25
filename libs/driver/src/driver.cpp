@@ -390,6 +390,19 @@ namespace ceresc::driver
 		std::vector<std::string> libraryDirectories = options.libraryDirectories;
 		if (!options.sysroot.empty())
 			libraryDirectories.push_back((fs::path(options.sysroot) / "lib").string());
+		// A -fsoft-double program wants the library built the same way, which an installed sysroot keeps in
+		// lib/soft-double: each directory's soft-double/ is searched before the directory itself.
+		if (options.softDouble)
+		{
+			std::vector<std::string> withVariants;
+			for (const std::string& directory : libraryDirectories)
+			{
+				withVariants.push_back((fs::path(directory) / "soft-double").string());
+				withVariants.push_back(directory);
+			}
+			libraryDirectories = std::move(withVariants);
+		}
+		std::vector<std::string> declsFiles = options.declsFiles;
 		if (!options.run && !options.libraries.empty())
 			std::cerr << "ceresc: warning: '-l' is only used when linking; add --run\n";
 		if (options.run)
@@ -426,6 +439,13 @@ namespace ceresc::driver
 					}
 					return 1;
 				}
+				// A library installed with its declarations beside it (lib<name>.decls.casm, what ceres ar's
+				// archive needs the program to import) brings them along, so --decls need not name them.
+				fs::path declarations = fs::path(found).replace_extension(".decls.casm");
+				std::error_code declarationsError;
+				if (fs::is_regular_file(declarations, declarationsError) &&
+					std::ranges::find(declsFiles, declarations.string()) == declsFiles.end())
+					declsFiles.push_back(declarations.string());
 				if (fs::path(found).extension() == ".car")
 					archiveInputs.push_back(std::move(found));
 				else
@@ -441,7 +461,7 @@ namespace ceresc::driver
 
 		// What was built before is not read by the compiler, only handed on, so a missing file is reported
 		// here rather than by the linker after the whole compile.
-		for (const std::vector<std::string>* group : std::initializer_list<const std::vector<std::string>*>{ &objectInputs, &archiveInputs, &options.declsFiles })
+		for (const std::vector<std::string>* group : std::initializer_list<const std::vector<std::string>*>{ &objectInputs, &archiveInputs, &declsFiles })
 		{
 			for (const std::string& path : *group)
 			{
@@ -624,7 +644,7 @@ namespace ceresc::driver
 		// Built code changes that: a unit that calls a routine defined in a .cobj, .car or hand-written .casm
 		// declares it with an `extern` of its own (setjmp.h says what setjmp is), and the assembler needs that
 		// declaration too, so the file is written for a lone unit as well, and holds every extern it declares.
-		const bool hasBuiltCode = !objectInputs.empty() || !archiveInputs.empty() || !options.declsFiles.empty();
+		const bool hasBuiltCode = !objectInputs.empty() || !archiveInputs.empty() || !declsFiles.empty();
 		bool needsDeclarations = (units.size() + casmInputs.size()) > 1 || (!units.empty() && hasBuiltCode);
 		fs::path declarationsPath;
 		if (needsDeclarations)
@@ -634,7 +654,7 @@ namespace ceresc::driver
 				: fs::path(options.outputPath);
 			declarationsPath = withExtension(programPath, ".decls.casm");
 			// The file ceresc writes must not be one the person handed in, or their declarations are gone.
-			for (const std::string& given : options.declsFiles)
+			for (const std::string& given : declsFiles)
 			{
 				if (samePath(given, declarationsPath))
 				{
@@ -644,7 +664,7 @@ namespace ceresc::driver
 				}
 			}
 			std::unordered_set<std::string> alreadyDeclared;
-			for (const std::string& given : options.declsFiles)
+			for (const std::string& given : declsFiles)
 				alreadyDeclared.merge(declaredNames(given));
 			if (!writeTextFile(declarationsPath, buildDeclarationsFile(units, alreadyDeclared)))
 				return 1;
@@ -663,7 +683,7 @@ namespace ceresc::driver
 			const fs::path unitDirectory = unit.casmPath.parent_path();
 			if (needsDeclarations)
 				text += std::format("import \"{}\"\n", importSpelling(declarationsPath, unitDirectory));
-			for (const std::string& declsFile : options.declsFiles)
+			for (const std::string& declsFile : declsFiles)
 				text += std::format("import \"{}\"\n", importSpelling(declsFile, unitDirectory));
 			if (!text.empty())
 				text += "\n";

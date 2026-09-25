@@ -26,8 +26,8 @@ alongside the compiled ones, which is how a routine written in assembly becomes 
 | `-I <dir>` | A directory to search for `#include`. Repeatable; searched in order. Also spelled `-Idir`. |
 | `-D <name>[=<value>]` | Predefine an object-like macro. A bare name means `1`. Also spelled `-DNAME=1`. |
 | `-L <dir>` | A directory to search for `-l` libraries. Repeatable; searched in order. Also spelled `-Ldir`. |
-| `-l <name>` | Link `lib<name>.car` (an archive) or `lib<name>.cobj`, found through `-L` and `--sysroot/lib`. Repeatable, and only used with `--run`. Also spelled `-lname`. |
-| `--sysroot <dir>` | `<dir>/include` joins the include search (after the `-I` directories) and `<dir>/lib` the `-l` search, so a toolchain or the STDLIB install lives under one root. |
+| `-l <name>` | Link `lib<name>.car` (an archive) or `lib<name>.cobj`, found through `-L` and `--sysroot/lib`. Repeatable, and only used with `--run`. Also spelled `-lname`. A `lib<name>.decls.casm` beside the library is taken along as if given with `--decls`; with `-fsoft-double`, each directory's `soft-double/` is searched before it. |
+| `--sysroot <dir>` | `<dir>/include` joins the include search (after the `-I` directories) and `<dir>/lib` the `-l` search, so a toolchain or the STDLIB install lives under one root: the STDLIB's `tools/install.ps1 -Prefix <dir>` lays one out, after which `ceresc prog.c --sysroot <dir> -lceres --run` is the whole command. |
 | `--emit-ast` | Print the type-checked syntax tree and stop. |
 | `--emit-ir` | Print the IR — after optimization, so it is what the back end will actually be handed — and stop. |
 | `-E` | Print the preprocessed source and stop. |
