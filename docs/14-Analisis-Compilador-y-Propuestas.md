@@ -396,6 +396,25 @@ instrucciones.
 Esta sección es nueva y central: es el "usuario número uno" del compilador y la fuente de varios
 requisitos.
 
+> **Estado actual (septiembre de 2026).** Esta sección describe la biblioteca tal como era cuando se escribió
+> el análisis; desde entonces ha crecido y varias carencias ya no existen:
+> - Los enteros de 64 bits son reales (F3): `long long` es un par de palabras que el compilador suma y resta
+>   con `ADC`/`SBC`, y `<stdint.h>` define `int64_t`/`uint64_t`.
+> - Los builtins de F1/F2/F10 emiten la instrucción de la máquina (`CLZ`, `CTZ`, `POPCNT`, `BSWAP`, `ROL`/`ROR`,
+>   `MULH`/`IMULH`, `ABS`, `MIN`/`MAX`/`IMIN`/`IMAX`, `FSQRT`, `FABS`, `FMOD`, `FMIN`/`FMAX`, redondeos, `FCLASS`,
+>   `MFF`/`MTF`, el recíproco y su raíz), y existen `__builtin_add/sub/mul_overflow` y `<stdckdint.h>`.
+> - `-fsoft-double` da un `double` binario64 real, calculado en software (`ceres/f64.h`); sin la opción,
+>   `double` sigue siendo `float`.
+> - La MMU tiene API (`ceres/mmu.h`, con el módulo opcional de fallos de página), y `ceres/backtrace.h` junto con
+>   `ceresc --symtab` nombran las funciones de una traza o de un fallo.
+> - La biblioteca se instala como sysroot (`tools/install.ps1`) y se enlaza con `ceresc --sysroot <dir> -lceres`
+>   (F5); `--gc-sections` deja fuera las funciones que nadie alcanza.
+> - Tiene UTF-8 (`<wchar.h>`, `<uchar.h>`, `ceres/utf8.h`), JSON, INI, partidas guardadas, imágenes, LZ4 y
+>   paquetes de recursos; la referencia de cada cabecera está en su `docs/reference`.
+>
+> Las cifras de 10.1 (cabeceras, ficheros, tests) son las de entonces: hoy son unas 30 cabeceras estándar, 56 en
+> `ceres/`, 82 ficheros `.c` y 103 tests, que corren con `node tools/runtests.js`.
+
 ### 10.1 Composición
 
 | Parte | Contenido |
@@ -415,8 +434,9 @@ requisitos.
 `stdlib.h`, `string.h`, `strings.h`, `time.h`, `ceres.h` e `interrupts.h`.
 
 Lo que ofrecen es C real adaptado a las limitaciones, y lo dicen:
-- `<stdint.h>` **omite todo lo de 64 bits**, por honestidad.
-- `<limits.h>`/`<float.h>`/`<stdlib.h>` documentan que `long`/`long long` son `int` y `double` es `float`.
+- `<stdint.h>` **omitía todo lo de 64 bits**, por honestidad (hoy define `int64_t`: ver la nota de arriba).
+- `<limits.h>`/`<float.h>`/`<stdlib.h>` documentaban que `long`/`long long` eran `int` y `double` era `float`
+  (hoy `long long` es de 64 bits, y `double` lo es con `-fsoft-double`).
 - `<math.h>` publica las funciones de una instrucción (`fabs`, `fmod`, `sqrt`, `floor`, `ceil`, `trunc`,
   `fmin`, `fmax`, `copysign`, `fma`, `rcp`, `rsqrt`, `fpclassify`, `isnan`, `isinf`, `signbit`, …) con
   implementación en CASM, y las de software (`sin`, `cos`, `pow`, `log`, `exp`, …) en C con precisión
@@ -508,6 +528,15 @@ expuesta en `ceres/*.h`.
 | MMU (`MTP`/`PGON`/...) | **Sin usar** | Sin uso (no hay API de paging) |
 | Leer `sp`/flags; `push`/`pop` | **Sin usar** (inalcanzable en C) | `asm/sys.casm` (`sys_sp`, `irq_save`) |
 | Debug info (líneas/símbolos) | **Sin usar** | El reportero de fallos solo imprime PC crudo |
+
+> **Estado actual (septiembre de 2026).** La tabla es la del análisis original. Hoy el compilador usa `ADC`/`SBC`
+> para los enteros de 64 bits; los builtins de F1/F2/F10 emiten `MULH`/`IMULH`, `ABS`, `MIN`/`IMIN`/`MAX`/`IMAX`,
+> `CLZ`/`CTZ`/`POPCNT`/`BSWAP`/`ROL`/`ROR`, `FSQRT`/`FABS`/`FCLASS`/`FRECIPE`/`FRSQRTE`, `FMOD`/`FMIN`/`FMAX`/los
+> redondeos/`FCOPYSIGN` y `MTF`/`MFF` (`FMA` no: acumula en su destino, ver el comentario de `Builtin`); la
+> comprobación de desbordamiento existe (`__builtin_*_overflow`, `<stdckdint.h>`); `sp` y los flags se leen con
+> builtins; la STDLIB tiene API de paging (`ceres/mmu.h`); y `ceresc --symtab` enlaza una tabla de símbolos, que
+> `ceres/backtrace.h` y el reportero de fallos usan para nombrar funciones. Siguen sin usarse `BL`/`BLR`,
+> `LDRP`/`STRP` y `TRAP`/`INT imm8` desde C.
 
 ---
 

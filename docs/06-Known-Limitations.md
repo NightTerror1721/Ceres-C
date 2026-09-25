@@ -49,12 +49,20 @@ assembly and the debugger see the prefixed name; C sees its own. See
 [07-CASM-Interop.md](07-CASM-Interop.md). CeresASM itself still cannot define a routine under such a name
 without the prefix.
 
-### No standard library
+### The standard library is a separate project
 
-No `printf`, no `malloc`, no `memcpy`, no `strlen`. A program prints by storing bytes into the
-terminal device's output register at `0xFF000004`; `examples/08_strings.c` writes the string
-routines it needs, and `examples/interop/io.c` wraps them into something reusable. CeresASM's own
-`stdlib/` currently only has `call.casm`, so there is nothing to link against yet either.
+The compiler ships no C library of its own: `printf`, `malloc`, `memcpy` and the rest come from the
+**Ceres STDLIB** (`../Ceres Projects/Ceres STDLIB`), the C library of this machine - the standard headers,
+the devices under `ceres/`, and `printf`/`scanf`/`strtod` that convert exactly. Its
+`tools/install.ps1 -Prefix <dir>` lays out a sysroot, and then
+
+    ceresc prog.c --sysroot <dir> -lceres -O2 --run
+
+is all a program needs: `--sysroot` puts `<dir>/include` on the include path, and `-lceres` links
+`<dir>/lib/libceres.car` with its declarations `libceres.decls.casm` (with `-fsoft-double`, the copies in
+`<dir>/lib/soft-double/` come first). Without the library a program still runs on its own:
+`examples/08_strings.c` writes the string routines it needs and prints by storing bytes into the terminal's
+output register at `0xFF000004`, and `examples/interop/io.c` wraps them into something reusable.
 
 ### No 64-bit register, so a 64-bit value is a pair of words
 
