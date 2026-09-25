@@ -65,7 +65,7 @@ namespace ceresc::driver
 			"               [-L <dir>] [-l <name>] [--sysroot <dir>]\n"
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
 			"               [--decls <file.casm>]... [--emit-decls <file.casm>]\n"
-			"               [--ceres-path <dir|file>] [--run-arg <arg>]... [--symtab]\n"
+			"               [--ceres-path <dir|file>] [--run-arg <arg>]... [--symtab] [--gc-sections]\n"
 			"               [-Werror] [-O<level>] [-f<opt>] [-- <argument>...]\n"
 			"       ceresc --version | --help\n"
 			"\n"
@@ -91,6 +91,7 @@ namespace ceresc::driver
 			"  --clean-keep-casm   after --run, keep generated .casm but remove .decls.casm, .cobj and .cres\n"
 			"  --ceres-path <path> where to find `ceres`: its directory, or the executable itself. Without it the\n"
 			"                      CERES_PATH environment variable says, and then PATH\n"
+			"  --gc-sections       leave out of the program the functions nothing reaches (`ceres link --gc-sections`)\n"
 			"  --symtab            link a table of the program's function names into it (`ceres link --symtab`),\n"
 			"                      for a backtrace or a fault report that names functions (ceres/backtrace.h);\n"
 			"                      only with --run, the build that links\n"
@@ -144,6 +145,7 @@ namespace ceresc::driver
 
 			if (arg == "--stats" || arg == "-fstats") { options.emitStats = true; continue; }
 			if (arg == "--symtab") { options.symbolTable = true; continue; }
+			if (arg == "--gc-sections") { options.gcSections = true; continue; }
 			if (arg == "-O0") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0); continue; }
 			if (arg == "-O1" || arg == "-O") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O1); continue; }
 			if (arg == "-Os") { options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::Os); continue; }

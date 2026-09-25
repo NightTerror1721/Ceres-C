@@ -728,6 +728,8 @@ namespace ceresc::driver
 		linkArgs.insert(linkArgs.end(), archiveInputs.begin(), archiveInputs.end());
 		if (options.symbolTable)
 			linkArgs.push_back("--symtab");
+		if (options.gcSections)
+			linkArgs.push_back("--gc-sections");
 		linkArgs.push_back("-o");
 		linkArgs.push_back(programPath.string());
 		int linkResult = runSubprocess(ceresBinary, linkArgs);
