@@ -2232,6 +2232,9 @@ TEST(sema, a_format_argument_of_the_wrong_kind_is_warned_about)
 	CHECK(containsMessage(formatCall("sf(\"%hd\", &i);"), "expects a 'short *'"));
 	CHECK(containsMessage(formatCall("sf(\"%f\", &i);"), "expects a 'float *'"));
 	CHECK(containsMessage(formatCall("sf(\"%p\", i);"), "expects a 'void **'"));
+	CHECK(formatCall("pf(\"%lc %ls\", 233, &n); sf(\"%lc %ls %l[a-z]\", &n, &n, &n);").messages.empty());   // wide: wchar_t is int
+	CHECK(containsMessage(formatCall("pf(\"%ls\", buf);"), "expects an 'int *'"));
+	CHECK(containsMessage(formatCall("sf(\"%ls\", buf);"), "expects an 'int *'"));
 	CHECK(formatCall("pf(\"%lld\", i);").ok);                                     // warnings, not errors
 }
 

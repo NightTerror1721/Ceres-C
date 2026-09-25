@@ -882,7 +882,7 @@ namespace ceresc::sema
 					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
 						want = FormatWant::Float;
 						break;
-					case 's': want = FormatWant::String; break;
+					case 's': want = longs > 0 ? FormatWant::IntPointer : FormatWant::String; break;   // %ls: wchar_t is int
 					case 'p': want = FormatWant::Pointer; break;
 					case 'n': want = FormatWant::IntPointer; break;
 					default: break;
@@ -900,7 +900,7 @@ namespace ceresc::sema
 						want = FormatWant::FloatPointer;
 						break;
 					case 'c': case 's': case '[':
-						want = FormatWant::Pointee1;
+						want = longs > 0 ? FormatWant::Pointee4 : FormatWant::Pointee1;   // %lc, %ls, %l[: wchar_t
 						break;
 					case 'p': want = FormatWant::AnyPointer; break;
 					case 'n': want = FormatWant::IntPointer; break;
