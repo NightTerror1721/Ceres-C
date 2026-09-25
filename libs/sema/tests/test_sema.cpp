@@ -25,19 +25,21 @@ namespace
 	// file both parses cleanly and type-checks with zero errors - `messages` collects every
 	// diagnostic (parse or sema) reported along the way, for tests that need to assert a specific
 	// error was the one reported.
-	CheckOutcome checkSource(std::string_view source)
+	CheckOutcome checkSource(std::string_view source, bool softDouble = false)
 	{
 		support::Arena arena;
 		support::DiagnosticEngine diagnostics;
 		support::StringPool pool;
 		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
 		parser::Parser parser(lexer, arena, diagnostics);
+		parser.setSoftDouble(softDouble);
 
 		CheckOutcome outcome;
 		ast::TranslationUnit* unit = parser.parseTranslationUnit();
 		if (unit && !diagnostics.hasErrors())
 		{
 			sema::Sema sema(arena, diagnostics);
+			sema.setSoftDouble(softDouble);
 			outcome.ok = sema.check(*unit);
 		}
 		else
@@ -1758,6 +1760,18 @@ TEST(sema, va_arg_reads_only_a_four_byte_scalar)
 	CHECK(containsMessage(aggregate, "only scalar types are passed through"));
 }
 
+TEST(sema, under_soft_double_va_arg_reads_a_double_and_refuses_a_float)
+{
+	std::string_view reads = "double f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, double); }";
+	CHECK(checkSource(reads, true).ok);
+	// A float passed through ... arrives promoted to a two-word double: reading one word of it would be wrong.
+	CheckOutcome single = checkSource("float f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, float); }", true);
+	CHECK(!single.ok);
+	CHECK(containsMessage(single, "arrives promoted to 'double'"));
+	// Without the option double is float, one word, and reading a float is right.
+	CHECK(checkSource("float f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, float); }").ok);
+}
+
 TEST(sema, a_va_list_operand_must_actually_be_a_va_list)
 {
 	CheckOutcome outcome = checkSource("int f(int a, ...) { int ap; __builtin_va_start(ap, a); return 0; }");
@@ -2418,4 +2432,14 @@ TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
 	CHECK(checkSource("int f(void) { __asm__(\"nop\"); return 1; }").ok);
 	CHECK(checkSource("void f(int n) { while (n) { __asm__ volatile (\"nop\"); n--; } }").ok);
 	CHECK(checkSource("void f(int n) { if (n) __asm__(\"nop\"); else __asm__(\"nop\"); }").ok);
+}
+
+TEST(sema, under_soft_double_a_long_double_scan_takes_a_double_pointer)
+{
+	std::string header = kFormatHeader + "int main() { double d = 0; long double ld = 0; float f = 0;\n";
+	CheckOutcome clean = checkSource(header + "sf(\"%lf %Lf %Lg\", &d, &ld, &d); return 0; }", true);
+	CHECK(clean.ok);
+	CHECK(clean.messages.empty());
+	CheckOutcome wrong = checkSource(header + "sf(\"%Lf\", &f); return 0; }", true);
+	CHECK(containsMessage(wrong, "expects a 'double *'"));
 }

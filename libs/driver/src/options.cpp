@@ -16,7 +16,6 @@ namespace ceresc::driver
 				"  -O3                 accepted as an alias for -O2\n"
 				"  -Os                 like -O1 but for size: no inlining, no jump tables\n"
 				"  -Og                 like -O1 but for debugging: no inlining, no frame-slot reuse\n"
-				"  -fsoft-double       double is a real 64-bit IEEE double, done in software (ceres/f64.h)\n"
 				"  -f<opt>/-fno-<opt>  turn one optimization on/off, overriding -O in argument order:\n";
 
 			for (const support::OptimizationFlag& flag : support::optimizationFlags())
@@ -97,6 +96,8 @@ namespace ceresc::driver
 			"                      only with --run, the build that links\n"
 			"  -Werror             treat warnings as errors\n"
 			"  --stats, -fstats    after optimizing, report what changed (instruction counts, inlining)\n"
+			"  -fsoft-double       double is a real 64-bit IEEE double, done in software (ceres/f64.h); off by\n"
+			"                      default (-fno-soft-double), when double is float\n"
 			"  --version           print the version and stop\n"
 			"  --help, -h          print this text\n"
 			"\n"

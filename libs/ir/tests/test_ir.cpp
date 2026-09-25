@@ -1636,6 +1636,22 @@ TEST(ir, soft_double_conversions_call_the_right_routine)
 	CHECK(contains(softDoubleIr("int f(void) { return sizeof(1.0f); }", "f"), "const 4"));
 }
 
+TEST(ir, a_soft_double_ternary_is_never_an_integer_min_or_max)
+{
+	// The operands are the addresses of two-word values: the min/max idiom would compare those.
+	std::string text = softDoubleIr("double f(double a, double b) { return a < b ? a : b; }", "f");
+	CHECK(contains(text, " __f64_cmp,"));
+	CHECK(!contains(text, "min"));
+	CHECK(!contains(text, "max"));
+}
+
+TEST(ir, a_soft_double_va_arg_reads_two_words_and_advances_eight_bytes)
+{
+	std::string text = softDoubleIr("double f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); return __builtin_va_arg(ap, double); }", "f");
+	CHECK(contains(text, "const 8"));
+	CHECK(contains(text, "const 4"));      // the second word, four bytes past the first
+}
+
 TEST(ir, a_float_through_the_ellipsis_goes_as_a_soft_double)
 {
 	std::string text = softDoubleIr("int v(int n, ...); int main() { return v(1, 1.5f); }");

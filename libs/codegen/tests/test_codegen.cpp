@@ -23,7 +23,7 @@ namespace
 	// pipeline short of --run, exercised end to end the same way the driver does (libs/driver).
 	// `options` is what selects between the optimized output and the simplified -O0 one, which is
 	// why the interesting programs below appear twice: the two shapes are pinned side by side.
-	std::string generateCasm(std::string_view source, support::OptimizationOptions options)
+	std::string generateCasm(std::string_view source, support::OptimizationOptions options, bool softDouble = false)
 	{
 		support::SourceManager sourceManager;
 		support::SourceId sourceId = sourceManager.registerBuffer("test.c", std::string(source));
@@ -32,6 +32,7 @@ namespace
 		support::StringPool pool;
 		lexer::Lexer lexer(source, sourceId, diagnostics, pool);
 		parser::Parser parser(lexer, arena, diagnostics);
+		parser.setSoftDouble(softDouble);
 
 		ast::TranslationUnit* unit = parser.parseTranslationUnit();
 		CHECK(unit != nullptr);
@@ -39,10 +40,12 @@ namespace
 			return "<parse-failed>";
 
 		sema::Sema sema(arena, diagnostics);
+		sema.setSoftDouble(softDouble);
 		bool ok = sema.check(*unit);
 		CHECK(ok);
 
 		ir::IrBuilder builder(arena, diagnostics, options);
+		builder.setSoftDouble(softDouble);
 		ir::IrModule module = builder.build(*unit);
 		ir::optimize(module, arena, options);
 
@@ -2217,4 +2220,15 @@ TEST(codegen, a_wide_parameter_whose_bank_is_full_goes_to_two_stack_words)
 	// The caller stores the third argument's two words to the outgoing stack.
 	CHECK(contains(text, "str  [sp + 0], r"));
 	CHECK(contains(text, "str  [sp + 4], r"));
+}
+
+TEST(codegen, a_soft_double_global_folds_its_integer_pieces_by_the_integer_rules)
+{
+	// 3/2 is 1, (char)300 is 44, (unsigned)-1 is 4294967295: C integer arithmetic inside a double initializer.
+	std::string text = generateCasm("double a = 1.0 + 3/2; double b = (char)300; double c = (unsigned)-1; double d = 2.0 * (7/2);",
+		support::OptimizationOptions::none(), true);
+	CHECK(contains(text, "global let a: u32[2] = [0x00000000, 0x40000000]"));
+	CHECK(contains(text, "global let b: u32[2] = [0x00000000, 0x40460000]"));
+	CHECK(contains(text, "global let c: u32[2] = [0xFFE00000, 0x41EFFFFF]"));
+	CHECK(contains(text, "global let d: u32[2] = [0x00000000, 0x40180000]"));
 }

@@ -253,10 +253,123 @@ namespace ceresc::codegen
 			return std::nullopt;
 		}
 
+		// An integer type: its constants fold by C's integer rules, not IEEE's.
+		bool isIntegerType(const Type* type) noexcept
+		{
+			return type && !type->isFloating() && !type->isPointer() && !type->isArray() && !type->isAggregate() &&
+				!type->isFunction() && !type->isVoid();
+		}
+
+		// A value converted to an integer type: wrapped to its width and signedness (a bool is 0 or 1).
+		i64 wrapToInteger(i64 value, const Type* type) noexcept
+		{
+			if (type->isBool())
+				return value != 0 ? 1 : 0;
+			const u32 bits = type->sizeInBytes() * 8;
+			if (bits == 0 || bits >= 64)
+				return value;
+			const u64 mask = (u64(1) << bits) - 1;
+			u64 low = static_cast<u64>(value) & mask;
+			if (type->isSigned() && (low >> (bits - 1)) != 0)
+				low |= ~mask;
+			return static_cast<i64>(low);
+		}
+
+		// An integer-typed piece of a double initializer - the `3/2` of `1.0 + 3/2`, the `(char)300` - folded the way C
+		// evaluates it: integer division, wrapping at the type's width. Sema folds only whole initializers, so the pieces
+		// of a floating one come here unfolded. Anything this does not model is not folded at all.
+		std::optional<f64> foldGlobalDouble(const Expr* expr);
+
+		std::optional<i64> foldGlobalInteger(const Expr* expr)
+		{
+			const Type* type = expr ? expr->type() : nullptr;
+			if (!isIntegerType(type))
+				return std::nullopt;
+			if (const auto* lit = dynamic_cast<const IntLiteralExpr*>(expr))
+				return wrapToInteger(static_cast<i64>(lit->value()), type);
+			if (const auto* cast = dynamic_cast<const CastExpr*>(expr))
+			{
+				const Type* from = cast->operand() ? cast->operand()->type() : nullptr;
+				if (from && from->isFloating())
+				{
+					// Out of range is undefined in C; refusing is the honest answer.
+					std::optional<f64> value = foldGlobalDouble(cast->operand());
+					if (!value || !(*value > -9223372036854775808.0 && *value < 9223372036854775808.0))
+						return std::nullopt;
+					return wrapToInteger(static_cast<i64>(*value), type);
+				}
+				std::optional<i64> value = foldGlobalInteger(cast->operand());
+				return value ? std::optional<i64>(wrapToInteger(*value, type)) : std::nullopt;
+			}
+			if (const auto* unary = dynamic_cast<const UnaryExpr*>(expr);
+				unary && (unary->op() == UnaryOp::Negate || unary->op() == UnaryOp::BitwiseNot))
+			{
+				std::optional<i64> operand = foldGlobalInteger(unary->operand());
+				if (!operand)
+					return std::nullopt;
+				const u64 bits = static_cast<u64>(*operand);
+				return wrapToInteger(static_cast<i64>(unary->op() == UnaryOp::Negate ? u64(0) - bits : ~bits), type);
+			}
+			if (const auto* binary = dynamic_cast<const BinaryExpr*>(expr))
+			{
+				const BinaryOp op = binary->op();
+				const bool shift = op == BinaryOp::Shl || op == BinaryOp::Shr;
+				const bool arithmetic = op == BinaryOp::Add || op == BinaryOp::Sub || op == BinaryOp::Mul || op == BinaryOp::Div ||
+					op == BinaryOp::Mod || op == BinaryOp::BitAnd || op == BinaryOp::BitOr || op == BinaryOp::BitXor;
+				std::optional<i64> lhs = (shift || arithmetic) ? foldGlobalInteger(binary->lhs()) : std::nullopt;
+				std::optional<i64> rhs = (shift || arithmetic) ? foldGlobalInteger(binary->rhs()) : std::nullopt;
+				if (!lhs || !rhs)
+					return expr->constantValue() ? std::optional<i64>(wrapToInteger(*expr->constantValue(), type)) : std::nullopt;
+				// Both operands in the result's type (the usual arithmetic conversions); a shift converts only its left.
+				const i64 a = wrapToInteger(*lhs, type);
+				const i64 b = shift ? *rhs : wrapToInteger(*rhs, type);
+				const u64 ua = static_cast<u64>(a);
+				const u64 ub = static_cast<u64>(b);
+				const bool isSigned = type->isSigned();
+				const u32 width = type->sizeInBytes() * 8;
+				switch (op)
+				{
+					case BinaryOp::Add: return wrapToInteger(static_cast<i64>(ua + ub), type);
+					case BinaryOp::Sub: return wrapToInteger(static_cast<i64>(ua - ub), type);
+					case BinaryOp::Mul: return wrapToInteger(static_cast<i64>(ua * ub), type);
+					case BinaryOp::BitAnd: return wrapToInteger(static_cast<i64>(ua & ub), type);
+					case BinaryOp::BitOr: return wrapToInteger(static_cast<i64>(ua | ub), type);
+					case BinaryOp::BitXor: return wrapToInteger(static_cast<i64>(ua ^ ub), type);
+					case BinaryOp::Div:
+					case BinaryOp::Mod:
+						if (b == 0 || (isSigned && a == INT64_MIN && b == -1))
+							return std::nullopt;   // undefined, or the one quotient i64 cannot hold
+						if (isSigned)
+							return wrapToInteger(op == BinaryOp::Div ? a / b : a % b, type);
+						return wrapToInteger(static_cast<i64>(op == BinaryOp::Div ? ua / ub : ua % ub), type);
+					case BinaryOp::Shl:
+					case BinaryOp::Shr:
+						if (b < 0 || b >= static_cast<i64>(width))
+							return std::nullopt;
+						if (op == BinaryOp::Shl)
+							return wrapToInteger(static_cast<i64>(ua << b), type);
+						return wrapToInteger(isSigned ? a >> b : static_cast<i64>(ua >> b), type);
+					default: return std::nullopt;
+				}
+			}
+			// A name (an enumerator), sizeof, a comparison...: sema's value, when it has one.
+			if (expr->constantValue())
+				return wrapToInteger(*expr->constantValue(), type);
+			return std::nullopt;
+		}
+
 		// A double initializer (-fsoft-double), folded in the host's own binary64: the same IEEE arithmetic, rounded
 		// the same way, as __f64_* would do at run time.
 		std::optional<f64> foldGlobalDouble(const Expr* expr)
 		{
+			if (expr && isIntegerType(expr->type()))
+			{
+				std::optional<i64> value = foldGlobalInteger(expr);
+				if (!value)
+					return std::nullopt;
+				const bool unsignedWide = !expr->type()->isSigned() && expr->type()->sizeInBytes() == 8;
+				return unsignedWide ? static_cast<f64>(static_cast<u64>(*value)) : static_cast<f64>(*value);
+			}
 			if (expr && expr->constantValue())
 				return static_cast<f64>(*expr->constantValue());
 			if (const auto* lit = dynamic_cast<const FloatLiteralExpr*>(expr))

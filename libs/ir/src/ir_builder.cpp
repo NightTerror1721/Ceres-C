@@ -2637,7 +2637,7 @@ namespace ceresc::ir
 		// returns the non-NaN operand - a difference this phase does not model. `abs` has the same
 		// -0.0 caveat, so it is integer too.
 		const ast::Type* resultType = node.type();
-		if (!resultType || resultType->isFloat() || resultType->isPointer() || resultType->isArray() ||
+		if (!resultType || resultType->isFloating() || resultType->isPointer() || resultType->isArray() ||
 			resultType->isWideInteger())
 			return false;
 

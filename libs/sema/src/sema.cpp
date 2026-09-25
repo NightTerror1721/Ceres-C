@@ -828,10 +828,12 @@ namespace ceresc::sema
 				}
 			}
 
-			// Length: hh and h narrow an int, ll, j and q are the 64-bit ones; l, z, t and L change
-			// nothing here (long, size_t, ptrdiff_t and long double are all 32 bits).
+			// Length: hh and h narrow an int, ll, j and q are the 64-bit ones; l, z and t change
+			// nothing here (long, size_t and ptrdiff_t are 32 bits), and L only under -fsoft-double,
+			// where long double is a double.
 			int shorts = 0;
 			int longs = 0;
+			bool longDouble = false;
 			bool wide = false;
 			while (i < text.size() && std::string_view("hlzjtLq").find(text[i]) != std::string_view::npos)
 			{
@@ -839,6 +841,8 @@ namespace ceresc::sema
 					++shorts;
 				else if (text[i] == 'l')
 					++longs;
+				else if (text[i] == 'L')
+					longDouble = true;
 				else if (text[i] == 'j' || text[i] == 'q')
 					wide = true;
 				++i;
@@ -900,7 +904,7 @@ namespace ceresc::sema
 							: shorts == 1 ? FormatWant::Pointee2 : FormatWant::Pointee4;
 						break;
 					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
-						want = longs > 0 && _softDouble ? FormatWant::DoublePointer : FormatWant::FloatPointer;
+						want = (longs > 0 || longDouble) && _softDouble ? FormatWant::DoublePointer : FormatWant::FloatPointer;
 						break;
 					case 'c': case 's': case '[':
 						want = longs > 0 ? FormatWant::Pointee4 : FormatWant::Pointee1;   // %lc, %ls, %l[: wchar_t
@@ -1941,6 +1945,9 @@ namespace ceresc::sema
 					_diagnostics.error(DiagId::VaArgType, node.location(),
 						"'__builtin_va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
 						typeName(argumentType));
+				else if (_softDouble && argumentType->isFloat())   // a float passed through ... arrived as a double
+					_diagnostics.error(DiagId::VaArgType, node.location(),
+						"'__builtin_va_arg' cannot read type 'float' under -fsoft-double: a variadic float arrives promoted to 'double', so read it as 'double' and convert");
 				else
 					resultType = argumentType;
 				break;

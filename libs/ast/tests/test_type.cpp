@@ -51,6 +51,20 @@ TEST(type, wide_integer_predicates)
 	CHECK(!Type::Void.isWideInteger());
 }
 
+TEST(type, the_soft_double_is_an_eight_byte_wide_floating_type)
+{
+	CHECK(Type::Double.sizeInBytes() == 8);
+	CHECK(Type::Double.alignment() == 8);
+	CHECK(Type::Double.isDouble() && Type::Double.isFloating() && Type::Double.isWide());
+	CHECK(!Type::Double.isFloat() && !Type::Double.isWideInteger() && !Type::Double.isSigned());
+	CHECK(Type::Float.isFloating() && !Type::Float.isWide());
+
+	support::Arena arena;
+	CHECK(Type::withConst(arena, &Type::Double) == &Type::ConstDouble);
+	CHECK(Type::withVolatile(arena, &Type::ConstDouble) == &Type::ConstVolatileDouble);
+	CHECK(Type::withoutQualifiers(arena, &Type::VolatileDouble) == &Type::Double);
+}
+
 TEST(type, qualifiers_of_the_wide_integers_use_the_statics)
 {
 	support::Arena arena;
