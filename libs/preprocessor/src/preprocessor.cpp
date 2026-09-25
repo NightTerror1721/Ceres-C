@@ -408,6 +408,88 @@ namespace ceresc::preprocessor
 		bool comments = false; std::string expanded = expandMacros(protectedExpression, location, comments);
 		IfExpressionParser parser(expanded, _macros, _diagnostics, location); return parser.parse(value);
 	}
+	// Where a // comment starts in a line (outside strings and character constants), or npos.
+	static usize lineCommentAt(std::string_view text)
+	{
+		for (usize k = 0; k + 1 < text.size(); ++k)
+		{
+			if (text[k] == '"' || text[k] == '\'')
+			{
+				char quote = text[k];
+				for (++k; k < text.size() && text[k] != quote; ++k)
+					if (text[k] == '\\')
+						++k;
+				continue;
+			}
+			if (text[k] == '/' && text[k + 1] == '/')
+				return k;
+		}
+		return std::string_view::npos;
+	}
+
+	// Whether `text` calls a function-like macro whose argument list goes on past its end: `CHECK(a,` with `b);` on
+	// the next line. Strings, character constants and comments are skipped, as expandMacros skips them.
+	bool Preprocessor::leavesMacroCallOpen(std::string_view text, bool inBlockComment) const
+	{
+		bool comment = inBlockComment;
+		int depth = 0;                                   // inside a macro's argument list: its open parentheses
+		for (usize i = 0; i < text.size();)
+		{
+			char c = text[i];
+			if (comment)
+			{
+				usize end = text.find("*/", i);
+				if (end == std::string_view::npos)
+					return depth > 0;
+				comment = false;
+				i = end + 2;
+				continue;
+			}
+			if (c == '/' && i + 1 < text.size() && text[i + 1] == '/')
+				break;
+			if (c == '/' && i + 1 < text.size() && text[i + 1] == '*')
+			{
+				comment = true;
+				i += 2;
+				continue;
+			}
+			if (c == '"' || c == '\'')
+			{
+				for (++i; i < text.size() && text[i] != c; ++i)
+					if (text[i] == '\\')
+						++i;
+				++i;
+				continue;
+			}
+			if (depth > 0)
+			{
+				depth += c == '(' ? 1 : c == ')' ? -1 : 0;
+				++i;
+				continue;
+			}
+			if (!isIdentifierStart(c))
+			{
+				++i;
+				continue;
+			}
+			usize start = i;
+			while (i < text.size() && isIdentifierChar(text[i]))
+				++i;
+			auto found = _macros.find(std::string(text.substr(start, i - start)));
+			if (found == _macros.end() || !found->second.functionLike)
+				continue;
+			usize call = i;
+			while (call < text.size() && (text[call] == ' ' || text[call] == '\t'))
+				++call;
+			if (call < text.size() && text[call] == '(')
+			{
+				depth = 1;
+				i = call + 1;
+			}
+		}
+		return depth > 0;
+	}
+
 	std::string Preprocessor::expandMacros(std::string_view line, support::SourceLocation location, bool& inBlockComment)
 	{
 		std::string current(line);
@@ -700,7 +782,41 @@ namespace ceresc::preprocessor
 				if (directive.empty()) { blank(); continue; }
 				std::string_view word = directive.substr(0, directive.find_first_of(" \t")); _diagnostics.error(DiagId::UnsupportedDirective, here, "'#{}' is not supported", word); ok = false; blank(); continue;
 			}
-			if (active()) { out.lineMap.append(static_cast<u32>(out.lineMap.entries().size()+1), sourceId, logicalLine); out.text += expandMacros(line, here, inBlockComment); out.text += '\n'; } else blank();
+			if (active())
+			{
+				// A macro call whose arguments go on over the next lines is expanded as one line: the lines it
+				// takes are joined to this one (a // comment on each dropped, which would swallow the rest), and
+				// each leaves an empty line behind, so every later line keeps its number. A directive is never
+				// taken in.
+				std::string joined;
+				u32 taken = 0;
+				if (leavesMacroCallOpen(line, inBlockComment))
+				{
+					joined = std::string(line.substr(0, lineCommentAt(line)));
+					while (position < text.size() && leavesMacroCallOpen(joined, inBlockComment))
+					{
+						newline = text.find('\n', position);
+						last = newline == std::string_view::npos;
+						std::string_view physical = text.substr(position, (last ? text.size() : newline) - position);
+						std::string_view start = trim(physical);
+						if (!start.empty() && start.front() == '#')
+							break;
+						joined += ' ';
+						joined += physical.substr(0, lineCommentAt(physical));
+						position = last ? text.size() : newline + 1;
+						++sourceLine;
+						++taken;
+					}
+					line = joined;
+				}
+				out.lineMap.append(static_cast<u32>(out.lineMap.entries().size()+1), sourceId, logicalLine); out.text += expandMacros(line, here, inBlockComment); out.text += '\n';
+				for (u32 k = 1; k <= taken; ++k)
+				{
+					out.lineMap.append(static_cast<u32>(out.lineMap.entries().size() + 1), sourceId, logicalLine + k);
+					out.text += '\n';
+				}
+			}
+			else blank();
 		}
 		for (const Conditional& c : conditionals) { _diagnostics.error(DiagId::UnterminatedConditional, c.location, "unterminated conditional directive"); ok = false; }
 		includeStack.pop_back(); _includeLevel = previousIncludeLevel; return ok;

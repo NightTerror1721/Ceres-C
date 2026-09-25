@@ -665,6 +665,31 @@ TEST(preprocessor, a_line_after_an_include_maps_back_to_its_own_file_and_line)
 	CHECK(header.sourceId != afterwards.sourceId); // and they are two different files
 }
 
+TEST(preprocessor, a_macro_call_whose_arguments_go_on_over_several_lines_is_expanded_whole)
+{
+	// As in C: the arguments run to the matching parenthesis, whatever lines it takes. A // comment on a line
+	// taken in ends there, and the lines it took stay as empty ones, so the line after still maps onto itself.
+	TempDirectory dir;
+	std::string path = dir.write("main.c",
+		"#define TWO(a, b) f(a, b)\n"
+		"int x = TWO(1,   // the first\n"
+		"            \"two, (\"\n"
+		"            \"lines\");\n"
+		"int after;\n"
+		"int y = TWO((3,\n"
+		"#if 1\n"
+		"4), 5);\n"
+		"#endif\n");
+
+	Result result = expand(path);
+	CHECK(contains(result.text, "int x = f(1, \"two, (\"             \"lines\");"));
+	support::SourceLocation after = result.lineMap.toOriginal(support::SourceLocation{ {}, 5, 1, 0 });
+	CHECK_EQ(after.line, u32(5));
+	CHECK(contains(result.text, "int after;"));
+	// A directive is never taken into a call: this one stays open, and says so.
+	CHECK(!result.diagnostics.empty() && contains(result.diagnostics.front(), "malformed invocation of macro 'TWO'"));
+}
+
 // ---- predefined macros -------------------------------------------------------------------------
 
 TEST(preprocessor, line_and_file_name_the_original_file_rather_than_the_expansion)
