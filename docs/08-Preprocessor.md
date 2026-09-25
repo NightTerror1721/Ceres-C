@@ -55,7 +55,7 @@ extern int writeCount;
 
 int writeCount = 0;
 
-void put(char c) { char* out = (char*)TERMINAL_OUT; *out = c; writeCount++; }
+void put(char c) { volatile unsigned int* out = (volatile unsigned int*)TERMINAL_OUT; *out = c; writeCount++; }
 ```
 
 ```c

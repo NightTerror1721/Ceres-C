@@ -9,7 +9,7 @@ int writeCount = 0;
 // call it and unused-function elimination is allowed to drop it if nothing here does either.
 static void writeByte(char c)
 {
-    char* terminal = (char*)TERMINAL_OUT;
+    volatile unsigned int* terminal = (volatile unsigned int*)TERMINAL_OUT;
     *terminal = c;
 }
 

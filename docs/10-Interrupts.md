@@ -11,8 +11,8 @@ That one difference is where every rule on this page comes from.
 ```c
 __interrupt void term_isr(void)
 {
-    char* in  = (char*)0xFF000008;
-    char* out = (char*)0xFF000004;
+    volatile unsigned int* in  = (volatile unsigned int*)0xFF000008;
+    volatile unsigned int* out = (volatile unsigned int*)0xFF000004;
     *out = *in;                       // echo whatever arrived
 }
 

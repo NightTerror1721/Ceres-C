@@ -239,7 +239,7 @@ halt
 ```
 
 `ceres run` exits with that status (its low eight bits) and with 1 on a fault. A `return;` with no value
-keeps the older byte write (`li r5, 1` / `strb`), which is status 0.
+writes the command alone (`li r5, 1` / `str`), which is status 0. Device registers take 32-bit accesses only.
 
 A unit that declares `void exit(int)` ends `main` differently: it calls it, so falling off `main` is
 `exit(main())` and the C library's `atexit` handlers and stream flushing run:

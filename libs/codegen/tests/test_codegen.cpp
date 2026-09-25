@@ -1608,7 +1608,7 @@ TEST(codegen, an_interrupt_handler_saves_every_register_it_could_touch_and_ends_
 	// The hardware pushes the flags and the PC and nothing else, and the code this preempted never
 	// agreed to lose a register - so the caller/callee split of the calling convention does not
 	// apply. r0-r12 go back in one pushm/popm pair (0x1FFF: bits 0-12).
-	std::string casm = atO2("__interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }");
+	std::string casm = atO2("__interrupt void h(void) { volatile unsigned int* p = (volatile unsigned int*)0xFF000004; *p = 65; }");
 	CHECK(contains(casm, "pushm 0x1FFF"));
 	CHECK(contains(casm, "popm 0x1FFF"));
 	CHECK(contains(casm, "iret"));
@@ -1647,7 +1647,7 @@ TEST(codegen, a_static_interrupt_handler_survives_unused_function_elimination)
 {
 	// Nothing calls it and nothing names it - the machine reaches it through the vector table, an
 	// edge with no instruction at all at the far end. Without rooting it, -O2 deleted it.
-	std::string casm = atO2("static __interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }");
+	std::string casm = atO2("static __interrupt void h(void) { volatile unsigned int* p = (volatile unsigned int*)0xFF000004; *p = 65; }");
 	CHECK(contains(casm, "h:"));
 	CHECK(contains(casm, "iret"));
 }
@@ -1658,7 +1658,7 @@ TEST(codegen, an_interrupt_vector_binding_becomes_one_top_level_interrupt_line)
 	// before the program's first instruction - so it goes above every section.
 	std::string casm = atO2(
 		"enum Irq { Terminal = 17 };"
-		"__interrupt void h(void) { char* p = (char*)0xFF000004; *p = 65; }"
+		"__interrupt void h(void) { volatile unsigned int* p = (volatile unsigned int*)0xFF000004; *p = 65; }"
 		"__interrupt_vector(Terminal, h);");
 
 	// The NUMBER, not the name the C source used: an enum constant means nothing to the assembler.
@@ -1836,12 +1836,12 @@ TEST(codegen, inline_assembly_goes_into_the_function_as_written_a_line_at_a_time
 	std::string text = atO2(
 		"void f(void)\n"
 		"{\n"
-		"    __asm__(\"li r0, 7\\n\\t  la r12, 0xFF000004  \\n.again:\\n\\tstrb [r12 + 0], r0\\n\\n  jnz .again\");\n"
+		"    __asm__(\"li r0, 7\\n\\t  la r12, 0xFF000004  \\n.again:\\n\\tstr [r12 + 0], r0\\n\\n  jnz .again\");\n"
 		"}\n");
 	CHECK(contains(text, "    li r0, 7"));                 // an instruction is indented and trimmed
 	CHECK(contains(text, "    la r12, 0xFF000004"));
 	CHECK(contains(text, "\n.again:\n"));                  // a label stands at the left margin
-	CHECK(contains(text, "    strb [r12 + 0], r0"));
+	CHECK(contains(text, "    str [r12 + 0], r0"));
 	CHECK(contains(text, "    jnz .again"));
 	CHECK(!contains(text, "call"));                        // nothing is called: the text is the asm's own
 }

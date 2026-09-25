@@ -74,7 +74,7 @@ hand-written CASM program does:
 ```c
 int main(void)
 {
-    char* terminal = (char*)0xFF000004;
+    volatile unsigned int* terminal = (volatile unsigned int*)0xFF000004;
     *terminal = 'h';
     *terminal = 'i';
     *terminal = '\n';

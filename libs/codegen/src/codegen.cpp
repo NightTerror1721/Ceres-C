@@ -1726,8 +1726,8 @@ namespace ceresc::codegen
 					{
 						// No library to hand the status to, so main stops the machine itself: a word
 						// write to the system control device carries the status in bits 15:8
-						// (07-IO-Devices-and-Ports.md). A `return;` with no value is status 0, which is
-						// what a plain byte write has always meant.
+						// (07-IO-Devices-and-Ports.md). A `return;` with no value is status 0: the
+						// shutdown command alone. Device registers take 32-bit accesses only.
 						_emitter.instr(std::format("la {}, 0xFFFF0000", intReg(kScratchA)), comment);
 						if (p.hasValue)
 						{
@@ -1738,7 +1738,7 @@ namespace ceresc::codegen
 						else
 						{
 							_emitter.instr(std::format("li {}, 1", intReg(kScratchB)), comment);
-							_emitter.instr(std::format("strb [{} + 0], {}", intReg(kScratchA), intReg(kScratchB)), comment);
+							_emitter.instr(std::format("str [{} + 0], {}", intReg(kScratchA), intReg(kScratchB)), comment);
 						}
 						_emitter.instr("halt", comment);
 					}

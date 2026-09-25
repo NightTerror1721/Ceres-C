@@ -31,7 +31,7 @@ typedef struct Queue Queue;
 
 void put(char c)
 {
-    char* terminal = (char*)0xFF000004;
+    volatile unsigned int* terminal = (volatile unsigned int*)0xFF000004;
     *terminal = c;
 }
 

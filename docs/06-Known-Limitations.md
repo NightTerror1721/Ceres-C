@@ -61,8 +61,8 @@ the devices under `ceres/`, and `printf`/`scanf`/`strtod` that convert exactly. 
 is all a program needs: `--sysroot` puts `<dir>/include` on the include path, and `-lceres` links
 `<dir>/lib/libceres.car` with its declarations `libceres.decls.casm` (with `-fsoft-double`, the copies in
 `<dir>/lib/soft-double/` come first). Without the library a program still runs on its own:
-`examples/08_strings.c` writes the string routines it needs and prints by storing bytes into the terminal's
-output register at `0xFF000004`, and `examples/interop/io.c` wraps them into something reusable.
+`examples/08_strings.c` writes the string routines it needs and prints by storing each character, as a 32-bit word, into the
+terminal's output register at `0xFF000004`, and `examples/interop/io.c` wraps them into something reusable.
 
 ### No 64-bit register, so a 64-bit value is a pair of words
 
