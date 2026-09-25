@@ -408,21 +408,39 @@ namespace ceresc::preprocessor
 		bool comments = false; std::string expanded = expandMacros(protectedExpression, location, comments);
 		IfExpressionParser parser(expanded, _macros, _diagnostics, location); return parser.parse(value);
 	}
-	// Where a // comment starts in a line (outside strings and character constants), or npos.
-	static usize lineCommentAt(std::string_view text)
+	// Where a // comment starts in a line (outside strings, character constants and block comments), or npos.
+	// `inBlockComment` says whether the line starts inside a /* comment, and is left saying whether it ends in one.
+	static usize lineCommentAt(std::string_view text, bool& inBlockComment)
 	{
-		for (usize k = 0; k + 1 < text.size(); ++k)
+		for (usize k = 0; k < text.size();)
 		{
+			if (inBlockComment)
+			{
+				usize end = text.find("*/", k);
+				if (end == std::string_view::npos)
+					return std::string_view::npos;
+				inBlockComment = false;
+				k = end + 2;
+				continue;
+			}
 			if (text[k] == '"' || text[k] == '\'')
 			{
 				char quote = text[k];
 				for (++k; k < text.size() && text[k] != quote; ++k)
 					if (text[k] == '\\')
 						++k;
+				++k;
 				continue;
 			}
-			if (text[k] == '/' && text[k + 1] == '/')
+			if (text[k] == '/' && k + 1 < text.size() && text[k + 1] == '/')
 				return k;
+			if (text[k] == '/' && k + 1 < text.size() && text[k + 1] == '*')
+			{
+				inBlockComment = true;
+				k += 2;
+				continue;
+			}
+			++k;
 		}
 		return std::string_view::npos;
 	}
@@ -792,17 +810,20 @@ namespace ceresc::preprocessor
 				u32 taken = 0;
 				if (leavesMacroCallOpen(line, inBlockComment))
 				{
-					joined = std::string(line.substr(0, lineCommentAt(line)));
+					// Whether the text taken so far ends inside a /* comment: a // in one is no comment, and a line
+					// starting with # inside one is no directive.
+					bool commentOpen = inBlockComment;
+					joined = std::string(line.substr(0, lineCommentAt(line, commentOpen)));
 					while (position < text.size() && leavesMacroCallOpen(joined, inBlockComment))
 					{
 						newline = text.find('\n', position);
 						last = newline == std::string_view::npos;
 						std::string_view physical = text.substr(position, (last ? text.size() : newline) - position);
 						std::string_view start = trim(physical);
-						if (!start.empty() && start.front() == '#')
+						if (!commentOpen && !start.empty() && start.front() == '#')
 							break;
 						joined += ' ';
-						joined += physical.substr(0, lineCommentAt(physical));
+						joined += physical.substr(0, lineCommentAt(physical, commentOpen));
 						position = last ? text.size() : newline + 1;
 						++sourceLine;
 						++taken;

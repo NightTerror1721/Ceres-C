@@ -686,6 +686,24 @@ TEST(preprocessor, a_macro_call_whose_arguments_go_on_over_several_lines_is_expa
 	support::SourceLocation after = result.lineMap.toOriginal(support::SourceLocation{ {}, 5, 1, 0 });
 	CHECK_EQ(after.line, u32(5));
 	CHECK(contains(result.text, "int after;"));
+
+	// A // inside a block comment is not a comment, and a # at the start of a line inside one is not a
+	// directive: both calls are taken whole.
+	std::string commented = dir.write("comments.c",
+		"#define TWO(a, b) f(a, b)\n"
+		"int p = TWO(1, /* // */\n"
+		"            2);\n"
+		"int q = TWO(3,\n"
+		"/* a comment\n"
+		"# not a directive\n"
+		"*/ 4);\n"
+		"int after;\n");
+	Result inComments = expand(commented);
+	CHECK(inComments.diagnostics.empty());
+	CHECK(contains(inComments.text, "int p = f(1, /* // */             2);"));
+	CHECK(contains(inComments.text, "f(3,"));
+	CHECK(contains(inComments.text, "4);"));
+	CHECK_EQ(inComments.lineMap.toOriginal(support::SourceLocation{ {}, 8, 1, 0 }).line, u32(8));
 	// A directive is never taken into a call: this one stays open, and says so.
 	CHECK(!result.diagnostics.empty() && contains(result.diagnostics.front(), "malformed invocation of macro 'TWO'"));
 }
