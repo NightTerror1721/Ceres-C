@@ -69,7 +69,7 @@ namespace ceresc::driver
 		std::vector<std::string> runArguments;   // --run-arg <arg>, in order: more for `ceres run` after the program's name
 		std::vector<std::string> programArguments;   // after --: the program's own argv[1...], passed on as `ceres run ... -- <args>`
 		bool symbolTable = false;                // --symtab: `ceres link --symtab`, a table of the code's names in the program
-		bool gcSections = false;               // --gc-sections: `ceres link --gc-sections`, the functions nothing reaches left out
+		bool gcSections = false;                 // --gc-sections: `ceres link --gc-sections`, the functions nothing reaches left out
 		bool warningsAsErrors = false; // -Werror
 		// -fsoft-double: `double` is a real IEEE binary64, every operation on it a call to the standard
 		// library's __f64_* routines (ceres/f64.h), and __CERES_SOFT_DOUBLE__ is defined. Without it `double`

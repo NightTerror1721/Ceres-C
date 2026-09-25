@@ -90,7 +90,8 @@ namespace ceresc::driver
 			"  --clean-keep-casm   after --run, keep generated .casm but remove .decls.casm, .cobj and .cres\n"
 			"  --ceres-path <path> where to find `ceres`: its directory, or the executable itself. Without it the\n"
 			"                      CERES_PATH environment variable says, and then PATH\n"
-			"  --gc-sections       leave out of the program the functions nothing reaches (`ceres link --gc-sections`)\n"
+			"  --gc-sections       leave out of the program the functions nothing reaches (`ceres link --gc-sections`);\n"
+			"                      only with --run, the build that links\n"
 			"  --symtab            link a table of the program's function names into it (`ceres link --symtab`),\n"
 			"                      for a backtrace or a fault report that names functions (ceres/backtrace.h);\n"
 			"                      only with --run, the build that links\n"
@@ -290,6 +291,11 @@ namespace ceresc::driver
 		if (options.symbolTable && !options.run)
 		{
 			diagnosticsOut << "ceresc: '--symtab' requires '--run': it is an option of the link\n";
+			return std::nullopt;
+		}
+		if (options.gcSections && !options.run)
+		{
+			diagnosticsOut << "ceresc: '--gc-sections' requires '--run': it is an option of the link\n";
 			return std::nullopt;
 		}
 		return options;

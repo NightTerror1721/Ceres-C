@@ -484,6 +484,15 @@ TEST(options, symtab_asks_the_link_for_a_symbol_table)
 	CHECK(!parse({ "main.c", "--symtab" }).options.has_value());   // there is no link to ask without --run
 }
 
+TEST(options, gc_sections_asks_the_link_to_leave_out_what_nothing_reaches)
+{
+	ParseResult with = parse({ "main.c", "--run", "--gc-sections" });
+	CHECK(with.options.has_value() && with.options->gcSections);
+	ParseResult without = parse({ "main.c", "--run" });
+	CHECK(without.options.has_value() && !without.options->gcSections);
+	CHECK(!parse({ "main.c", "--gc-sections" }).options.has_value());   // no link without --run
+}
+
 TEST(options, run_arg_collects_the_extra_arguments_for_ceres_run_in_order)
 {
 	ParseResult result = parse({ "ceresc", "main.c", "--run", "--run-arg", "--port", "--run-arg", "0=stick.img" });

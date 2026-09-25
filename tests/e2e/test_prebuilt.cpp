@@ -127,6 +127,45 @@ TEST(prebuilt, a_program_links_against_an_archive_built_earlier)
 	CHECK_EQ(runProgram(scratch, *ceresDir, kMain, { *archive }, { lib->decls }), 10);   // twice(counter) = 10
 }
 
+TEST(prebuilt, a_library_found_with_l_brings_its_declarations_and_its_soft_double_build)
+{
+	std::optional<fs::path> ceresDir = findCeresDirectory();
+	if (skipped(ceresDir)) return;
+	Scratch scratch("installed");
+	// lib/libtwice.car with lib/libtwice.decls.casm beside it, and lib/soft-double/ the same built another way
+	// (counter 6, not 5): what tools/install.ps1 lays out.
+	const auto install = [&](const fs::path& directory, const std::string& source) -> bool
+	{
+		std::optional<Built> lib = buildObject(scratch, *ceresDir, "lib", source);
+		if (!lib)
+			return false;
+		std::optional<fs::path> archive = buildArchive(scratch, *ceresDir, "lib", { lib->object });
+		if (!archive)
+			return false;
+		fs::create_directories(directory);
+		fs::copy_file(*archive, directory / "libtwice.car", fs::copy_options::overwrite_existing);
+		fs::copy_file(lib->decls, directory / "libtwice.decls.casm", fs::copy_options::overwrite_existing);
+		return true;
+	};
+	CHECK(install(scratch.dir / "lib", kLibrary));
+	CHECK(install(scratch.dir / "lib" / "soft-double", "int counter = 6;\nint twice(int x) { return x * 2; }\n"));
+
+	const auto runWith = [&](bool softDouble)
+	{
+		ceresc::driver::Options options;
+		options.inputPaths.push_back(scratch.write("main.c", kMain).string());
+		options.libraryDirectories.push_back((scratch.dir / "lib").string());
+		options.libraries.push_back("twice");
+		options.softDouble = softDouble;
+		options.outputPath = (scratch.dir / "main.cres").string();
+		options.run = true;
+		options.ceresPath = ceresDir->string();
+		return ceresc::driver::run(options);
+	};
+	CHECK_EQ(runWith(false), 10);    // no --decls: the declarations came with -ltwice
+	CHECK_EQ(runWith(true), 12);     // -fsoft-double: soft-double/ first
+}
+
 TEST(prebuilt, an_object_is_linked_as_it_is)
 {
 	std::optional<fs::path> ceresDir = findCeresDirectory();
