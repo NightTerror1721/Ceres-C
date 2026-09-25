@@ -2221,6 +2221,8 @@ TEST(sema, a_format_argument_of_the_wrong_kind_is_warned_about)
 	CHECK(containsMessage(formatCall("pf(\"%d\", ll);"), "expects an 'int'"));
 	CHECK(containsMessage(formatCall("pf(\"%d\", f);"), "expects an 'int'"));
 	CHECK(containsMessage(formatCall("pf(\"%f\", i);"), "expects a 'float'"));
+	CHECK(formatCall("pf(\"%a %A %.3a\", f, f, f);").messages.empty());   // hexadecimal floats
+	CHECK(containsMessage(formatCall("pf(\"%a\", i);"), "expects a 'float'"));
 	CHECK(containsMessage(formatCall("pf(\"%s\", i);"), "expects a 'char *'"));
 	CHECK(containsMessage(formatCall("pf(\"%x %s\", i, (void*)0);"), "argument 3 has type"));
 	CHECK(containsMessage(formatCall("pf(\"%*d\", f, i);"), "format '%*' expects an 'int'"));

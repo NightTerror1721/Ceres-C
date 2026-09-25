@@ -879,7 +879,7 @@ namespace ceresc::sema
 					case 'c':
 						want = FormatWant::Int;
 						break;
-					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G':
+					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
 						want = FormatWant::Float;
 						break;
 					case 's': want = FormatWant::String; break;
