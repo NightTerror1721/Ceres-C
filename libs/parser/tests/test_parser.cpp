@@ -642,7 +642,7 @@ TEST(parser, global_array_declaration)
 
 TEST(parser, two_dimensional_array_declaration)
 {
-	CHECK_EQ(printDecl("int m[3][4];"), "(var m int[4][3] <null>)");
+	CHECK_EQ(printDecl("int m[3][4];"), "(var m int[3][4] <null>)");
 }
 
 TEST(parser, array_of_pointers_declaration)
@@ -1508,7 +1508,7 @@ TEST(parser, the_length_of_an_array_with_designators_is_the_highest_position_rea
 	CHECK_EQ(printUnit("int a[] = { [5] = 1, 2, 3 };"), "(unit (var a int[8] (init-list (designated [5] 1) 2 3)))");
 	CHECK_EQ(printUnit("int a[] = { 1, [3] = 2 };"), "(unit (var a int[4] (init-list 1 (designated [3] 2))))");
 	CHECK_EQ(printUnit("int a[] = { [4] = 1, [2] = 2 };"), "(unit (var a int[5] (init-list (designated [4] 1) (designated [2] 2))))");
-	CHECK_EQ(printUnit("int m[][2] = { [2] = { 1, 2 } };"), "(unit (var m int[2][3] (init-list (designated [2] (init-list 1 2)))))");
+	CHECK_EQ(printUnit("int m[][2] = { [2] = { 1, 2 } };"), "(unit (var m int[3][2] (init-list (designated [2] (init-list 1 2)))))");
 	CHECK(parseFails("int a[] = { [n] = 1 };"));          // not a constant the parser can fold: no size to take
 	CHECK(parseFails("struct P p[] = { .x = 1 };"));       // a member designator does not count elements
 }

@@ -202,7 +202,19 @@ namespace ceresc::ast
 
 				return typeName(pointee) + "*" + suffix;
 			}
-			case TypeKind::Array: return prefix + typeName(type->arrayElementType()) + (type->arraySize() == 0 ? std::string("[]") : "[" + std::to_string(type->arraySize()) + "]");
+			case TypeKind::Array:
+			{
+				// `int[2][3]` is two arrays of three: the outer size is written first, though it wraps the inner one, so
+				// the sizes are gathered from the outside in and the innermost element goes in front of them all.
+				std::string sizes;
+				const Type* element = type;
+				while (element && element->kind() == TypeKind::Array)
+				{
+					sizes += element->arraySize() == 0 ? std::string("[]") : "[" + std::to_string(element->arraySize()) + "]";
+					element = element->arrayElementType();
+				}
+				return prefix + typeName(element) + sizes;
+			}
 			case TypeKind::Struct: return prefix + "struct " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Union: return prefix + "union " + std::string(type->structDecl() ? type->structDecl()->name() : std::string_view("<anonymous>"));
 			case TypeKind::Enum: return prefix + "enum " + std::string(type->enumDecl() ? type->enumDecl()->name() : std::string_view("<anonymous>"));
