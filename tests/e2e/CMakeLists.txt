@@ -28,3 +28,5 @@ target_link_libraries(ceresc_e2e_tests
 set_target_properties(ceresc_e2e_tests PROPERTIES FOLDER "tests")
 
 add_test(NAME e2e COMMAND ceresc_e2e_tests)
+# A program run by `ceresc --run` opens the machine's window unless told not to; a test has nobody to close it.
+set_tests_properties(e2e PROPERTIES ENVIRONMENT "CERES_HEADLESS=1")

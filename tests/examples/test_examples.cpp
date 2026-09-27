@@ -86,7 +86,7 @@ namespace
 		ceresc::driver::Options options;
 		options.inputPaths.push_back(source.string());
 		options.outputPath = casmPath.string();
-		options.run = false; // driven from here so stdout can be captured - see ceres_tool.h
+		options.run = false; // driven from here so the output can be read back - see ceres_tool.h
 		options.optimization = ceresc::support::OptimizationOptions::forLevel(level);
 		if (ceresc::driver::run(options) != 0)
 			return std::format("<ceresc failed to compile {}>", stem);
@@ -96,11 +96,11 @@ namespace
 		if (runSubprocessCapturingStdout(asmCommand, outputPath) != 0)
 			return std::format("<ceres asm failed: {}>", readFile(outputPath));
 
-		std::string runCommand = std::format("{} run {}", quote(ceresBinary), quote(cresPath));
-		if (runSubprocessCapturingStdout(runCommand, outputPath) != 0)
-			return std::format("<ceres run faulted: {}>", readFile(outputPath));
+		std::string output;
+		if (runProgram(ceresBinary, cresPath, {}, workDir / stem, output) != 0)
+			return std::format("<ceres run faulted: {}>", output);
 
-		return withoutCarriageReturns(readFile(outputPath));
+		return withoutCarriageReturns(output);
 	}
 }
 
@@ -236,11 +236,11 @@ namespace
 		if (runSubprocessCapturingStdout(linkCommand, outputPath) != 0)
 			return std::format("<ceres link failed: {}>", readFile(outputPath));
 
-		std::string runCommand = std::format("{} run {}", quote(ceresBinary), quote(workDir / "hello.cres"));
-		if (runSubprocessCapturingStdout(runCommand, outputPath) != 0)
-			return std::format("<ceres run faulted: {}>", readFile(outputPath));
+		std::string output;
+		if (runProgram(ceresBinary, workDir / "hello.cres", {}, workDir / "hello", output) != 0)
+			return std::format("<ceres run faulted: {}>", output);
 
-		return withoutCarriageReturns(readFile(outputPath));
+		return withoutCarriageReturns(output);
 	}
 }
 

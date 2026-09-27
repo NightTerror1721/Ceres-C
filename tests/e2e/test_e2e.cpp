@@ -45,7 +45,7 @@ namespace
 	using namespace ceresc::testing;
 
 	// Compiles `source` (a whole .c program) at `level`, assembles it and runs it for real,
-	// returning what `ceres run` printed to stdout - or kNoCeres if this environment has no sibling
+	// returning what the program wrote to its terminal - or kNoCeres if this environment has no sibling
 	// CeresASM checkout to run against (see findCeresDirectory()'s own note).
 	std::string compileAssembleAndRun(std::string_view name, std::string_view source,
 		ceresc::support::OptimizationLevel level, int expectedStatus = 0, std::string_view runOptions = {})
@@ -86,10 +86,10 @@ namespace
 		if (asmResult != 0)
 			return std::format("<ceres asm failed: {}>", readFile(outputPath));
 
-		std::string runCommand = std::format("{} run {}{}{}", quote(ceresBinary), quote(cresPath), runOptions.empty() ? "" : " ", runOptions);
-		int runResult = runSubprocessCapturingStdout(runCommand, outputPath);
+		std::string output;
+		int runResult = runProgram(ceresBinary, cresPath, runOptions, workDir / name, output);
 		CHECK_EQ(runResult, expectedStatus);
-		return readFile(outputPath);
+		return output;
 	}
 
 	// Runs one program at all three optimization levels and checks each printed `expected`. It prints

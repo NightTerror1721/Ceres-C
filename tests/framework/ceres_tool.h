@@ -5,8 +5,10 @@
 // Two suites need this: tests/e2e (§12's end-to-end layer, which compiles a source string, then
 // assembles and runs it) and tests/examples (the CI rule from §12: every file under examples/ is
 // compiled and run on every build and its output compared against a sibling .expected). Both do
-// the same three things - find the binary, run it with its stdout captured, read a file back - so
-// those three live here instead of once per suite.
+// the same three things - find the binary, run a program with its output captured, read a file back -
+// so those three live here instead of once per suite. A program's output is its terminal's, in the
+// machine's window, and never the process's stdout (CeresASM plan/v2 F5.7): runProgram() runs it
+// headless and reads it from --transcript.
 //
 // Deliberately header-only and in tests/framework: it is test scaffolding, not a library. Nothing
 // under libs/ may depend on it, and libs/driver keeps its own private subprocess launcher, which
@@ -98,10 +100,55 @@ namespace ceresc::testing
 		return buffer.str();
 	}
 
-	// Drops carriage returns so a golden file compares the same on both platforms. `ceres run`
-	// writes the terminal device's bytes to its own stdout, which is a TEXT stream on Windows, so
-	// a program that prints '\n' produces "\r\n" there and "\n" everywhere else. The .expected
-	// files are stored with newlines only (see .gitattributes).
+	// What a program wrote to its terminal, from a --transcript file: the error stream's bytes, which the
+	// transcript keeps between ESC [ E and ESC [ e, are left where they were written and the markers dropped - so
+	// the output reads as it would have on a terminal where both streams show.
+	inline std::string plainTranscript(std::string_view transcript)
+	{
+		std::string result;
+		result.reserve(transcript.size());
+		for (std::size_t i = 0; i < transcript.size(); ++i)
+		{
+			if (transcript[i] == '\x1b' && i + 2 < transcript.size() && transcript[i + 1] == '[' &&
+				(transcript[i + 2] == 'E' || transcript[i + 2] == 'e'))
+			{
+				i += 2;
+				continue;
+			}
+			result += transcript[i];
+		}
+		return result;
+	}
+
+	// Runs `ceres run <program> <options>` the way a test needs it (plan/v2 F5.9): no window, as fast as the host
+	// goes, and the program's output from --transcript, since a program never writes to the process's own stdout.
+	// `typed`, when given, is typed on the program's terminal with --type. Returns the exit status; `output` gets
+	// the transcript, then whatever the run itself said on stdout and stderr (its diagnostics), as `2>&1` used to
+	// put them together. `stem` names the scratch files, next to it.
+	inline int runProgram(const fs::path& ceresBinary, const fs::path& program, std::string_view options,
+		const fs::path& stem, std::string& output, std::string_view typed = {})
+	{
+		const fs::path transcript = fs::path(stem.string() + ".transcript");
+		const fs::path hostOutput = fs::path(stem.string() + ".host.txt");
+		std::error_code error;
+		fs::remove(transcript, error);
+		std::string command = std::format("{} run {} --headless --speed max --transcript {}", quote(ceresBinary), quote(program), quote(transcript));
+		if (!typed.empty())
+		{
+			const fs::path typeFile = fs::path(stem.string() + ".typed");
+			std::ofstream(typeFile, std::ios::binary) << typed;
+			command += " --type " + quote(typeFile);
+		}
+		if (!options.empty())
+			command += std::format(" {}", options);
+		const int status = runSubprocessCapturingStdout(command, hostOutput);
+		output = plainTranscript(readFile(transcript)) + readFile(hostOutput);
+		return status;
+	}
+
+	// Drops carriage returns so a golden file compares the same on both platforms. The transcript is
+	// written byte for byte, but what `ceres` itself says goes to a TEXT stream on Windows, where '\n'
+	// becomes "\r\n". The .expected files are stored with newlines only (see .gitattributes).
 	inline std::string withoutCarriageReturns(std::string_view text)
 	{
 		std::string result;

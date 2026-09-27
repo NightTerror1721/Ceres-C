@@ -35,3 +35,5 @@ target_link_libraries(ceresc_examples_tests
 set_target_properties(ceresc_examples_tests PROPERTIES FOLDER "tests")
 
 add_test(NAME examples COMMAND ceresc_examples_tests)
+# A program run by `ceresc --run` opens the machine's window unless told not to; a test has nobody to close it.
+set_tests_properties(examples PROPERTIES ENVIRONMENT "CERES_HEADLESS=1")

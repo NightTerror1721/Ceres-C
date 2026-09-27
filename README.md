@@ -49,7 +49,7 @@ To assemble and run what the compiler produces you also need a built CeresASM ch
 
 ```sh
 ceresc program.c -o program.casm      # compile to CASM text (the default)
-ceresc program.c --run                # ...and assemble and run it with `ceres`
+ceresc program.c --run                # ...and assemble and run it with `ceres`, in the machine's window
 ceresc io.c main.c lib.casm -o app.cres --run   # several files, C and assembly, linked together
 ceresc program.c -I include -D DEBUG  # include search path, predefined macro
 ceresc program.c -E                   # show the preprocessed source
