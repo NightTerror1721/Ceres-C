@@ -1719,6 +1719,24 @@ TEST(codegen, a_c_name_that_is_a_reserved_word_of_the_assembler_is_written_with_
 	CHECK(!contains(text, "global let half"));
 }
 
+TEST(codegen, the_register_pairs_and_the_64_bit_types_are_reserved_words_too)
+{
+	std::string text = atO0(
+		"int x1 = 1;\n"
+		"int d7 = 2;\n"
+		"int X3 = 3;\n"
+		"int u64 = 4;\n"
+		"int f64(void) { return 5; }\n"
+		"int x8 = 6;\n"
+		"int main(void) { return x1 + d7 + X3 + u64 + f64() + x8; }");
+	CHECK(contains(text, "global let __c_x1: u32 = 1"));
+	CHECK(contains(text, "global let __c_d7: u32 = 2"));
+	CHECK(contains(text, "global let __c_X3: u32 = 3"));
+	CHECK(contains(text, "global let __c_u64: u32 = 4"));
+	CHECK(contains(text, "global __c_f64:"));
+	CHECK(contains(text, "global let x8: u32 = 6"));   // there is no x8
+}
+
 TEST(codegen, names_that_only_look_like_reserved_words_are_left_alone)
 {
 	std::string text = atO0(

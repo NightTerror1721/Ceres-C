@@ -134,7 +134,7 @@ namespace ceresc::codegen
 				"struct", "endstruct", "align", "org", "assert", "interrupt",
 			};
 			static constexpr std::string_view kDataTypes[] = {
-				"u8", "u16", "u32", "i8", "i16", "i32", "f32", "ptr", "char", "bool",
+				"u8", "u16", "u32", "i8", "i16", "i32", "f32", "u64", "i64", "f64", "ptr", "char", "bool",
 				"string", "port", "irq", "byte", "half", "word",
 			};
 			static constexpr std::string_view kLiterals[] = { "true", "false" };
@@ -149,19 +149,22 @@ namespace ceresc::codegen
 			for (std::string_view reserved : kRegisterAliases)
 				if (name == reserved) return true;
 
-			// rN / fN, the two register banks. Only with a decimal number attached - `r` and `f1x`
-			// are ordinary identifiers.
-			if (name.size() >= 2 && (name.front() == 'r' || name.front() == 'f'))
+			// rN / fN, the two register banks, and xN / dN, the register pairs of the 64-bit instructions (x0-x7 and
+			// d0-d7; the assembler names x7 only to refuse it). Only with a decimal number attached - `r` and `f1x` are
+			// ordinary identifiers - and in either case, as the assembler reads a register name.
+			if (name.size() >= 2)
 			{
+				const char bank = static_cast<char>(name.front() | 0x20);
+				const u32 banks = bank == 'r' || bank == 'f' ? 16u : bank == 'x' || bank == 'd' ? 8u : 0u;
 				u32 number = 0;
-				bool allDigits = true;
+				bool allDigits = banks != 0;
 				for (char c : name.substr(1))
 				{
 					allDigits = allDigits && (c >= '0' && c <= '9');
 					if (allDigits)
 						number = number * 10 + static_cast<u32>(c - '0');
 				}
-				if (allDigits && number < 16)
+				if (allDigits && number < banks)
 					return true;
 			}
 			return false;
