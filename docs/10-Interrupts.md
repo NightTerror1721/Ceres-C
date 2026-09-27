@@ -16,7 +16,7 @@ __interrupt void term_isr(void)
     *out = *in;                       // echo whatever arrived
 }
 
-__interrupt_vector(17, term_isr);     // 17 is the terminal's
+__interrupt_vector(19, term_isr);     // 19 is the terminal's
 
 int main(void)
 {
@@ -43,7 +43,7 @@ __interrupt void term_isr(void) { ... }
 
 // main.c — the program that uses it picks the vector
 __interrupt void term_isr(void);          // an ordinary prototype
-__interrupt_vector(17, term_isr);
+__interrupt_vector(19, term_isr);
 ```
 
 and what lets a handler written in C be bound from hand-written assembly, or the other way round —
@@ -95,7 +95,7 @@ The vector table has 64 entries. `__interrupt_vector` takes any constant express
 a `#define` is the readable way to write one:
 
 ```c
-enum Irq { Timer = 16, Terminal = 17 };
+enum Irq { Timer = 16, Terminal = 19 };
 __interrupt_vector(Timer, tick_isr);
 ```
 
@@ -110,9 +110,12 @@ __interrupt_vector(Timer, tick_isr);
 | 6 | alignment fault | always |
 | 7 | page fault | always |
 | 15 | syscall | always (nothing raises it yet) |
-| 16 | the timer | only while unmasked |
-| 17 | the terminal, on input | only while unmasked |
-| 18–63 | unused | only while unmasked |
+| 16 | the timer's countdown | only while unmasked |
+| 17 | the timer's alarm | only while unmasked |
+| 18 | the DMA controller | only while unmasked |
+| 19 | the terminal, on input | only while unmasked |
+| 20–35 | the other devices: input 20–22, storage 24–26, audio 28–30, video 32–35 ([CeresASM's device map](https://github.com/Krampus1721/CeresASM/blob/main/docs/07-IO-Devices-and-Ports.md)) | only while unmasked |
+| 36–63 | unused | only while unmasked |
 
 Four rules, all of them the linker's, are checked here so the message names your C rather than
 generated assembly:
@@ -148,7 +151,7 @@ The binding emits neither code nor data, only a line the linker resolves and the
 before the program's first instruction, so it sits above every section:
 
 ```casm
-interrupt 17: term_isr
+interrupt 19: term_isr
 
 @text
 

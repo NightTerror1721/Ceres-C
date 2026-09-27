@@ -421,7 +421,7 @@ TEST(prebuilt, run_arg_hands_extra_arguments_to_ceres_run)
 
 	// Port 0 is the one selected at start; its sector count is at offset 0x2C of the peripheral device
 	ceresc::driver::Options options;
-	options.inputPaths.push_back(scratch.write("main.c", "int main(void) { return *(volatile unsigned int*)0xFF0A002C; }\n").string());
+	options.inputPaths.push_back(scratch.write("main.c", "int main(void) { return *(volatile unsigned int*)0xFF32002C; }\n").string());
 	options.outputPath = (scratch.dir / "main.cres").string();
 	options.run = true;
 	options.ceresPath = ceresDir->string();

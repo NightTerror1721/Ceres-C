@@ -1898,9 +1898,9 @@ TEST(sema, an_interrupt_vector_binding_enforces_the_linkers_own_four_rules)
 {
 	std::string_view handler = "__interrupt void h(void) { } ";
 
-	CHECK(checkSource(std::string(handler) + "__interrupt_vector(17, h);").ok);
+	CHECK(checkSource(std::string(handler) + "__interrupt_vector(19, h);").ok);
 	// An enum constant folds, so the vector can be named rather than spelled as a bare number.
-	CHECK(checkSource("enum Irq { Terminal = 17 }; " + std::string(handler) + "__interrupt_vector(Terminal, h);").ok);
+	CHECK(checkSource("enum Irq { Terminal = 19 }; " + std::string(handler) + "__interrupt_vector(Terminal, h);").ok);
 
 	// 1. The number must fold to a constant.
 	CheckOutcome variable = checkSource("int n; " + std::string(handler) + "__interrupt_vector(n, h);");

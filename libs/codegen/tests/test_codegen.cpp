@@ -1657,13 +1657,13 @@ TEST(codegen, an_interrupt_vector_binding_becomes_one_top_level_interrupt_line)
 	// It emits neither code nor data - only a binding the linker resolves and the loader applies
 	// before the program's first instruction - so it goes above every section.
 	std::string casm = atO2(
-		"enum Irq { Terminal = 17 };"
+		"enum Irq { Terminal = 19 };"
 		"__interrupt void h(void) { volatile unsigned int* p = (volatile unsigned int*)0xFF000004; *p = 65; }"
 		"__interrupt_vector(Terminal, h);");
 
 	// The NUMBER, not the name the C source used: an enum constant means nothing to the assembler.
-	CHECK(contains(casm, "interrupt 17: h"));
-	CHECK(casm.find("interrupt 17: h") < casm.find("@text"));
+	CHECK(contains(casm, "interrupt 19: h"));
+	CHECK(casm.find("interrupt 19: h") < casm.find("@text"));
 }
 
 // ---- function pointers ---------------------------------------------------------------------------
