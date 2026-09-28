@@ -498,8 +498,8 @@ namespace ceresc::codegen
 
 	std::string CodeGen::fieldTypeName(u32 sizeInBytes, bool isFloat)
 	{
-		if (isFloat)
-			return "f32";
+		if (isFloat && sizeInBytes == 4)
+			return "f32";   // an 8-byte float field (a double parameter's) is two words like any other
 		switch (sizeInBytes)
 		{
 			case 1: return "u8";
@@ -1773,9 +1773,10 @@ namespace ceresc::codegen
 			}
 			case IrWideOp::Store:
 			{
-				// The value in x2 (r4:r5), so the address takes r6 - half of x3, which is free here.
+				// An integer value in x2 (r4:r5), so its address takes r6 - half of x3, which is free here;
+				// a double's value is in d2, which leaves r4 for the address.
 				std::string value = pairIn(p.b, kPairScratchA, isDouble, loc);
-				std::string address = valueIn(p.a, 6, false, loc);
+				std::string address = valueIn(p.a, isDouble ? kScratchA : 6, false, loc);
 				_emitter.instr(std::format("{} [{}], {}", isDouble ? "fstr.d" : "strd", address, value), comment);
 				return;
 			}
@@ -1869,14 +1870,24 @@ namespace ceresc::codegen
 			{
 				// `cmp64` (or `fcmp.d`) and the branch that reads its flags, then the 0/1 value - the
 				// shape materializeCmp() writes for a word. A double comparison reads the flags the way
-				// `fcmp` leaves them, through the unsigned branches.
-				std::string a = pairIn(p.a, kPairScratchA, isDouble, loc);
-				std::string b = pairIn(p.b, kPairScratchB, isDouble, loc);
+				// `fcmp` leaves them, through the unsigned branches - and `>`/`>=` are asked as `<`/`<=`
+				// with the operands swapped, because an unordered pair (a NaN) clears Carry and Zero
+				// alike, which `jab`/`jae` would read as true.
+				IrCmpPredicate predicate = p.predicate;
+				IrValue lhs = p.a;
+				IrValue rhs = p.b;
+				if (isDouble && (predicate == IrCmpPredicate::Gt || predicate == IrCmpPredicate::Ge))
+				{
+					std::swap(lhs, rhs);
+					predicate = predicate == IrCmpPredicate::Gt ? IrCmpPredicate::Lt : IrCmpPredicate::Le;
+				}
+				std::string a = pairIn(lhs, kPairScratchA, isDouble, loc);
+				std::string b = pairIn(rhs, kPairScratchB, isDouble, loc);
 				_emitter.instr(std::format("{} {}, {}", isDouble ? "fcmp.d" : "cmp64", a, b), comment);
 				std::string trueLabel = std::format("cmp{}_true", _nextComparisonLabel);
 				std::string endLabel = std::format("cmp{}_end", _nextComparisonLabel);
 				++_nextComparisonLabel;
-				_emitter.instr(std::format("{} .{}", jumpMnemonic(p.predicate, isUnsigned || isDouble), trueLabel), comment);
+				_emitter.instr(std::format("{} .{}", jumpMnemonic(predicate, isUnsigned || isDouble), trueLabel), comment);
 				std::string dest = defineInto(p.result, kScratchA, false);
 				_emitter.instr(std::format("li {}, 0", dest), comment);
 				_emitter.instr(std::format("jp .{}", endLabel), comment);
@@ -2125,7 +2136,7 @@ namespace ceresc::codegen
 				const u32 alignment = slot.isFloat ? 4 : (slot.sizeInBytes == 1 ? 1 : (slot.sizeInBytes == 2 ? 2 : 4));
 				offset = (offset + alignment - 1) / alignment * alignment;
 				_slotOffsets.push_back(offset);
-				offset += slot.isFloat ? 4 : (slot.sizeInBytes <= 2 ? slot.sizeInBytes : (slot.sizeInBytes + 3) / 4 * 4);
+				offset += slot.sizeInBytes <= 2 && !slot.isFloat ? slot.sizeInBytes : (slot.sizeInBytes + 3) / 4 * 4;
 			}
 			// CASM rounds a struct's size up to its WIDEST field's alignment, and `enter` reserves exactly
 			// that many bytes. A frame of nothing but bytes or halfwords (a lone `char` parameter that spilled)

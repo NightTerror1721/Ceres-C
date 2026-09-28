@@ -904,7 +904,7 @@ namespace ceresc::sema
 							: shorts == 1 ? FormatWant::Pointee2 : FormatWant::Pointee4;
 						break;
 					case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
-						want = (longs > 0 || longDouble) && _softDouble ? FormatWant::DoublePointer : FormatWant::FloatPointer;
+						want = (longs > 0 || longDouble) && !_shortDouble ? FormatWant::DoublePointer : FormatWant::FloatPointer;
 						break;
 					case 'c': case 's': case '[':
 						want = longs > 0 ? FormatWant::Pointee4 : FormatWant::Pointee1;   // %lc, %ls, %l[: wchar_t
@@ -1210,10 +1210,8 @@ namespace ceresc::sema
 
 	void Sema::visit(ast::FloatLiteralExpr& node)
 	{
-		// Without -fsoft-double there is no `double` (see type.h) - an unsuffixed float literal is type
-		// `float` by definition here, not the `double` real C would give it. With it, C's rule: a double
-		// unless the literal says f.
-		const Type* type = _softDouble && !node.isSingle() ? &Type::Double : &Type::Float;
+		// C's rule: a double unless the literal says f - or unless -fshort-double made `double` a float.
+		const Type* type = !_shortDouble && !node.isSingle() ? &Type::Double : &Type::Float;
 		node.setType(type);
 		_lastExprType = type;
 	}
@@ -1881,7 +1879,24 @@ namespace ceresc::sema
 					requireInteger(argument ? argument->type() : nullptr);
 				result = &Type::UInt;
 				break;
-			default: // every float operation
+			case Builtin::Fabs: case Builtin::Fmod: case Builtin::Sqrt: case Builtin::Floor: case Builtin::Ceil:
+			case Builtin::Trunc: case Builtin::Rint: case Builtin::Fmin: case Builtin::Fmax: case Builtin::Copysign:
+			{
+				// The ones the machine has for doubles too (SPEC 6.4): a double argument makes the whole
+				// operation a double one (fsqrt.d, fabs.d...), a float one keeps it a float.
+				bool anyDouble = false;
+				for (ast::Expr* argument : node.args())
+				{
+					const Type* type = argument ? argument->type() : nullptr;
+					if (type && type->isDouble())
+						anyDouble = true;
+					else
+						requireFloat(type);
+				}
+				result = anyDouble ? &Type::Double : &Type::Float;
+				break;
+			}
+			default: // every other float operation
 				for (ast::Expr* argument : node.args())
 					requireFloat(argument ? argument->type() : nullptr);
 				result = &Type::Float;
@@ -1951,9 +1966,9 @@ namespace ceresc::sema
 					_diagnostics.error(DiagId::VaArgType, node.location(),
 						"'__builtin_va_arg' cannot read type '{}': a variadic argument arrives promoted to a 4-byte type, so read it as 'int' and convert",
 						typeName(argumentType));
-				else if (_softDouble && argumentType->isFloat())   // a float passed through ... arrived as a double
+				else if (!_shortDouble && argumentType->isFloat())   // a float passed through ... arrived as a double
 					_diagnostics.error(DiagId::VaArgType, node.location(),
-						"'__builtin_va_arg' cannot read type 'float' under -fsoft-double: a variadic float arrives promoted to 'double', so read it as 'double' and convert");
+						"'__builtin_va_arg' cannot read type 'float': a variadic float arrives promoted to 'double', so read it as 'double' and convert");
 				else
 					resultType = argumentType;
 				break;

@@ -97,8 +97,8 @@ namespace ceresc::driver
 			"                      only with --run, the build that links\n"
 			"  -Werror             treat warnings as errors\n"
 			"  --stats, -fstats    after optimizing, report what changed (instruction counts, inlining)\n"
-			"  -fsoft-double       double is a real 64-bit IEEE double, done in software (ceres/f64.h); off by\n"
-			"                      default (-fno-soft-double), when double is float\n"
+			"  -fshort-double      double is float (32 bits) instead of the machine's 64-bit IEEE double;\n"
+			"                      off by default (-fno-short-double)\n"
 			"  --version           print the version and stop\n"
 			"  --help, -h          print this text\n"
 			"\n"
@@ -160,9 +160,9 @@ namespace ceresc::driver
 				options.optimization = support::OptimizationOptions::forLevel(support::OptimizationLevel::O2);
 				continue;
 			}
-			if (arg == "-fsoft-double" || arg == "-fno-soft-double")
+			if (arg == "-fshort-double" || arg == "-fno-short-double")
 			{
-				options.softDouble = arg == "-fsoft-double";
+				options.shortDouble = arg == "-fshort-double";
 				continue;
 			}
 			if (arg.starts_with("-f"))

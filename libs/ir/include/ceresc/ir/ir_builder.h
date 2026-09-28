@@ -179,7 +179,7 @@ namespace ceresc::ir
 		support::Arena& _arena;
 		support::DiagnosticEngine& _diagnostics;
 		support::OptimizationOptions _options;
-		bool _softDouble = false;
+		bool _shortDouble = false;
 
 		IrModule _module;
 		IrFunction* _currentFunction = nullptr;
@@ -243,27 +243,19 @@ namespace ceresc::ir
 		// lowered (F3.1b). A no-op for a supported one; see _reportedWideInteger.
 		void rejectWideFeature(support::SourceLocation loc, std::string_view what);
 
-		// -fsoft-double: a double is a wide value (a pair temporary, like a 64-bit integer) whose
-		// every operation is a call to one of the standard library's __f64_* routines (ceres/f64.h). The one
-		// thing the types alone do not say is C's promotion of a float passed through '...' to double.
+		// A double is a pair temporary of kind Double (F6.3). The one thing the types alone do not say is
+		// C's promotion of a float passed through '...' to double - which -fshort-double, where `double` is
+		// `float`, does not do.
 	public:
-		void setSoftDouble(bool on) noexcept { _softDouble = on; }
+		void setShortDouble(bool on) noexcept { _shortDouble = on; }
 
 	private:
-		enum class SoftKind : u8 { Word, Float, Wide };
-		struct SoftArg
-		{
-			IrValue value;
-			SoftKind kind;
-		};
-		// A call to a __f64_* routine: its arguments, already computed, and what it returns.
-		IrValue callSoftDouble(support::SourceLocation loc, std::string_view name, SoftKind result, std::initializer_list<SoftArg> args);
-		IrValue convertSoftDouble(support::SourceLocation loc, IrValue value, const ast::Type* fromType, const ast::Type* toType);
+		// `value` of type `fromType` as a `toType`, when either of the two is a double: one fcvt (or a
+		// comparison with zero, for bool).
+		IrValue convertDouble(support::SourceLocation loc, IrValue value, const ast::Type* fromType, const ast::Type* toType);
 		IrValue lowerDoubleArithmetic(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* lhsType,
 			const ast::Type* rhsType, IrValue lhsVal, IrValue rhsVal);
-		IrValue lowerDoubleCompare(support::SourceLocation loc, ast::BinaryOp op, IrValue a, IrValue b);
 		IrValue doubleConstant(support::SourceLocation loc, f64 value);
-
 		IrValue lowerExpr(ast::Expr* expr);
 		void lowerStmt(ast::Stmt* stmt);
 

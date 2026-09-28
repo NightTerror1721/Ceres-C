@@ -23,7 +23,7 @@ namespace
 	// pipeline short of --run, exercised end to end the same way the driver does (libs/driver).
 	// `options` is what selects between the optimized output and the simplified -O0 one, which is
 	// why the interesting programs below appear twice: the two shapes are pinned side by side.
-	std::string generateCasm(std::string_view source, support::OptimizationOptions options, bool softDouble = false)
+	std::string generateCasm(std::string_view source, support::OptimizationOptions options, bool shortDouble = false)
 	{
 		support::SourceManager sourceManager;
 		support::SourceId sourceId = sourceManager.registerBuffer("test.c", std::string(source));
@@ -32,7 +32,7 @@ namespace
 		support::StringPool pool;
 		lexer::Lexer lexer(source, sourceId, diagnostics, pool);
 		parser::Parser parser(lexer, arena, diagnostics);
-		parser.setSoftDouble(softDouble);
+		parser.setShortDouble(shortDouble);
 
 		ast::TranslationUnit* unit = parser.parseTranslationUnit();
 		CHECK(unit != nullptr);
@@ -40,12 +40,12 @@ namespace
 			return "<parse-failed>";
 
 		sema::Sema sema(arena, diagnostics);
-		sema.setSoftDouble(softDouble);
+		sema.setShortDouble(shortDouble);
 		bool ok = sema.check(*unit);
 		CHECK(ok);
 
 		ir::IrBuilder builder(arena, diagnostics, options);
-		builder.setSoftDouble(softDouble);
+		builder.setShortDouble(shortDouble);
 		ir::IrModule module = builder.build(*unit);
 		ir::optimize(module, arena, options);
 
@@ -378,7 +378,7 @@ TEST(codegen, a_float_ternary_value_keeps_the_float_bank)
 {
 	// The cross-block pass picks the bank off the defining instruction, so a float `?:` lives in
 	// the float registers rather than spilling to an integer frame field.
-	std::string casm = atO2("float pick(float a, float b) { return a ? b : 0.0; }");
+	std::string casm = atO2("float pick(float a, float b) { return a ? b : 0.0f; }");
 	CHECK(!contains(casm, "struct __frame_pick"));
 	CHECK(!contains(casm, "[sp +"));
 	CHECK(contains(casm, "mov f3, f1"));
@@ -605,7 +605,7 @@ TEST(codegen, float_division_and_conversion_at_O2)
 	// The float bank throughout (`mov f3, f0`, `div f1, ...` - the assembler picks FMOV/FDIV from
 	// the register bank, 05-Instruction-Set.md), the literal 2.0 built as its raw bit pattern in an
 	// integer register and moved across with `mtf`, and one real `ftoii` for the cast.
-	CHECK_EQ(atO2("int halveToInt(float x) { return (int)(x / 2.0); }"),
+	CHECK_EQ(atO2("int halveToInt(float x) { return (int)(x / 2.0f); }"),
 		"@text\n"
 		"\n"
 		"// halveToInt - test.c:1\n"
@@ -1280,7 +1280,8 @@ TEST(codegen, a_variadic_calls_tail_goes_to_the_stack_even_with_argument_registe
 
 TEST(codegen, a_float_in_the_tail_goes_to_the_stack_rather_than_to_a_float_register)
 {
-	std::string casm = atO0("int f(int a, ...); int main() { return f(1, 2.5); }");
+	std::string casm = generateCasm("int f(int a, ...); int main() { return f(1, 2.5f); }",
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O0), true);   // -fshort-double: a float goes as a float
 	CHECK(contains(casm, "str [sp + 0],"));
 	CHECK(!contains(casm, "mov f0, "));
 }
@@ -2267,6 +2268,36 @@ TEST(codegen, a_64_bit_result_comes_back_in_x0)
 	CHECK(contains(text, "li64 x2, 0x0000000100000000"));
 }
 
+TEST(codegen, a_double_travels_in_d_pairs_and_computes_with_the_double_instructions)
+{
+	// F6.3, SPEC 6.7: (double, int, double) arrives in d0, r0, d1 and the result goes back in d0; the
+	// arithmetic is fadd.d and friends on d2/d3, and a conversion is one fcvt.
+	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
+
+	std::string callee = generateCasm("double mix(double a, int n, double b) { return a * n + b; }", o0);
+	CHECK(contains(callee, "fstr.d [sp + __frame_mix.slot0], d0"));
+	CHECK(contains(callee, "fstr.d [sp + __frame_mix.slot2], d1"));
+	CHECK(contains(callee, "fcvt.d.w d3, r"));
+	CHECK(contains(callee, "fmul.d d2, d2, d3"));
+	CHECK(contains(callee, "fadd.d d2, d2, d3"));
+	CHECK(contains(callee, "fldr.d d0, "));
+
+	std::string caller = generateCasm("double mix(double a, int n, double b); double g(void) { return mix(1.5, 4, 2.0); }", o0);
+	CHECK(contains(caller, "fldr.d d0, "));
+	CHECK(contains(caller, "fldr.d d1, "));
+	CHECK(contains(caller, "], d0"));   // the result stored out of d0
+
+	// A double comparison asks `>` as a swapped `<`, so a NaN answers false.
+	std::string compare = generateCasm("int gt(double a, double b) { return a > b; }", o0);
+	CHECK(contains(compare, "fcmp.d d2, d3"));
+	CHECK(contains(compare, "jbl ."));
+
+	// A function with doubles keeps f6/f7 (d3) out of its pool.
+	std::string pressure = atO2("float f(float a, float b, double c) { float x = a * b; float y = a - b; return x + y + (float)(c * c); }");
+	CHECK(!contains(pressure, " f6,"));
+	CHECK(!contains(pressure, " f7,"));
+}
+
 TEST(codegen, a_wide_parameter_whose_bank_is_full_goes_to_two_stack_words)
 {
 	// Four int argument registers hold two wide parameters exactly; the THIRD wide parameter has no
@@ -2282,11 +2313,11 @@ TEST(codegen, a_wide_parameter_whose_bank_is_full_goes_to_two_stack_words)
 	CHECK(contains(text, "strd [sp + 0], x2"));
 }
 
-TEST(codegen, a_soft_double_global_folds_its_integer_pieces_by_the_integer_rules)
+TEST(codegen, a_double_global_folds_its_integer_pieces_by_the_integer_rules)
 {
 	// 3/2 is 1, (char)300 is 44, (unsigned)-1 is 4294967295: C integer arithmetic inside a double initializer.
 	std::string text = generateCasm("double a = 1.0 + 3/2; double b = (char)300; double c = (unsigned)-1; double d = 2.0 * (7/2);",
-		support::OptimizationOptions::none(), true);
+		support::OptimizationOptions::none());
 	CHECK(contains(text, "global let a: u32[2] = [0x00000000, 0x40000000]"));
 	CHECK(contains(text, "global let b: u32[2] = [0x00000000, 0x40460000]"));
 	CHECK(contains(text, "global let c: u32[2] = [0xFFE00000, 0x41EFFFFF]"));

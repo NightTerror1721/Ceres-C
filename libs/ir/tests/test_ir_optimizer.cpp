@@ -179,7 +179,7 @@ TEST(ir_optimizer, constant_folding_evaluates_a_comparison)
 
 TEST(ir_optimizer, constant_folding_handles_float_arithmetic)
 {
-	std::string text = optimizedIr("float main() { return 1.5 + 2.5; }", foldAndClean());
+	std::string text = optimizedIr("float main() { return 1.5f + 2.5f; }", foldAndClean());
 	CHECK(contains(text, "const 4"));
 	CHECK(!contains(text, "add"));
 }
@@ -188,7 +188,7 @@ TEST(ir_optimizer, constant_folding_leaves_an_out_of_range_float_to_int_conversi
 {
 	// The target conversion defines this edge case; a host cast here would be undefined, so it must
 	// remain an ftoi instruction rather than being replaced by a host-dependent constant.
-	std::string text = optimizedIr("int main() { return (int)2147483648.0; }", foldAndClean());
+	std::string text = optimizedIr("int main() { return (int)2147483648.0f; }", foldAndClean());
 	CHECK(contains(text, "ftoi"));
 }
 

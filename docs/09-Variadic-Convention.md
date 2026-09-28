@@ -83,13 +83,10 @@ and it happens for free: the IR keeps a value of narrow type in its already-narr
 at all times, so the word the caller stores *is* the promoted `int` — a `char` holding `-1` arrives
 as the word `0xFFFFFFFF`, and an `unsigned char` holding `200` arrives as `200`.
 
-**`float` is the one deliberate deviation from C.** Standard C promotes `float` to `double` in a
-variadic call. Ceres has no `f64` at any level — not in the ISA, not in the VM, not in this
-compiler's type system — so there is nothing for that promotion to target. A `float` travels as the
-`f32` it already is, and is read back with `__builtin_va_arg(ap, float)`.
-
-This is a real incompatibility and worth stating plainly: C code written against a `double`-based
-`printf` will not port unchanged.
+A `float` is promoted to `double`, as C has it: it travels as the two words of a binary64 and is read back with
+`__builtin_va_arg(ap, double)`, which moves the cursor eight bytes - `__builtin_va_arg(ap, float)` is refused,
+because no float ever arrives. A `long long` takes two words the same way. Under `-fshort-double`, where `double` is
+`float`, a `float` travels as the one word it is.
 
 ## `__builtin_va_list` and the four operations
 
@@ -178,9 +175,6 @@ from `r0` and the tail from `[fp + 8]` upward, one word each, and needs a real `
 ## What is not supported
 
 - **No `<stdarg.h>`.** The names are builtin; there is no header to include.
-- **No 64-bit `double`.** `__builtin_va_arg(ap, double)` is accepted, because `double` is a
-  spelling of `float` here, and reads back exactly the `f32` the caller passed. See the promotion
-  note above.
 - **No aggregates through `...`.** Rejected at compile time.
 - **No `printf`.** This compiler ships no standard library; variadic functions are the mechanism a
   `printf` would be written *with*, not a `printf` itself.

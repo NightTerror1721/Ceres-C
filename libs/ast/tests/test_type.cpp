@@ -51,7 +51,7 @@ TEST(type, wide_integer_predicates)
 	CHECK(!Type::Void.isWideInteger());
 }
 
-TEST(type, the_soft_double_is_an_eight_byte_wide_floating_type)
+TEST(type, the_double_is_an_eight_byte_wide_floating_type)
 {
 	CHECK(Type::Double.sizeInBytes() == 8);
 	CHECK(Type::Double.alignment() == 8);

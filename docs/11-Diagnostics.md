@@ -6,7 +6,7 @@ Every error and warning this compiler can emit has a code, and every message pri
 
 ```
 main.c:12:5: error[E3023]: use of undeclared identifier 'total'
-main.c:3:1: warning[W2001]: 'double' is 32 bits here: this machine has no 64-bit floating-point type, so it is exactly 'float'
+main.c:3:11: warning[W3001]: const variable 'limit' has no initializer, so it can only ever be zero
 ```
 
 The letter is the severity. The four digits are a number that never changes and never gets reused
@@ -33,9 +33,9 @@ in it.
 ## Turning a warning off
 
 ```c
-#pragma warning(disable: 2001)
-double total = 0;             /* no W2001 here */
-#pragma warning(default: 2001)
+#pragma warning(disable: 3001)
+const int limit;              /* no W3001 here */
+#pragma warning(default: 3001)
 ```
 
 | Form | What it does |
@@ -47,12 +47,12 @@ double total = 0;             /* no W2001 here */
 | `#pragma warning(push)` | Remembers everything in force. |
 | `#pragma warning(pop)` | Puts back exactly what the matching `push` saw. |
 
-`N` is a warning's number, with or without its `W`: `2001` and `W2001` are the same thing. Several
+`N` is a warning's number, with or without its `W`: `3001` and `W3001` are the same thing. Several
 at once are separated by spaces, commas or both, and `all` means every warning there is:
 
 ```c
-#pragma warning(disable: 2001 3001)
-#pragma warning(disable: W2001, W3001)     /* the same */
+#pragma warning(disable: 3001 3003)
+#pragma warning(disable: W3001, W3003)     /* the same */
 #pragma warning(error: all)                /* -Werror, from here down */
 ```
 
@@ -62,8 +62,8 @@ the file it was written in, exactly as in C:
 ```c
 /* noisy.h */
 #pragma warning(push)
-#pragma warning(disable: 2001)
-double counter;
+#pragma warning(disable: 3001)
+const int counter;
 #pragma warning(pop)
 ```
 
@@ -101,7 +101,7 @@ These are the codes a `#pragma warning(...)` can name.
 | `W1005` | A `#pragma warning(...)` this compiler could not read, ignored. |
 | `W1006` | A number in a `#pragma warning(...)` that does not name a warning. |
 | `W0015` | A decimal integer literal with an `ll`/`LL` suffix whose value fits a u64 but not a signed `long long`; it keeps its 64-bit bit pattern (so `18446744073709551615LL` reads as `-1`). An `ULL` literal of the full range does not warn. |
-| `W2001` | `double`/`long double` capped to `float` — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `W2001` | Retired: it said `double` was capped to `float`, which it no longer is (a real binary64 since F6.3). The number is not reused. |
 | `W2002` | An `__attribute__` that is ignored: one this compiler does nothing with, or `aligned` above 4 — see [02-Grammar.md](02-Grammar.md). |
 | `W3001` | A `const` variable with no initializer, which can therefore only ever be zero. |
 | `W3002` | A function declared `noreturn` that contains a `return`. |

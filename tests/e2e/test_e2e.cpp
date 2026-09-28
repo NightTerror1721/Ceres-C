@@ -1296,6 +1296,59 @@ TEST(e2e, mixed_word_and_64_bit_arguments_follow_the_pair_abi)
 		"3");
 }
 
+TEST(e2e, a_double_is_a_real_binary64_at_every_level)
+{
+	// F6.3: double arithmetic, conversions and comparisons on the machine's own binary64, each check a
+	// '1' - so a wrong answer names which one. 0.1 + 0.2 is not 0.3 in binary64 but is in float; a
+	// NaN compares false with everything but !=; a value past 2^53 survives the trip to long long.
+	runsTheSameAtEveryLevel("double_arith",
+		"void put(int ok) { volatile unsigned int* term = (volatile unsigned int*)0xFF000004; *term = ok ? '1' : '0'; }"
+		"int main() {"
+		"    double third = 1.0 / 3.0;"
+		"    put(0.1 + 0.2 != 0.3);"
+		"    put(0.1f + 0.2f == 0.3f);"
+		"    put(third * 3.0 == 1.0);"
+		"    put(sizeof(third) == 8 && sizeof(1.0) == 8 && sizeof(1.0f) == 4);"
+		"    double big = 9007199254740993.0;"                  // 2^53 + 1 rounds to 2^53
+		"    put((long long)big == 9007199254740992LL);"
+		"    put((double)1234567890123LL == 1234567890123.0);"
+		"    put((int)-2.75 == -2 && (unsigned)3.99 == 3u);"
+		"    put((float)0.1 != 0.1 && (double)0.5f == 0.5);"
+		"    double nan = __builtin_sqrt(-1.0);"
+		"    put(!(nan < 1.0) && !(nan > 1.0) && !(nan <= 1.0) && !(nan >= 1.0) && !(nan == nan) && nan != nan);"
+		"    put(__builtin_sqrt(2.0) * __builtin_sqrt(2.0) != 2.0 && __builtin_fabs(-2.5) == 2.5 && __builtin_floor(-1.5) == -2.0);"
+		"    double x = 1.0; for (int i = 0; i < 60; i++) x = x * 2.0;"
+		"    put(x == 1152921504606846976.0);"                   // 2^60, exact
+		"    put(-x < 0.0 && x > 1e18 && (bool)0.0 == 0 && (bool)-0.0 == 0 && (bool)nan);"
+		"    return 0;"
+		"}",
+		"111111111111");
+}
+
+TEST(e2e, a_double_crosses_calls_in_d_pairs_and_through_the_ellipsis)
+{
+	// SPEC 6.7: (double, int, double) is d0, r0, d1; a double result comes back in d0; more doubles than
+	// pairs go to the stack; a float passed through `...` arrives as a double.
+	runsTheSameAtEveryLevel("double_abi",
+		"double mix(double a, int n, double b) { return a * n + b; }"
+		"double six(double a, double b, double c, double d, double e, double f) { return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6; }"
+		"double sum(int n, ...) {"
+		"    __builtin_va_list ap; __builtin_va_start(ap, n);"
+		"    double total = 0; for (int i = 0; i < n; i++) total += __builtin_va_arg(ap, double);"
+		"    __builtin_va_end(ap); return total;"
+		"}"
+		"long long mixed(int a, double b, long long c, float d) { return a + (long long)b + c + (long long)d; }"
+		"void put(int ok) { volatile unsigned int* term = (volatile unsigned int*)0xFF000004; *term = ok ? '1' : '0'; }"
+		"int main() {"
+		"    put(mix(1.5, 4, 0.25) == 6.25);"
+		"    put(six(1, 1, 1, 1, 1, 0.5) == 18.0);"
+		"    put(sum(3, 1.5, 2.5f, 3.0) == 7.0);"
+		"    put(mixed(1, 2.9, 0x100000000LL, 4.5f) == 0x100000007LL);"
+		"    return 0;"
+		"}",
+		"1111");
+}
+
 TEST(e2e, a_struct_wider_than_a_word_survives_a_round_trip_through_a_call_by_value)
 {
 	// The hidden-destination-pointer return and the caller-made-copy argument, both at once: `build`
@@ -2080,8 +2133,8 @@ TEST(e2e, a_variadic_function_finds_its_tail_past_stack_passed_fixed_parameters)
 
 TEST(e2e, a_float_travels_through_the_tail_and_va_copy_rereads_it)
 {
-	// `float` is passed as the f32 it already is - the machine has no f64 for C's own float-to-
-	// double promotion to target (docs/09-Variadic-Convention.md).
+	// A `float` passed through `...` arrives promoted to a double, as C has it (F6.3), and is read back
+	// as one - two words - before the int after it (docs/09-Variadic-Convention.md).
 	runsTheSameAtEveryLevel("variadic_float_and_copy",
 		"int check(int n, ...) {"
 		"    __builtin_va_list ap;"
@@ -2089,7 +2142,7 @@ TEST(e2e, a_float_travels_through_the_tail_and_va_copy_rereads_it)
 		"    float f;"
 		"    int i;"
 		"    __builtin_va_start(ap, n);"
-		"    f = __builtin_va_arg(ap, float);"
+		"    f = (float)__builtin_va_arg(ap, double);"
 		"    i = __builtin_va_arg(ap, int);"
 		"    __builtin_va_copy(copy, ap);"
 		"    int total = (int)f + i + __builtin_va_arg(copy, int);"

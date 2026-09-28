@@ -111,11 +111,6 @@ namespace
 		}
 		return all;
 	}
-
-	bool mentions(std::string_view haystack, std::string_view needle)
-	{
-		return haystack.find(needle) != std::string_view::npos;
-	}
 }
 
 TEST(parser, array_typedef_parameter_decays_to_pointer)
@@ -1270,20 +1265,13 @@ TEST(parser, long_long_is_a_real_64_bit_type_and_says_nothing)
 	CHECK_EQ(diagnosticsFor("long g;"), std::string());
 }
 
-TEST(parser, the_float_widths_this_machine_lacks_are_capped_and_said_so)
+TEST(parser, double_and_long_double_are_the_binary64_double)
 {
-	// There is still no f64 register, so `double`/`long double` remain spellings of `float`.
-	CHECK_EQ(printUnit("double e;"), "(unit (var e float <null>))");
-	CHECK_EQ(printUnit("long double f;"), "(unit (var f float <null>))");
-
-	std::string warned = diagnosticsFor("double b; long double c;");
-	CHECK(mentions(warned, "'double' is 32 bits here"));
-	CHECK(mentions(warned, "so it is exactly 'float'"));
-	CHECK(mentions(warned, "'long double' is 32 bits here"));
-	CHECK(mentions(warned, "so it is exactly 'float'"));
-
-	// A warning, not an error: the program still compiles.
-	CHECK(!mentions(warned, "error: "));
+	// F6.3: the machine has doubles (SPEC 6.4), so both spellings name the real 8-byte type - and
+	// say nothing about it. (-fshort-double, which makes them float, is tested in sema and ir.)
+	CHECK_EQ(printUnit("double e;"), "(unit (var e double <null>))");
+	CHECK_EQ(printUnit("long double f;"), "(unit (var f double <null>))");
+	CHECK_EQ(diagnosticsFor("double b; long double c;"), std::string());
 }
 
 TEST(parser, a_wide_type_works_everywhere_its_spelling_would)

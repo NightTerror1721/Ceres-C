@@ -25,21 +25,21 @@ namespace
 	// file both parses cleanly and type-checks with zero errors - `messages` collects every
 	// diagnostic (parse or sema) reported along the way, for tests that need to assert a specific
 	// error was the one reported.
-	CheckOutcome checkSource(std::string_view source, bool softDouble = false)
+	CheckOutcome checkSource(std::string_view source, bool shortDouble = false)
 	{
 		support::Arena arena;
 		support::DiagnosticEngine diagnostics;
 		support::StringPool pool;
 		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
 		parser::Parser parser(lexer, arena, diagnostics);
-		parser.setSoftDouble(softDouble);
+		parser.setShortDouble(shortDouble);
 
 		CheckOutcome outcome;
 		ast::TranslationUnit* unit = parser.parseTranslationUnit();
 		if (unit && !diagnostics.hasErrors())
 		{
 			sema::Sema sema(arena, diagnostics);
-			sema.setSoftDouble(softDouble);
+			sema.setShortDouble(shortDouble);
 			outcome.ok = sema.check(*unit);
 		}
 		else
@@ -113,7 +113,8 @@ namespace
 TEST(sema, literal_types)
 {
 	CHECK_EQ(typeOfMainLastExpr("int main() { 42; }"), "int");
-	CHECK_EQ(typeOfMainLastExpr("int main() { 1.5; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1.5; }"), "double");   // C's rule, since F6.3
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1.5f; }"), "float");
 	CHECK_EQ(typeOfMainLastExpr("int main() { 'a'; }"), "char");
 	CHECK_EQ(typeOfMainLastExpr("int main() { true; }"), "bool");
 	CHECK_EQ(typeOfMainLastExpr("int main() { \"hi\"; }"), "char*");
@@ -255,7 +256,8 @@ TEST(sema, small_integer_types_promote_to_int_in_arithmetic)
 
 TEST(sema, mixed_int_and_float_promotes_to_float)
 {
-	CHECK_EQ(typeOfMainLastExpr("int main() { 1 + 1.5; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 + 1.5f; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1.5f + 1.5; }"), "double");
 }
 
 TEST(sema, unsigned_beats_signed_int_at_the_same_rank)
@@ -300,7 +302,8 @@ TEST(sema, ternary_with_matching_branch_types)
 
 TEST(sema, ternary_with_mixed_arithmetic_branches_promotes)
 {
-	CHECK_EQ(typeOfMainLastExpr("int main() { 1 ? 2 : 2.5; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 ? 2 : 2.5f; }"), "float");
+	CHECK_EQ(typeOfMainLastExpr("int main() { 1 ? 2 : 2.5; }"), "double");
 }
 
 TEST(sema, address_of_and_deref_round_trip)
@@ -1760,16 +1763,16 @@ TEST(sema, va_arg_reads_only_a_four_byte_scalar)
 	CHECK(containsMessage(aggregate, "only scalar types are passed through"));
 }
 
-TEST(sema, under_soft_double_va_arg_reads_a_double_and_refuses_a_float)
+TEST(sema, va_arg_reads_a_double_and_refuses_a_float)
 {
 	std::string_view reads = "double f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, double); }";
-	CHECK(checkSource(reads, true).ok);
+	CHECK(checkSource(reads).ok);
 	// A float passed through ... arrives promoted to a two-word double: reading one word of it would be wrong.
-	CheckOutcome single = checkSource("float f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, float); }", true);
+	CheckOutcome single = checkSource("float f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, float); }");
 	CHECK(!single.ok);
 	CHECK(containsMessage(single, "arrives promoted to 'double'"));
-	// Without the option double is float, one word, and reading a float is right.
-	CHECK(checkSource("float f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, float); }").ok);
+	// With -fshort-double double is float, one word, and reading a float is right.
+	CHECK(checkSource("float f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return __builtin_va_arg(ap, float); }", true).ok);
 }
 
 TEST(sema, a_va_list_operand_must_actually_be_a_va_list)
@@ -2213,7 +2216,7 @@ namespace
 	CheckOutcome formatCall(std::string_view statement)
 	{
 		return checkSource(kFormatHeader +
-			"int main() { int i = 0; short h = 0; char c = 0; long long ll = 0; float f = 0; char buf[8]; int n;\n" +
+			"int main() { int i = 0; short h = 0; char c = 0; long long ll = 0; float f = 0; double d = 0; char buf[8]; int n;\n" +
 			std::string(statement) + "\n return 0; }");
 	}
 }
@@ -2224,7 +2227,7 @@ TEST(sema, a_format_that_matches_its_arguments_is_not_warned_about)
 		"pf(\"%d %i %u %x %c %s %f %g %lld %llu %p %n %% %5.2f %-8s %hhd %hd %ld %zu\\n\", "
 		"i, c, 1u, i, 'a', \"s\", f, 2.0f, ll, 3ULL, (void*)0, &n, f, buf, i, h, 4, 5u);"
 		"pf(\"%*d|%-.*f\", 3, i, 2, f);"
-		"sf(\"%d %hd %hhd %lld %f %lf %s %c %[^,] %*d %n\", &i, &h, &c, &ll, &f, &f, buf, buf, buf, &n);");
+		"sf(\"%d %hd %hhd %lld %f %lf %s %c %[^,] %*d %n\", &i, &h, &c, &ll, &f, &d, buf, buf, buf, &n);");
 	CHECK(clean.ok);
 	CHECK(clean.messages.empty());
 }
@@ -2434,12 +2437,14 @@ TEST(sema, an_asm_statement_is_accepted_wherever_a_statement_is)
 	CHECK(checkSource("void f(int n) { if (n) __asm__(\"nop\"); else __asm__(\"nop\"); }").ok);
 }
 
-TEST(sema, under_soft_double_a_long_double_scan_takes_a_double_pointer)
+TEST(sema, a_long_double_scan_takes_a_double_pointer)
 {
 	std::string header = kFormatHeader + "int main() { double d = 0; long double ld = 0; float f = 0;\n";
-	CheckOutcome clean = checkSource(header + "sf(\"%lf %Lf %Lg\", &d, &ld, &d); return 0; }", true);
+	CheckOutcome clean = checkSource(header + "sf(\"%lf %Lf %Lg\", &d, &ld, &d); return 0; }");
 	CHECK(clean.ok);
 	CHECK(clean.messages.empty());
-	CheckOutcome wrong = checkSource(header + "sf(\"%Lf\", &f); return 0; }", true);
+	CheckOutcome wrong = checkSource(header + "sf(\"%Lf\", &f); return 0; }");
 	CHECK(containsMessage(wrong, "expects a 'double *'"));
+	// With -fshort-double %lf stores a float, which is what double is then.
+	CHECK(checkSource(header + "sf(\"%lf %f\", &d, &f); return 0; }", true).messages.empty());
 }

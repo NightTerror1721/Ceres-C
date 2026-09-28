@@ -119,7 +119,7 @@ void vformat(char* format, __builtin_va_list arguments)
         else if (format[i] == 's')
             putstr(__builtin_va_arg(arguments, char*));
         else if (format[i] == 'f')
-            putint((int)__builtin_va_arg(arguments, float)); // truncated: no f64 here, no %.2f
+            putint((int)__builtin_va_arg(arguments, double)); // truncated: no %.2f here
         else
             put(format[i]);                        // "%%" prints one '%'
     }
@@ -153,9 +153,8 @@ int main(void)
     putstr("format:     ");
     format("%d items, %c grade, %s, %d%%\n", 42, 'A', "all present", 100);
 
-    // Mixed banks: an int and a float in the same tail. Both travel as one stack word each, so the
-    // float arrives as the f32 it already is - C would have promoted it to double, and there is no
-    // double here to promote it to.
+    // Mixed banks: an int and a double in the same tail. The int takes one stack word and the double
+    // two, so `%f` reads a double - as it would for a float, which C promotes to double on the way in.
     putstr("mixed:      ");
     format("int %d then float %f then int %d\n", 7, 2.75, 9);
 

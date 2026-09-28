@@ -862,15 +862,6 @@ namespace ceresc::parser
 		return type;
 	}
 
-	const Type* Parser::cappedToMachineWidth(SourceLocation location, std::string_view written,
-		std::string_view actual, const Type* type)
-	{
-		_diagnostics.warning(DiagId::CappedTypeWidth, location,
-			"'{}' is 32 bits here: this machine has no 64-bit floating-point type, so it is exactly '{}'",
-			written, actual);
-		return type;
-	}
-
 	const Type* Parser::parseTypeSpec()
 	{
 		SourceLocation location = _current.location();
@@ -899,7 +890,7 @@ namespace ceresc::parser
 				advance();
 				// The one place `long` does not introduce an integer at all.
 				if (match(TokenKind::KwDouble))
-					return _softDouble ? &Type::Double : cappedToMachineWidth(location, "long double", "float", &Type::Float);
+					return _shortDouble ? &Type::Float : &Type::Double;
 				if (match(TokenKind::KwLong))
 				{
 					match(TokenKind::KwInt);
@@ -910,7 +901,7 @@ namespace ceresc::parser
 			}
 			case TokenKind::KwDouble:
 				advance();
-				return _softDouble ? &Type::Double : cappedToMachineWidth(location, "double", "float", &Type::Float);
+				return _shortDouble ? &Type::Float : &Type::Double;
 			case TokenKind::KwInt: advance(); return &Type::Int;
 			case TokenKind::KwSigned:
 			case TokenKind::KwUnsigned:

@@ -146,6 +146,8 @@ namespace ceresc::support
 		AsmOutsideFunction             = 2045,
 		ExpectedGenericAssociation     = 2046,
 
+		// Retired in F6.3, when `double` became a real binary64: nothing reports it any more, and the
+		// number stays so a `#pragma warning(disable: 2001)` still names a warning.
 		CappedTypeWidth = kDiagnosticWarningBit | 2001,
 		AttributeIgnored = kDiagnosticWarningBit | 2002,
 

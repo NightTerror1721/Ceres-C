@@ -659,8 +659,7 @@ namespace ceresc::ir
 	// ---- 64-bit values (F6.2) ---------------------------------------------------------------------
 	//
 	// A 64-bit value is a PAIR temporary (ir_instr.h's IrWidePayload) that only Wide instructions
-	// define and read: a `long long`, an `unsigned long long`, or - under -fsoft-double - the bits of a
-	// double, which only the library's __f64_* routines interpret. Reading a 64-bit lvalue is one Wide
+	// define and read: a `long long`, an `unsigned long long` or a `double`. Reading a 64-bit lvalue is one Wide
 	// Load, writing one is one Wide Store, and every operation is one Wide instruction - which codegen
 	// turns into the machine's own 64-bit instruction (SPEC 6.4).
 
@@ -668,9 +667,8 @@ namespace ceresc::ir
 	{
 		if (!type)
 			return IrNumKind::Int;
-		// -fsoft-double: the double's bits, as an unsigned pair nothing but a __f64_* call looks into.
 		if (type->isDouble())
-			return IrNumKind::ULong;
+			return IrNumKind::Double;
 		if (type->isWideInteger())
 			return type->isSigned() ? IrNumKind::Long : IrNumKind::ULong;
 		if (type->isFloat())
@@ -758,106 +756,55 @@ namespace ceresc::ir
 		emitWide(loc, payload);
 	}
 
-	// ---- -fsoft-double -----------------------------------------------------------------------------
+	// ---- double (F6.3) ------------------------------------------------------------------------------
+	//
+	// A double is a pair temporary of kind Double - the machine's binary64 in a pair of float registers
+	// (SPEC 6.2) - and every operation on one is one Wide instruction: fadd.d, fcmp.d, fcvt...
 
 	IrValue IrBuilder::doubleConstant(support::SourceLocation loc, f64 value)
 	{
-		return emitWideConst(loc, std::bit_cast<u64>(value), IrNumKind::ULong);
+		return emitWideConst(loc, std::bit_cast<u64>(value), IrNumKind::Double);
 	}
 
-	IrValue IrBuilder::callSoftDouble(support::SourceLocation loc, std::string_view name, SoftKind result,
-		std::initializer_list<SoftArg> args)
-	{
-		// The same shape a CallExpr to a declared function lowers to: the Params immediately before the
-		// Call (codegen reads them back by position).
-		for (const SoftArg& arg : args)
-			emitVoid(loc, IrParamPayload{ arg.value, arg.kind == SoftKind::Float, false, arg.kind == SoftKind::Wide });
-		IrCallPayload payload;
-		payload.hasResult = true;
-		payload.isFloat = result == SoftKind::Float;
-		payload.hasWideResult = result == SoftKind::Wide;
-		payload.callee = name;
-		payload.argCount = static_cast<u32>(args.size());
-		payload.result = _currentFunction->newTemp();
-		emitVoid(loc, payload);
-		return payload.result;
-	}
-
-	IrValue IrBuilder::convertSoftDouble(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
+	IrValue IrBuilder::convertDouble(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
 	{
 		bool fromDouble = fromType && fromType->isDouble();
 		bool toDouble = toType && toType->isDouble();
 		if (fromDouble && toDouble)
 			return value;
+		// A word, a float or a 64-bit integer into a double: one `fcvt` (a char or a bool is a word by now,
+		// extended as its type says).
 		if (toDouble)
-		{
-			if (fromType && fromType->isFloat())
-				return callSoftDouble(loc, "__f64_from_f32", SoftKind::Wide, { { value, SoftKind::Float } });
-			if (fromType && fromType->isWideInteger())
-				return callSoftDouble(loc, fromType->isSigned() ? "__f64_from_i64" : "__f64_from_u64", SoftKind::Wide,
-					{ { value, SoftKind::Wide } });
-			// Any other scalar is a word by now, extended as its type says (a char or a bool already is one).
-			bool isUnsigned = fromType && !fromType->isSigned() && !fromType->isEnum();
-			return callSoftDouble(loc, isUnsigned ? "__f64_from_u32" : "__f64_from_i32", SoftKind::Wide,
-				{ { value, SoftKind::Word } });
-		}
-		// From a double.
-		if (!toType)
-			return callSoftDouble(loc, "__f64_to_i32", SoftKind::Word, { { value, SoftKind::Wide } });
-		if (toType->isFloat())
-			return callSoftDouble(loc, "__f64_to_f32", SoftKind::Float, { { value, SoftKind::Wide } });
-		if (toType->isBool())
-		{
-			// C asks whether it compares unequal to zero: a NaN does (the order is 2), -0 does not.
-			IrValue order = callSoftDouble(loc, "__f64_cmp", SoftKind::Word,
-				{ { value, SoftKind::Wide }, { doubleConstant(loc, 0.0), SoftKind::Wide } });
-			return emitUnOp(loc, IrUnOp::ToBool, order);
-		}
-		if (toType->isWideInteger())
-			return callSoftDouble(loc, toType->isSigned() ? "__f64_to_i64" : "__f64_to_u64", SoftKind::Wide,
-				{ { value, SoftKind::Wide } });
-		// A word-sized integer, then narrowed to a char or a short by the ordinary rules.
-		bool isUnsigned = !toType->isSigned() && !toType->isPointer() && !toType->isEnum();
-		IrValue word = callSoftDouble(loc, isUnsigned ? "__f64_to_u32" : "__f64_to_i32", SoftKind::Word, { { value, SoftKind::Wide } });
-		return convertForStore(loc, word, isUnsigned ? &Type::UInt : &Type::Int, toType);
+			return emitWideConvert(loc, value, fromType ? numKindOf(fromType) : IrNumKind::Int, IrNumKind::Double);
+		// From a double. To bool, C asks whether it compares unequal to zero: a NaN does, -0 does not.
+		if (toType && toType->isBool())
+			return emitWideCmp(loc, IrCmpPredicate::Ne, IrNumKind::Double, value, doubleConstant(loc, 0.0));
+		if (toType && (toType->isFloat() || toType->isWideInteger()))
+			return emitWideConvert(loc, value, IrNumKind::Double, numKindOf(toType));
+		// A word-sized integer (truncated toward zero, as C has it), then narrowed to a char or a short by
+		// the ordinary rules.
+		bool isUnsigned = toType && !toType->isSigned() && !toType->isPointer() && !toType->isEnum();
+		IrValue word = emitWideConvert(loc, value, IrNumKind::Double, isUnsigned ? IrNumKind::UInt : IrNumKind::Int);
+		return toType ? convertForStore(loc, word, isUnsigned ? &Type::UInt : &Type::Int, toType) : word;
 	}
 
 	IrValue IrBuilder::lowerDoubleArithmetic(support::SourceLocation loc, BinaryOp op, const Type* lhsType,
 		const Type* rhsType, IrValue lhsVal, IrValue rhsVal)
 	{
-		IrValue a = convertSoftDouble(loc, lhsVal, lhsType, &Type::Double);
-		IrValue b = convertSoftDouble(loc, rhsVal, rhsType, &Type::Double);
-		std::string_view name;
+		IrValue a = convertDouble(loc, lhsVal, lhsType, &Type::Double);
+		IrValue b = convertDouble(loc, rhsVal, rhsType, &Type::Double);
+		IrWideOp wideOp;
 		switch (op)
 		{
-			case BinaryOp::Add: name = "__f64_add"; break;
-			case BinaryOp::Sub: name = "__f64_sub"; break;
-			case BinaryOp::Mul: name = "__f64_mul"; break;
-			case BinaryOp::Div: name = "__f64_div"; break;
+			case BinaryOp::Add: wideOp = IrWideOp::Add; break;
+			case BinaryOp::Sub: wideOp = IrWideOp::Sub; break;
+			case BinaryOp::Mul: wideOp = IrWideOp::Mul; break;
+			case BinaryOp::Div: wideOp = IrWideOp::Div; break;
 			default:
 				rejectWideFeature(loc, "this operator on a double");   // sema has refused it already
 				return a;
 		}
-		return callSoftDouble(loc, name, SoftKind::Wide, { { a, SoftKind::Wide }, { b, SoftKind::Wide } });
-	}
-
-	IrValue IrBuilder::lowerDoubleCompare(support::SourceLocation loc, BinaryOp op, IrValue a, IrValue b)
-	{
-		// __f64_cmp orders the two as -1, 0 or 1, and says 2 when either is a NaN - which every relation but
-		// != then fails, as IEEE has it. a > b is b < a, and a >= b is b <= a.
-		if (op == BinaryOp::Gt || op == BinaryOp::Ge)
-		{
-			std::swap(a, b);
-			op = op == BinaryOp::Gt ? BinaryOp::Lt : BinaryOp::Le;
-		}
-		IrValue order = callSoftDouble(loc, "__f64_cmp", SoftKind::Word, { { a, SoftKind::Wide }, { b, SoftKind::Wide } });
-		switch (op)
-		{
-			case BinaryOp::Lt: return emitCmp(loc, IrCmpPredicate::Eq, order, emitConstInt(loc, -1), false);
-			case BinaryOp::Le: return emitCmp(loc, IrCmpPredicate::Le, order, emitConstInt(loc, 0), false);
-			case BinaryOp::Eq: return emitCmp(loc, IrCmpPredicate::Eq, order, emitConstInt(loc, 0), false);
-			default:           return emitCmp(loc, IrCmpPredicate::Ne, order, emitConstInt(loc, 0), false);
-		}
+		return emitWideOp(loc, wideOp, IrNumKind::Double, a, b);
 	}
 
 	// ---- 64-bit integer arithmetic ---------------------------------------------------------------
@@ -1241,12 +1188,11 @@ namespace ceresc::ir
 
 		support::SourceLocation loc = cond->location();
 		IrValue value = lowerExpr(cond);
-		// A double is true unless it compares equal to zero: -0 is false, a NaN is true (__f64_cmp says 2).
+		// A double is true unless it compares equal to zero: -0 is false, a NaN is true.
 		if (cond->type() && cond->type()->isDouble())
 		{
-			IrValue order = callSoftDouble(loc, "__f64_cmp", SoftKind::Word,
-				{ { value, SoftKind::Wide }, { doubleConstant(loc, 0.0), SoftKind::Wide } });
-			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, false, order, emitConstInt(loc, 0), trueBlock, falseBlock });
+			IrValue nonZero = emitWideCmp(loc, IrCmpPredicate::Ne, IrNumKind::Double, value, doubleConstant(loc, 0.0));
+			emitVoid(loc, IrCondJumpPayload{ IrCmpPredicate::Ne, false, false, nonZero, emitConstInt(loc, 0), trueBlock, falseBlock });
 			return;
 		}
 		// A 64-bit condition is true when the whole value is not zero: one `cmp64` against a zero pair.
@@ -1292,7 +1238,7 @@ namespace ceresc::ir
 		if (type && type->isFloat())
 			return value;
 		if (type && type->isDouble())
-			return convertSoftDouble(loc, value, type, &Type::Float);
+			return convertDouble(loc, value, type, &Type::Float);
 		// A wide operand is converted to float through the same helper a cast uses - the whole
 		// 64-bit value, not the address's low word.
 		if (type && type->isWideInteger())
@@ -1303,7 +1249,7 @@ namespace ceresc::ir
 	IrValue IrBuilder::convertForStore(support::SourceLocation loc, IrValue value, const Type* fromType, const Type* toType)
 	{
 		if ((toType && toType->isDouble()) || (fromType && fromType->isDouble()))
-			return convertSoftDouble(loc, value, fromType, toType);
+			return convertDouble(loc, value, fromType, toType);
 
 		bool toWide = toType && toType->isWideInteger();
 		bool fromWide = fromType && fromType->isWideInteger();
@@ -1644,14 +1590,14 @@ namespace ceresc::ir
 				value = convertForStore(loc, value, argType, paramType);
 			// Through '...' a float goes as a double, as C has it - where there is a double (-fsoft-double).
 			const Type* passedType = paramType ? paramType : argType;
-			if (!paramType && _softDouble && argType && argType->isFloat())
+			if (!paramType && !_shortDouble && argType && argType->isFloat())
 			{
-				value = convertSoftDouble(loc, value, argType, &Type::Double);
+				value = convertDouble(loc, value, argType, &Type::Double);
 				passedType = &Type::Double;
 				wideArg = true;
 			}
 			argValues.push_back(value);
-			argIsFloat.push_back(passedType && passedType->isFloat());
+			argIsFloat.push_back(passedType && passedType->isFloating());
 			argIsWide.push_back(wideArg);
 		}
 
@@ -1674,7 +1620,7 @@ namespace ceresc::ir
 
 		IrCallPayload payload;
 		payload.hasResult = hasResult && !returnsStructIndirect;
-		payload.isFloat = hasResult && resultType->isFloat();
+		payload.isFloat = hasResult && resultType->isFloating();   // a double comes back in d0
 		payload.hasWideResult = returnsWide;
 		payload.callee = isDirect ? callee->name() : std::string_view{};
 		payload.calleeValue = calleeAddress;
@@ -1724,15 +1670,7 @@ namespace ceresc::ir
 			case UnaryOp::Negate:
 			{
 				const Type* operandType = node.operand()->type();
-				if (operandType && operandType->isDouble())
-				{
-					// -x flips the sign bit and nothing else, a NaN's included: no call needed.
-					IrValue a = lowerExpr(node.operand());
-					_lastValue = emitWideOp(loc, IrWideOp::Xor, IrNumKind::ULong, a,
-						emitWideConst(loc, 0x8000000000000000ull, IrNumKind::ULong));
-					return;
-				}
-				if (operandType && operandType->isWideInteger())
+				if (operandType && operandType->isWide())
 				{
 					_lastValue = emitWideOp(loc, IrWideOp::Neg, numKindOf(operandType), lowerExpr(node.operand()));
 					return;
@@ -1773,10 +1711,8 @@ namespace ceresc::ir
 					bool isPre = (node.op() == UnaryOp::PreIncrement || node.op() == UnaryOp::PreDecrement);
 					IrNumKind kind = numKindOf(type);
 					IrValue oldValue = emitWideLoad(loc, addr, kind, isVolatile);
-					IrValue newValue = type->isDouble()
-						? callSoftDouble(loc, isIncrement ? "__f64_add" : "__f64_sub", SoftKind::Wide,
-							{ { oldValue, SoftKind::Wide }, { doubleConstant(loc, 1.0), SoftKind::Wide } })
-						: emitWideOp(loc, isIncrement ? IrWideOp::Add : IrWideOp::Sub, kind, oldValue, emitWideConst(loc, 1, kind));
+					IrValue one = type->isDouble() ? doubleConstant(loc, 1.0) : emitWideConst(loc, 1, kind);
+					IrValue newValue = emitWideOp(loc, isIncrement ? IrWideOp::Add : IrWideOp::Sub, kind, oldValue, one);
 					emitWideStore(loc, addr, newValue, kind, isVolatile);
 					_lastValue = isPre ? newValue : oldValue;
 					return;
@@ -1836,9 +1772,9 @@ namespace ceresc::ir
 				// `wide < 1.5f` is a float comparison, not a 64-bit integer one.
 				if ((lhsType && lhsType->isDouble()) || (rhsType && rhsType->isDouble()))
 				{
-					IrValue a = convertSoftDouble(loc, lhs, lhsType, &Type::Double);
-					IrValue b = convertSoftDouble(loc, rhs, rhsType, &Type::Double);
-					_lastValue = lowerDoubleCompare(loc, node.op(), a, b);
+					IrValue a = convertDouble(loc, lhs, lhsType, &Type::Double);
+					IrValue b = convertDouble(loc, rhs, rhsType, &Type::Double);
+					_lastValue = emitWideCmp(loc, cmpPredicateFor(node.op()), IrNumKind::Double, a, b);
 					return;
 				}
 				bool cmpIsFloat = (lhsType && lhsType->isFloat()) || (rhsType && rhsType->isFloat());
@@ -2062,6 +1998,31 @@ namespace ceresc::ir
 			IrWideOp op = node.builtin() == ast::Builtin::Clzll ? IrWideOp::Clz
 				: (node.builtin() == ast::Builtin::Ctzll ? IrWideOp::Ctz : IrWideOp::Popcount);
 			_lastValue = emitWideOp(loc, op, IrNumKind::ULong, operand);
+			return;
+		}
+
+		// A floating builtin sema typed double (it was given a double) is the SPEC 6.4 instruction on
+		// doubles; a float argument next to a double one is widened first.
+		if (node.type() && node.type()->isDouble())
+		{
+			IrWideOp op = IrWideOp::Sqrt;
+			switch (node.builtin())
+			{
+				case ast::Builtin::Fabs:     op = IrWideOp::Abs; break;
+				case ast::Builtin::Fmod:     op = IrWideOp::Mod; break;
+				case ast::Builtin::Sqrt:     op = IrWideOp::Sqrt; break;
+				case ast::Builtin::Floor:    op = IrWideOp::Floor; break;
+				case ast::Builtin::Ceil:     op = IrWideOp::Ceil; break;
+				case ast::Builtin::Trunc:    op = IrWideOp::Trunc; break;
+				case ast::Builtin::Rint:     op = IrWideOp::Round; break;   // ties to even, as rint
+				case ast::Builtin::Fmin:     op = IrWideOp::Min; break;
+				case ast::Builtin::Fmax:     op = IrWideOp::Max; break;
+				case ast::Builtin::Copysign: op = IrWideOp::Copysign; break;
+				default: break;
+			}
+			IrValue a = args.empty() ? IrValue{} : convertForStore(loc, lowerExpr(args[0]), args[0]->type(), &Type::Double);
+			IrValue b = args.size() > 1 ? convertForStore(loc, lowerExpr(args[1]), args[1]->type(), &Type::Double) : IrValue{};
+			_lastValue = emitWideOp(loc, op, IrNumKind::Double, a, b);
 			return;
 		}
 
@@ -2538,9 +2499,9 @@ namespace ceresc::ir
 
 		if (returnType && returnType->isWide())
 		{
-			// A 64-bit return goes back in x0 (SPEC 6.7), as one pair.
+			// A 64-bit return goes back in x0, or d0 for a double (SPEC 6.7), as one pair.
 			IrValue value = convertForStore(loc, lowerExpr(node.value()), node.value()->type(), returnType);
-			emitVoid(loc, IrReturnPayload{ true, false, value, true });
+			emitVoid(loc, IrReturnPayload{ true, returnType->isDouble(), value, true });
 			return;
 		}
 
@@ -2986,8 +2947,9 @@ namespace ceresc::ir
 				// `volatile int` parameter compiled to pure register moves - the accesses carried
 				// the mark, so the optimizer left them alone, and then the back end deleted the
 				// object they were accesses TO.
+				// A double parameter is float-bank too: it arrives in d0/d1 (SPEC 6.7).
 				paramSlots.push_back(IrLocalSlot{ param.type ? param.type->sizeInBytes() : 4u,
-					param.type && param.type->isFloat(), param.type && param.type->isVolatile(),
+					param.type && param.type->isFloating(), param.type && param.type->isVolatile(),
 					param.isRegister, param.type && param.type->isSigned(),
 					param.type && param.type->isRestrict() });
 		}

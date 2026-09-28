@@ -59,83 +59,47 @@ the devices under `ceres/`, and `printf`/`scanf`/`strtod` that convert exactly. 
     ceresc prog.c --sysroot <dir> -lceres -O2 --run
 
 is all a program needs: `--sysroot` puts `<dir>/include` on the include path, and `-lceres` links
-`<dir>/lib/libceres.car` with its declarations `libceres.decls.casm` (with `-fsoft-double`, the copies in
-`<dir>/lib/soft-double/` come first). Without the library a program still runs on its own:
+`<dir>/lib/libceres.car` with its declarations `libceres.decls.casm`. Without the library a program still runs on its own:
 `examples/08_strings.c` writes the string routines it needs and prints by storing each character, as a 32-bit word, into the
 terminal's output register at `0xFF000004`, and `examples/interop/io.c` wraps them into something reusable.
 
-### No 64-bit register, so a 64-bit value is a pair of words
+### 64-bit values live in memory between operations
 
-Ceres has no 64-bit integer register and no f64 register — not in the ISA, not in the VM.
+The machine has 64-bit instructions on register pairs (CeresASM's
+[64-bit operations](https://github.com/Krampus1721/CeresASM/blob/main/docs/34-64-bit.md)), and the four C types
+that name a 64-bit value are real 8-byte types that compile to them:
 
-The two C types that name a wide **integer** are real types, not spellings: `long long` and
-`unsigned long long` are 8 bytes with alignment 8, so `sizeof(long long)` is 8, a struct field of
-one is laid out for a real 64-bit object, and an `ll`/`LL` literal suffix gives a literal the 64-bit
-type. A value is lowered as an **addressed pair of 32-bit words** — the low word at offset 0, the
-high word at offset 4, little-endian — exactly the way a struct is represented, so the whole back
-end handles it with no new IR opcode. That covers:
+| Type | Is | Computed with |
+| --- | --- | --- |
+| `long long`, `unsigned long long` | a 64-bit integer, 8 bytes | `add64`, `mul64`, `idiv64`/`div64`, `cmp64`, `shl64`... |
+| `double`, `long double` | an IEEE 754 binary64, 8 bytes | `fadd.d`, `fdiv.d`, `fcmp.d`, `fsqrt.d`, `fcvt`... |
 
-- **load/store/copy/assignment**, through a variable, a struct field, an array element or a global;
-- **`+`, `-`**, with the carry/borrow crossing the word boundary (`Cmp` supplies the flag — there is
-  no `ADDC` in the IR), and the bitwise **`&`, `|`, `^`, `~`** and unary **`-`**;
-- **`*`, `/`, `%`**: a product composes from the 32-bit `mul` and the unsigned multiply-high
-  (`MULH`), and a division or remainder calls the compiler's own `__cc_div64` — a restoring
-  shift-subtract loop the back end emits once, at the end of `@text`, only when a site asks for it.
-  The quotient and the remainder share the call, signed and unsigned both;
-- **`<<`, `>>`** by 0..63, including the crossing at 32 (the low word comes from the high one, or is
-  zeroed on a left shift) and an arithmetic fill for a signed `>>`;
-- **comparisons** (`==`, `!=`, `<`, `<=`, `>`, `>=`), signed or unsigned, comparing the high words
-  first and the low words unsigned, and against a `float` operand via a whole-value float conversion;
-- **`int`↔`long long`** (sign/zero extension, truncation to the low word) and **`float`↔`long long`**:
-  a conversion goes sixteen bits at a time (as the STDLIB's `ns64_to_float` does), so a value that
-  does not fit 32 bits keeps its high half. `long long`→`float` is within one ULP of correctly
-  rounded (the machine's f32 cannot always do better with a 64-bit source); `float`→`long long` is
-  exact for every value in range;
-- `++`/`--`, a `?:` whose result is 64-bit, a 64-bit `if`/`while` condition;
-- **crossing a function boundary by value** (F3.4): a wide parameter arrives in two consecutive
-  argument registers (or two outgoing stack words, once the four are spent), a wide argument is passed
-  as those two words, and a wide result comes back in `ret0`/`ret1`. A function with a wide parameter
-  or return type is still **not inlined** and a call that passes or returns a wide value is not turned
-  into a **tail call** — those two optimizations deliberately refuse the shape rather than model the
-  pair.
+An unsuffixed floating literal is a `double`, as in C (`1.5f` is a `float`); a `float` passed through `...` is
+promoted to `double`; `%f` in a `printf` format reads a `double`. `-fshort-double` makes `double` and `long double`
+spellings of `float` instead, for a program that wants the single-precision machine it had before (and defines
+`__CERES_SHORT_DOUBLE__`).
 
-```c
-long long  a = 0x0000000100000002LL;  /* fine */
-a + 1;  a * 2;  a / 3;  a << 40;  (float)a;  (long long)1.5f;  /* fine */
-long long  f(long long v);           /* fine: v arrives in r0/r1, the result returns in r0/r1 */
-```
+Every operation is one instruction: `a / b` on two `long long`s is `idiv64`, `(double)n` is `fcvt.d.w`,
+`__builtin_sqrt(x)` on a double is `fsqrt.d`, `__builtin_clzll(v)` is `clz64`. A `switch` on a `long long`
+compares each case with `cmp64`. The only 64-bit operations with no instruction of their own are `&`, `|`, `^`
+and `~` on a `long long`, which are two word instructions each.
 
-Still refused with `E5002` rather than silently truncated, because 64 bits has no encoding there:
+A 64-bit argument travels in a register pair - `x0`/`x1` for a `long long`, `d0`/`d1` for a `double`, skipping an
+odd register to start on an even one - or in two stack words once the pairs are spent, and a 64-bit result comes
+back in `x0` or `d0` (CeresASM's [calling convention](https://github.com/Krampus1721/CeresASM/blob/main/docs/24-Calling-Convention.md)).
 
-- a 64-bit `switch` discriminant (F9);
-- a 64-bit operand to a one-instruction machine builtin (there is no 64-bit form of it).
+What is still simple is where a 64-bit value **waits**: between two operations it lives in an 8-byte frame field,
+not in a register pair, so each operation reads its operands with `ldrd`/`fldr.d` and writes its result with
+`strd`/`fstr.d`. A function with a 64-bit value is not inlined, and a call that passes or returns one is not turned
+into a tail call.
 
 A decimal literal with an `ll`/`LL` suffix whose value does not fit a signed `long long` (e.g.
 `18446744073709551615LL`) is out of range in C; here it warns (`W0015`) and keeps its 64-bit bit
 pattern, so it reads as `-1`. An `ULL` literal of the full range does not warn.
 
-A zero **divisor** in a 64-bit `/` or `%` is undefined in C, and the emitted routine stores zero
-rather than looping — the 32-bit instructions trap instead (see the division-by-zero note below).
-
-The two types that name a wide **float** are still capped, because there is no f64 register to give
-them: `double` and `long double` are spellings of `float`, and the parser says so:
-
-| Written | Is | Warning |
-| --- | --- | --- |
-| `double` | `float` | `'double' is 32 bits here: this machine has no 64-bit floating-point type, so it is exactly 'float'` |
-| `long double` | `float` | as above, naming `float` |
-
-The warning fires at every occurrence of the spelling, including inside a `typedef`; the typedef
-NAME is then an ordinary name for the capped type and says nothing further.
-
-**Unless `-fsoft-double` is given.** Then `double` and `long double` are a real IEEE 754 binary64 of eight bytes,
-kept like a `long long` (two words, passed and returned as a pair) and computed in software: every `+ - * /`, every
-comparison and every conversion to or from `double` is a call to one of the standard library's `__f64_*` routines
-(`ceres/f64.h`), rounded to nearest-even with subnormals, infinities and NaN; `-x` flips the sign bit inline. An
-unsuffixed floating literal is then a `double`, as in C (`1.0f` stays a `float`), a `float` passed through `...` is
-promoted to `double`, `__builtin_va_arg(ap, double)` reads two words, a `double` global is folded at compile time in
-the host's own binary64, and `__CERES_SOFT_DOUBLE__` is defined. It costs a call per operation, so it is for the
-programs that need the precision; the standard library built with the same option prints and reads doubles whole.
+A zero **divisor** in a 64-bit `/` or `%`, or in a `double` `/`, does what the 32-bit division does: it leaves the
+result alone and sets the Trap flag (see the division-by-zero note below). A conversion to an integer that does not
+fit is undefined in C; from a `double`, or from a `float` to a `long long`, it saturates here, as `fcvt` does.
 
 ### Arithmetic in a static initializer
 
@@ -202,8 +166,8 @@ See `examples/19_function_pointers.c`.
 Variadic functions are no longer on this list — `...`, `__builtin_va_list`, `__builtin_va_start`,
 `__builtin_va_arg`, `__builtin_va_end` and `__builtin_va_copy` all work. What they do not come with
 is a `<stdarg.h>` (the names are builtin, since there is no system include directory to find a
-header in) or a `printf` to use them for, and a variadic `float` is not promoted to `double`,
-because there is no `double`. See [09-Variadic-Convention.md](09-Variadic-Convention.md).
+header in) or a `printf` to use them for. A variadic `float` is promoted to `double`, as in C. See
+[09-Variadic-Convention.md](09-Variadic-Convention.md).
 
 ### Qualifiers and storage
 

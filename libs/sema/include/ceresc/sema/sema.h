@@ -51,10 +51,10 @@ namespace ceresc::sema
 	public:
 		Sema(support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept;
 
-		// -fsoft-double: an unsuffixed floating literal is a double (Type::Double), as in C, and scanf's %lf
-		// stores one.
-		void setSoftDouble(bool on) noexcept { _softDouble = on; }
-		bool softDouble() const noexcept { return _softDouble; }
+		// -fshort-double: `double` is `float`, so an unsuffixed floating literal is a float and scanf's %lf
+		// stores one. Without it (the default, F6.3) both are the binary64 double, as in C.
+		void setShortDouble(bool on) noexcept { _shortDouble = on; }
+		bool shortDouble() const noexcept { return _shortDouble; }
 		Sema(const Sema&) = delete;
 		Sema(Sema&&) = delete;
 		~Sema() override = default;
@@ -161,7 +161,7 @@ namespace ceresc::sema
 
 	private:
 		support::Arena& _arena;
-		bool _softDouble = false;
+		bool _shortDouble = false;
 		support::DiagnosticEngine& _diagnostics;
 
 		std::vector<std::unique_ptr<Scope>> _scopes; // stack; back() is the innermost, front() the global scope

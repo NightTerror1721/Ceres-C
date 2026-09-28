@@ -390,18 +390,6 @@ namespace ceresc::driver
 		std::vector<std::string> libraryDirectories = options.libraryDirectories;
 		if (!options.sysroot.empty())
 			libraryDirectories.push_back((fs::path(options.sysroot) / "lib").string());
-		// A -fsoft-double program wants the library built the same way, which an installed sysroot keeps in
-		// lib/soft-double: each directory's soft-double/ is searched before the directory itself.
-		if (options.softDouble)
-		{
-			std::vector<std::string> withVariants;
-			for (const std::string& directory : libraryDirectories)
-			{
-				withVariants.push_back((fs::path(directory) / "soft-double").string());
-				withVariants.push_back(directory);
-			}
-			libraryDirectories = std::move(withVariants);
-		}
 		std::vector<std::string> declsFiles = options.declsFiles;
 		if (!options.run && !options.libraries.empty())
 			std::cerr << "ceresc: warning: '-l' is only used when linking; add --run\n";
@@ -515,8 +503,8 @@ namespace ceresc::driver
 				preprocess.addIncludeDirectory(directory);
 			for (const auto& [name, value] : options.defines)
 				preprocess.define(name, value);
-			if (options.softDouble)
-				preprocess.define("__CERES_SOFT_DOUBLE__", "1");
+			if (options.shortDouble)
+				preprocess.define("__CERES_SHORT_DOUBLE__", "1");
 
 			preprocessor::PreprocessedSource expanded = preprocess.run(inputPath);
 			// Preprocessor diagnostics already point at their original files; only later phases need
@@ -555,7 +543,7 @@ namespace ceresc::driver
 			support::StringPool pool;
 			lexer::Lexer lexer(buffer->buffer(), sourceId, diagnostics, pool);
 			parser::Parser parser(lexer, arena, diagnostics);
-			parser.setSoftDouble(options.softDouble);
+			parser.setShortDouble(options.shortDouble);
 			ast::TranslationUnit* unit = parser.parseTranslationUnit();
 
 			if (diagnostics.hasErrors())
@@ -565,7 +553,7 @@ namespace ceresc::driver
 			}
 
 			sema::Sema sema(arena, diagnostics);
-			sema.setSoftDouble(options.softDouble);
+			sema.setShortDouble(options.shortDouble);
 			bool semaOk = sema.check(*unit);
 			printer.flush(std::cerr);
 			if (!semaOk)
@@ -579,7 +567,7 @@ namespace ceresc::driver
 
 			// ---- middle and back end ---------------------------------------------------------------
 			ir::IrBuilder builder(arena, diagnostics, options.optimization);
-			builder.setSoftDouble(options.softDouble);
+			builder.setShortDouble(options.shortDouble);
 			ir::IrModule module = builder.build(*unit);
 			// IrBuilder can report a diagnostic of its own (F3.1a's E5002 for a 64-bit value it
 			// cannot lower yet): the IR it produced is not something to optimize or hand to codegen,

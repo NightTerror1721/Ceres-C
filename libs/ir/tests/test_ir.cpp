@@ -1589,24 +1589,24 @@ TEST(ir, the_arguments_of_an_indirect_call_stay_contiguous_with_it)
 
 namespace
 {
-	// functionIr() with -fsoft-double: double is Type::Double, and every operation on it a call.
-	std::string softDoubleIr(std::string_view source, std::string_view functionName = "main")
+	// functionIr() with -fshort-double: double is float.
+	std::string shortDoubleIr(std::string_view source, std::string_view functionName = "main")
 	{
 		support::Arena arena;
 		support::DiagnosticEngine diagnostics;
 		support::StringPool pool;
 		lexer::Lexer lexer(source, testSourceId(), diagnostics, pool);
 		parser::Parser parser(lexer, arena, diagnostics);
-		parser.setSoftDouble(true);
+		parser.setShortDouble(true);
 		ast::TranslationUnit* unit = parser.parseTranslationUnit();
 		CHECK(unit != nullptr);
 		if (!unit)
 			return "<parse-failed>";
 		sema::Sema sema(arena, diagnostics);
-		sema.setSoftDouble(true);
+		sema.setShortDouble(true);
 		CHECK(sema.check(*unit));
 		ir::IrBuilder builder(arena, diagnostics, support::OptimizationOptions::none());
-		builder.setSoftDouble(true);
+		builder.setShortDouble(true);
 		ir::IrModule module = builder.build(*unit);
 		CHECK(!diagnostics.hasErrors());
 		for (const auto& function : module.functions())
@@ -1616,53 +1616,60 @@ namespace
 	}
 }
 
-TEST(ir, a_soft_double_operation_is_a_call_to_its_f64_routine)
+TEST(ir, a_double_operation_is_one_wide_instruction_on_doubles)
 {
-	CHECK(contains(softDoubleIr("double f(double a, double b) { return a + b; }", "f"), " __f64_add,"));
-	CHECK(contains(softDoubleIr("double f(double a, double b) { return a / b; }", "f"), " __f64_div,"));
-	CHECK(contains(softDoubleIr("double f(double a) { a *= 3; return a; }", "f"), " __f64_mul,"));
-	CHECK(contains(softDoubleIr("double f(double a) { return a++; }", "f"), " __f64_add,"));
-	std::string compare = softDoubleIr("int f(double a, double b) { return a > b; }", "f");
-	CHECK(contains(compare, " __f64_cmp,"));
-	CHECK(contains(softDoubleIr("int f(double a) { if (a) return 1; return 0; }", "f"), " __f64_cmp,"));
-	// -x flips the sign bit in place: no call at all.
-	CHECK(!contains(softDoubleIr("double f(double a) { return -a; }", "f"), "call"));
+	// F6.3: a double is a binary64 pair, and every operation on it one Wide instruction - no call.
+	CHECK(contains(functionIr("double f(double a, double b) { return a + b; }", "f"), "wide.add.d"));
+	CHECK(contains(functionIr("double f(double a, double b) { return a / b; }", "f"), "wide.div.d"));
+	CHECK(contains(functionIr("double f(double a) { a *= 3; return a; }", "f"), "wide.mul.d"));
+	CHECK(contains(functionIr("double f(double a) { return a++; }", "f"), "wide.add.d"));
+	CHECK(contains(functionIr("int f(double a, double b) { return a > b; }", "f"), "wide.cmp.gt.d"));
+	CHECK(contains(functionIr("int f(double a) { if (a) return 1; return 0; }", "f"), "wide.cmp.ne.d"));
+	CHECK(contains(functionIr("double f(double a) { return -a; }", "f"), "wide.neg.d"));
+	CHECK(!contains(functionIr("double f(double a, double b) { return a * b + 1.0; }", "f"), "call"));
+	CHECK(contains(functionIr("double f(double a) { return __builtin_sqrt(a); }", "f"), "wide.sqrt.d"));
+	CHECK(contains(functionIr("float f(float a) { return __builtin_sqrt(a); }", "f"), "__builtin_sqrt"));
 }
 
-TEST(ir, soft_double_conversions_call_the_right_routine)
+TEST(ir, double_conversions_are_one_fcvt_each)
 {
-	CHECK(contains(softDoubleIr("int f(double a) { return a; }", "f"), " __f64_to_i32,"));
-	CHECK(contains(softDoubleIr("unsigned f(double a) { return a; }", "f"), " __f64_to_u32,"));
-	CHECK(contains(softDoubleIr("float f(double a) { return a; }", "f"), " __f64_to_f32,"));
-	CHECK(contains(softDoubleIr("long long f(double a) { return a; }", "f"), " __f64_to_i64,"));
-	CHECK(contains(softDoubleIr("double f(int x) { return x; }", "f"), " __f64_from_i32,"));
-	CHECK(contains(softDoubleIr("double f(unsigned long long x) { return x; }", "f"), " __f64_from_u64,"));
-	CHECK(contains(softDoubleIr("double f(float x) { return x; }", "f"), " __f64_from_f32,"));
-	CHECK(contains(softDoubleIr("int f(void) { return sizeof(double); }", "f"), "const 8"));
-	CHECK(contains(softDoubleIr("int f(void) { return sizeof(1.0); }", "f"), "const 8"));      // an unsuffixed literal is a double
-	CHECK(contains(softDoubleIr("int f(void) { return sizeof(1.0f); }", "f"), "const 4"));
+	CHECK(contains(functionIr("int f(double a) { return a; }", "f"), "wide.convert.w.d"));
+	CHECK(contains(functionIr("unsigned f(double a) { return a; }", "f"), "wide.convert.wu.d"));
+	CHECK(contains(functionIr("float f(double a) { return a; }", "f"), "wide.convert.s.d"));
+	CHECK(contains(functionIr("long long f(double a) { return a; }", "f"), "wide.convert.l.d"));
+	CHECK(contains(functionIr("double f(int x) { return x; }", "f"), "wide.convert.d.w"));
+	CHECK(contains(functionIr("double f(unsigned long long x) { return x; }", "f"), "wide.convert.d.lu"));
+	CHECK(contains(functionIr("double f(float x) { return x; }", "f"), "wide.convert.d.s"));
+	CHECK(contains(functionIr("int f(void) { return sizeof(double); }", "f"), "const 8"));
+	CHECK(contains(functionIr("int f(void) { return sizeof(1.0); }", "f"), "const 8"));      // an unsuffixed literal is a double
+	CHECK(contains(functionIr("int f(void) { return sizeof(1.0f); }", "f"), "const 4"));
+	CHECK(contains(functionIr("int f(double a) { return (bool)a; }", "f"), "wide.cmp.ne.d"));
 }
 
-TEST(ir, a_soft_double_ternary_is_never_an_integer_min_or_max)
+TEST(ir, a_double_ternary_is_never_an_integer_min_or_max)
 {
-	// The operands are the addresses of two-word values: the min/max idiom would compare those.
-	std::string text = softDoubleIr("double f(double a, double b) { return a < b ? a : b; }", "f");
-	CHECK(contains(text, " __f64_cmp,"));
+	std::string text = functionIr("double f(double a, double b) { return a < b ? a : b; }", "f");
+	CHECK(contains(text, "wide.cmp.lt.d"));
+	CHECK(contains(text, "wide.copy.d"));
 	CHECK(!contains(text, "min"));
 	CHECK(!contains(text, "max"));
 }
 
-TEST(ir, a_soft_double_va_arg_reads_two_words_and_advances_eight_bytes)
+TEST(ir, a_double_va_arg_reads_two_words_and_advances_eight_bytes)
 {
-	std::string text = softDoubleIr("double f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); return __builtin_va_arg(ap, double); }", "f");
+	std::string text = functionIr("double f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); return __builtin_va_arg(ap, double); }", "f");
 	CHECK(contains(text, "const 8"));
-	CHECK(contains(text, "wide.load.lu")); // both words in one pair load
+	CHECK(contains(text, "wide.load.d")); // both words in one pair load
 }
 
-TEST(ir, a_float_through_the_ellipsis_goes_as_a_soft_double)
+TEST(ir, a_float_through_the_ellipsis_goes_as_a_double_unless_double_is_short)
 {
-	std::string text = softDoubleIr("int v(int n, ...); int main() { return v(1, 1.5f); }");
-	CHECK(contains(text, " __f64_from_f32,"));
-	// Without -fsoft-double double is float, and nothing is called.
-	CHECK(!contains(functionIr("double f(double a, double b) { return a * b + 1.0; }", "f"), "__f64"));
+	std::string text = functionIr("int v(int n, ...); int main() { return v(1, 1.5f); }");
+	CHECK(contains(text, "wide.convert.d.s"));
+	CHECK(contains(text, "param.wide.f.var"));
+	// With -fshort-double double is float: a float goes as it is, and nothing is a pair.
+	std::string shortText = shortDoubleIr("int v(int n, ...); int main() { return v(1, 1.5f); }");
+	CHECK(!contains(shortText, "wide."));
+	CHECK(!contains(shortDoubleIr("double f(double a, double b) { return a * b + 1.0; }", "f"), "wide."));
+	CHECK(contains(shortDoubleIr("int f(void) { return sizeof(double); }", "f"), "const 4"));
 }

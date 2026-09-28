@@ -128,13 +128,13 @@ TEST(prebuilt, a_program_links_against_an_archive_built_earlier)
 	CHECK_EQ(runProgram(scratch, *ceresDir, kMain, { *archive }, { lib->decls }), 10);   // twice(counter) = 10
 }
 
-TEST(prebuilt, a_library_found_with_l_brings_its_declarations_and_its_soft_double_build)
+TEST(prebuilt, a_library_found_with_l_brings_its_declarations)
 {
 	std::optional<fs::path> ceresDir = findCeresDirectory();
 	if (skipped(ceresDir)) return;
 	Scratch scratch("installed");
-	// lib/libtwice.car with lib/libtwice.decls.casm beside it, and lib/soft-double/ the same built another way
-	// (counter 6, not 5): what tools/install.ps1 lays out.
+	// lib/libtwice.car with lib/libtwice.decls.casm beside it: what tools/install.ps1 lays out. A soft-double/
+	// directory beside them (what installs used to carry) is not looked into any more.
 	const auto install = [&](const fs::path& directory, const std::string& source) -> bool
 	{
 		std::optional<Built> lib = buildObject(scratch, *ceresDir, "lib", source);
@@ -151,13 +151,13 @@ TEST(prebuilt, a_library_found_with_l_brings_its_declarations_and_its_soft_doubl
 	CHECK(install(scratch.dir / "lib", kLibrary));
 	CHECK(install(scratch.dir / "lib" / "soft-double", "int counter = 6;\nint twice(int x) { return x * 2; }\n"));
 
-	const auto runWith = [&](bool softDouble)
+	const auto runWith = [&](bool shortDouble)
 	{
 		ceresc::driver::Options options;
 		options.inputPaths.push_back(scratch.write("main.c", kMain).string());
 		options.libraryDirectories.push_back((scratch.dir / "lib").string());
 		options.libraries.push_back("twice");
-		options.softDouble = softDouble;
+		options.shortDouble = shortDouble;
 		options.outputPath = (scratch.dir / "main.cres").string();
 		options.run = true;
 		options.runArguments = { "--headless", "--speed", "max" }; // no window, which would wait for a key when the program ends
@@ -165,7 +165,7 @@ TEST(prebuilt, a_library_found_with_l_brings_its_declarations_and_its_soft_doubl
 		return ceresc::driver::run(options);
 	};
 	CHECK_EQ(runWith(false), 10);    // no --decls: the declarations came with -ltwice
-	CHECK_EQ(runWith(true), 12);     // -fsoft-double: soft-double/ first
+	CHECK_EQ(runWith(true), 10);     // -fshort-double changes nothing about where the library is found
 }
 
 TEST(prebuilt, an_object_is_linked_as_it_is)

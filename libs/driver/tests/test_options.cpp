@@ -504,12 +504,14 @@ TEST(options, run_arg_collects_the_extra_arguments_for_ceres_run_in_order)
 	CHECK(!parse({ "ceresc", "main.c", "--run", "--run-arg" }).options.has_value());
 }
 
-TEST(options, soft_double_is_off_unless_asked_for)
+TEST(options, short_double_is_off_unless_asked_for)
 {
 	ParseResult plain = parse({ "main.c" });
-	CHECK(plain.options.has_value() && !plain.options->softDouble);
-	ParseResult soft = parse({ "main.c", "-fsoft-double" });
-	CHECK(soft.options.has_value() && soft.options->softDouble);
-	ParseResult undone = parse({ "main.c", "-fsoft-double", "-fno-soft-double" });
-	CHECK(undone.options.has_value() && !undone.options->softDouble);
+	CHECK(plain.options.has_value() && !plain.options->shortDouble);
+	ParseResult shortened = parse({ "main.c", "-fshort-double" });
+	CHECK(shortened.options.has_value() && shortened.options->shortDouble);
+	ParseResult undone = parse({ "main.c", "-fshort-double", "-fno-short-double" });
+	CHECK(undone.options.has_value() && !undone.options->shortDouble);
+	// -fsoft-double is gone with the software double (F6.3): it is no optimization switch either.
+	CHECK(!parse({ "main.c", "-fsoft-double" }).options.has_value());
 }

@@ -133,8 +133,9 @@ namespace ceresc::parser
 	public:
 		explicit Parser(lexer::Lexer& lexer, support::Arena& arena, support::DiagnosticEngine& diagnostics) noexcept;
 
-		// -fsoft-double: `double` and `long double` are a real binary64 (Type::Double), not float.
-		void setSoftDouble(bool on) noexcept { _softDouble = on; }
+		// -fshort-double: `double` and `long double` are spellings of `float`, instead of the binary64
+		// Type::Double they are by default (SPEC 6.7, F6.3).
+		void setShortDouble(bool on) noexcept { _shortDouble = on; }
 
 	public:
 		// Entry points. parseExpression()/parseTypeName() are Fase 2; parseTranslationUnit()/
@@ -441,15 +442,6 @@ namespace ceresc::parser
 		Expr* parseBuiltin(support::SourceLocation location, ast::Builtin builtin);
 
 
-		// `long long`, `unsigned long long`, `double` and `long double` all name a width this
-		// machine does not have: there is no 64-bit register and no f64 register anywhere in Ceres.
-		// They are accepted as SPELLINGS of the 32-bit type they cap to (type.h) rather than
-		// rejected, because a program that uses one is asking for a wide number and gets a number -
-		// but never silently, because it is not the number it asked for. `written` is what the
-		// program said, `actual` what it got.
-		const Type* cappedToMachineWidth(support::SourceLocation location, std::string_view written,
-			std::string_view actual, const Type* type);
-
 		// struct/enum are parsed as part of the type-spec grammar, not as their own top-level
 		// productions - see the header comment above.
 		const Type* parseStructTypeSpec(bool isUnion = false);
@@ -479,7 +471,7 @@ namespace ceresc::parser
 		// _allowUnsizedArray around its applyDeclarator() call, which then builds the array with size 0 and
 		// sets _unsizedArrayPending; finishVarDecl() replaces it with the real length once the initializer
 		// has been read. Everywhere else (a struct member, a typedef, a cast) the omitted size is still an error.
-		bool _softDouble = false;
+		bool _shortDouble = false;
 		bool _allowUnsizedArray = false;
 		bool _unsizedArrayPending = false;
 		// `struct S { int n; int a[]; };` - a flexible array member: an unsized array allowed as a
@@ -551,7 +543,7 @@ namespace ceresc::parser
 				case TokenKind::KwVoid:
 				case TokenKind::KwBool:
 				case TokenKind::KwFloat:
-				case TokenKind::KwDouble: // a spelling of `float` here - see cappedToMachineWidth()
+				case TokenKind::KwDouble:
 				case TokenKind::KwChar:
 				case TokenKind::KwShort:
 				case TokenKind::KwInt:
