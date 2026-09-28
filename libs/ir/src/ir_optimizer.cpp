@@ -57,6 +57,13 @@ namespace ceresc::ir
 					return true;
 				case IrOpcode::Load:
 					return !instr.as<IrLoadPayload>().isVolatile;
+				// A 64-bit operation computes a pair or a word from its operands and nothing else, like
+				// a BinOp - except the store, and a volatile load, which are observable.
+				case IrOpcode::Wide:
+				{
+					const IrWidePayload& p = instr.as<IrWidePayload>();
+					return p.op != IrWideOp::Store && !(p.op == IrWideOp::Load && p.isVolatile);
+				}
 				default:
 					return false;
 			}
@@ -1548,6 +1555,20 @@ namespace ceresc::ir
 					p.value = rename(p.value);
 					return arena.create<IrInstr>(loc, p);
 				}
+				case IrOpcode::Wide:
+				{
+					IrWidePayload p = instr.as<IrWidePayload>();
+					p.a = rename(p.a);
+					p.b = rename(p.b);
+					return arena.create<IrInstr>(loc, p);
+				}
+				case IrOpcode::Call:
+				{
+					// An indirect call's target is its one operand.
+					IrCallPayload p = instr.as<IrCallPayload>();
+					p.calleeValue = rename(p.calleeValue);
+					return arena.create<IrInstr>(loc, p);
+				}
 				default:
 					return nullptr;
 			}
@@ -1827,6 +1848,10 @@ namespace ceresc::ir
 
 					if (instr->opcode() == IrOpcode::Call)
 						known.clear(); // the callee may write through any pointer it can reach
+					// A 64-bit store writes eight bytes through whatever address it has, which may be a
+					// restrict pointee: forget everything, as for a store through any other pointer.
+					if (instr->opcode() == IrOpcode::Wide && instr->as<IrWidePayload>().op == IrWideOp::Store)
+						known.clear();
 
 					rewritten.push_back(instr);
 				}
@@ -4439,22 +4464,22 @@ namespace ceresc::ir
 				return false;
 			if (function.blocks().empty())
 				return false;
-			// F3.4: a 64-bit parameter or return travels as a two-word pair whose shape the splice
-			// does not model - it turns a Return into ONE copy, and a wide Call defines two result
-			// temps (`result` and `resultHigh`), of which remapInstr() only rewrites the first. A
-			// function that CONTAINS a wide Call is refused for the same reason, so the two-result
-			// shape never reaches the splice from either end.
-			if (function.returnType() && function.returnType()->isWideInteger())
+			// A 64-bit parameter or return, and any 64-bit value at all in the body, are left to F6.5:
+			// the splice settles a parameter with one word Store and turns a Return into one word
+			// Copy, neither of which moves a pair.
+			if (function.returnType() && function.returnType()->isWide())
 				return false;
 			{
 				std::span<const IrLocalSlot> slots = function.localSlots();
 				for (u32 i = 0; i < function.paramCount() && i < slots.size(); ++i)
-					if (slots[i].sizeInBytes == 8 && !slots[i].isFloat)
+					if (slots[i].sizeInBytes == 8)
 						return false;
 			}
 			for (const auto& block : function.blocks())
 				for (const IrInstr* instr : block->instrs())
-					if (instr->opcode() == IrOpcode::Call && instr->as<IrCallPayload>().hasWideResult)
+					if (instr->opcode() == IrOpcode::Wide ||
+						(instr->opcode() == IrOpcode::Call && instr->as<IrCallPayload>().hasWideResult) ||
+						(instr->opcode() == IrOpcode::Param && instr->as<IrParamPayload>().isWide))
 						return false;
 			// The last block has to end in a terminator: an unterminated one falls through to whatever
 			// block is emitted next, and a splice moves the body somewhere else entirely.
@@ -4629,6 +4654,14 @@ namespace ceresc::ir
 				}
 				case IrOpcode::MachineOp:
 					return arena.create<IrInstr>(loc, instr.as<IrMachineOpPayload>());
+				case IrOpcode::Wide:
+				{
+					IrWidePayload p = instr.as<IrWidePayload>();
+					p.a = mapValue(p.a);
+					p.b = mapValue(p.b);
+					p.result = mapValue(p.result);
+					return arena.create<IrInstr>(loc, p);
+				}
 				default:
 					return nullptr; // Return is handled by the splice; VaStart never reaches here
 			}

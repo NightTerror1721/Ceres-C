@@ -618,7 +618,10 @@ namespace ceresc::ast
 		// The flags register (`pushf` then `pop rd`: the machine has no move from it). What a
 		// program wants from it is the Interrupt flag, bit 4, which `sti`/`cli` change - so unlike
 		// every other builtin its value depends on WHERE it is read: CSE and LICM leave it alone.
-		Flags
+		Flags,
+		// The 64-bit counts (F6.2): `clz64`, `ctz64` and `popcnt64` over an unsigned long long,
+		// into an int (64 for a zero operand). IrBuilder lowers them to a Wide instruction.
+		Clzll, Ctzll, Popcountll
 	};
 
 	constexpr std::string_view builtinName(Builtin builtin) noexcept
@@ -662,6 +665,9 @@ namespace ceresc::ast
 			case Builtin::MinUnsigned:   return "__builtin_umin";
 			case Builtin::MaxUnsigned:   return "__builtin_umax";
 			case Builtin::Flags:         return "__builtin_flags";
+			case Builtin::Clzll:         return "__builtin_clzll";
+			case Builtin::Ctzll:         return "__builtin_ctzll";
+			case Builtin::Popcountll:    return "__builtin_popcountll";
 		}
 		return "";
 	}
@@ -674,7 +680,8 @@ namespace ceresc::ast
 			Builtin::Fmin, Builtin::Fmax, Builtin::Copysign, Builtin::Rcp, Builtin::Rsqrt, Builtin::Fclass,
 			Builtin::FloatBits, Builtin::FloatFromBits, Builtin::Expect, Builtin::ConstantP,
 			Builtin::Memcpy, Builtin::Memset, Builtin::AddOverflow, Builtin::SubOverflow, Builtin::MulOverflow, Builtin::StackPointer,
-			Builtin::MinSigned, Builtin::MaxSigned, Builtin::MinUnsigned, Builtin::MaxUnsigned, Builtin::Flags })
+			Builtin::MinSigned, Builtin::MaxSigned, Builtin::MinUnsigned, Builtin::MaxUnsigned, Builtin::Flags,
+			Builtin::Clzll, Builtin::Ctzll, Builtin::Popcountll })
 			if (name == builtinName(builtin))
 				return builtin;
 		return std::nullopt;

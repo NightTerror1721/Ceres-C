@@ -186,12 +186,10 @@ namespace ceresc::ir
 		BasicBlock* _currentBlock = nullptr;
 		IrValue _lastValue{}; // set by every visit(SomeExpr&), read back by lowerExpr() - same idiom as Sema::_lastExprType
 
-		// F3.1b–F3.4 lower 64-bit integers as an 8-byte addressed value (see the wide-integer helpers
-		// below): arithmetic, shifts, conversions and the by-value calling convention all work. A
-		// couple of operations still have no representation — a 64-bit switch discriminant (F9) and a
-		// 64-bit operand to a one-instruction machine builtin — and the first of those to reach
-		// lowering is reported once, as E5002, instead of being miscompiled. Cleared by build(); see
-		// rejectWideFeature().
+		// A 64-bit value is a pair temporary (see the 64-bit helpers below). The one thing still without
+		// a lowering is a 64-bit operand to a 32-bit machine builtin (`__builtin_bswap32` of a long long);
+		// the first to reach lowering is reported once, as E5002, instead of being miscompiled. Cleared
+		// by build(); see rejectWideFeature().
 		bool _reportedWideInteger = false;
 
 		std::vector<std::unordered_map<std::string_view, LocalSymbol>> _scopes; // function-local block scopes; empty at file scope
@@ -245,7 +243,7 @@ namespace ceresc::ir
 		// lowered (F3.1b). A no-op for a supported one; see _reportedWideInteger.
 		void rejectWideFeature(support::SourceLocation loc, std::string_view what);
 
-		// -fsoft-double: a double is a wide value (the address of its two words, like a 64-bit integer) whose
+		// -fsoft-double: a double is a wide value (a pair temporary, like a 64-bit integer) whose
 		// every operation is a call to one of the standard library's __f64_* routines (ceres/f64.h). The one
 		// thing the types alone do not say is C's promotion of a float passed through '...' to double.
 	public:
@@ -265,9 +263,6 @@ namespace ceresc::ir
 			const ast::Type* rhsType, IrValue lhsVal, IrValue rhsVal);
 		IrValue lowerDoubleCompare(support::SourceLocation loc, ast::BinaryOp op, IrValue a, IrValue b);
 		IrValue doubleConstant(support::SourceLocation loc, f64 value);
-		// Whether a value of type `from` already is a value of `to` as the two words it is kept in - so a store
-		// can copy it - rather than something to convert (a long long going into a double, or back).
-		static bool sameWideKind(const ast::Type* from, const ast::Type* to) noexcept;
 
 		IrValue lowerExpr(ast::Expr* expr);
 		void lowerStmt(ast::Stmt* stmt);
@@ -372,46 +367,27 @@ namespace ceresc::ir
 		// to the scope-based slot-reuse pool that a declared local's slot goes through.
 		u32 newStructTempSlot(u32 sizeInBytes);
 
-		// ---- 64-bit integers (F3.1b) ----------------------------------------------------------
+		// ---- 64-bit values (F6.2) -------------------------------------------------------------
 		//
-		// A wide value lowers to the ADDRESS of its 8-byte storage, exactly like a struct or an
-		// array (see the memory-valued convention in the header comment): the low word at +0 and the
-		// high word at +4, little-endian, so the whole back end already understands it with no new
-		// IR opcode. `long long` and `unsigned long long` differ only in how a scalar is extended
-		// into the high word and how a comparison orders the two words.
-		//
-		// A wide operation materializes its operands (a scalar operand is extended into a fresh
-		// temp) and writes the two result words into another temp whose address is the result.
+		// A 64-bit value is a PAIR temporary that only Wide instructions define and read (ir_instr.h's
+		// IrWidePayload): reading a `long long` lvalue is one Wide Load, writing one a Wide Store, and
+		// every operation on one a single Wide instruction - codegen's `ldrd`, `add64`, `strd`...
 
-		// The address of an 8-byte storage holding `value` as a 64-bit integer: `value` itself when
-		// `fromType` is already wide, otherwise a fresh temp filled with the extended word.
-		IrValue materializeWide(support::SourceLocation loc, IrValue value, const ast::Type* fromType);
-		// Writes `value` (converted to a 64-bit integer) into the wide object at `destAddr`.
-		void emitWideStore(support::SourceLocation loc, IrValue destAddr, IrValue value, const ast::Type* fromType, bool isVolatile);
-		// One word of a wide value: the low word (`high` false) or the high word (`high` true).
-		IrValue loadWideWord(support::SourceLocation loc, IrValue wideAddr, bool high, bool isVolatile);
-		// A fresh 8-byte temp whose low/high words are the two given values.
-		IrValue makeWideValue(support::SourceLocation loc, IrValue low, IrValue high);
-		// add/sub/and/or/xor on two wide operands; a wide mul/div/mod/shift is refused (F3.2/F3.3).
+		// The kind a Wide instruction gives a value of this C type (-fsoft-double's double is ULong).
+		static IrNumKind numKindOf(const ast::Type* type) noexcept;
+		IrValue emitWide(support::SourceLocation loc, IrWidePayload payload);
+		IrValue emitWideOp(support::SourceLocation loc, IrWideOp op, IrNumKind kind, IrValue a, IrValue b = IrValue{});
+		IrValue emitWideConst(support::SourceLocation loc, u64 bits, IrNumKind kind);
+		IrValue emitWideLoad(support::SourceLocation loc, IrValue address, IrNumKind kind, bool isVolatile);
+		void emitWideStore(support::SourceLocation loc, IrValue address, IrValue value, IrNumKind kind, bool isVolatile);
+		IrValue emitWideConvert(support::SourceLocation loc, IrValue value, IrNumKind from, IrNumKind to);
+		IrValue emitWideCmp(support::SourceLocation loc, IrCmpPredicate predicate, IrNumKind kind, IrValue a, IrValue b);
+		// Reuses a temp id already allocated - the phi of a wide `?:` (see visit(TernaryExpr&)).
+		void emitWideCopyInto(support::SourceLocation loc, IrValue result, IrValue source, IrNumKind kind);
+		// `lhs op rhs` for a 64-bit result: both operands converted to `resultType`, then one Wide
+		// instruction (a shift's count stays a word).
 		IrValue lowerWideArithmetic(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* resultType,
 			const ast::Type* lhsType, const ast::Type* rhsType, IrValue lhsVal, IrValue rhsVal);
-		// A 0/1 word for `lhsAddr op rhsAddr`, comparing the high words first (signed or unsigned as
-		// `isUnsigned` says) and the low words unsigned - the low half never carries the sign.
-		IrValue lowerWideCompare(support::SourceLocation loc, ast::BinaryOp op, IrValue lhsAddr, IrValue rhsAddr, bool isUnsigned);
-		// `value << amount`, `value >> amount` (logical) or `>>` (arithmetic) for a wide value and a
-		// shift count 0..63. The count is branched on (0, 1..31, 32..63) because a 64-bit shift is
-		// two 32-bit shifts whose direction changes at 32, and the ISA masks a count to 5 bits.
-		IrValue lowerWideShift(support::SourceLocation loc, ast::BinaryOp op, const ast::Type* resultType,
-			IrValue value, IrValue amount, bool valueVolatile);
-		// `-value` on a wide value (two's complement on the pair), as the address of a fresh temp.
-		IrValue lowerWideNegate(support::SourceLocation loc, IrValue address, bool isVolatile);
-		// A non-negative wide magnitude as an `f32`, sixteen bits at a time (Horner, as the STDLIB's
-		// ns64_to_float does): within one ULP of a correctly-rounded conversion, which the machine's
-		// f32-only float cannot always promise anyway. ConvertForStore applies the sign.
-		IrValue lowerWideMagnitudeToFloat(support::SourceLocation loc, IrValue address, bool isVolatile);
-		// A non-negative `f32` < 2^64 as a wide integer, sixteen bits at a time - exact, because each
-		// step's quotient fits 16 bits and `iitof` of it is exact. ConvertForStore applies the sign.
-		IrValue lowerFloatMagnitudeToWide(support::SourceLocation loc, IrValue value);
 		// The low word of a wide value for a context that needs a scalar (an array index, a pointer
 		// offset, a shift amount) - C converts each of those to `int`, so this is that truncation.
 		// A scalar passes through unchanged.

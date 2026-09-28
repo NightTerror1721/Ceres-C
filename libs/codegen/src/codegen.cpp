@@ -49,6 +49,13 @@ namespace ceresc::codegen
 		std::string intReg(u32 n) { return std::format("r{}", n); }
 		std::string floatReg(u32 n) { return std::format("f{}", n); }
 		std::string bankReg(u32 n, bool isFloat) { return isFloat ? floatReg(n) : intReg(n); }
+		// A register pair (SPEC 6.2): `x<n>` is r(2n):r(2n+1), `d<n>` is f(2n):f(2n+1).
+		std::string pairReg(u32 n, bool isDouble) { return std::format("{}{}", isDouble ? 'd' : 'x', n); }
+		// The two scratch pairs a 64-bit operation computes in (F6.2): x2/d2 is r4:r5/f4:f5, the scratch
+		// registers; x3/d3 is r6:r7/f6:f7, which value placement keeps out of its pool in a function that
+		// has 64-bit operations for exactly this.
+		constexpr u32 kPairScratchA = 2;
+		constexpr u32 kPairScratchB = 3;
 
 		std::string_view loadMnemonicFor(IrMemSize size, bool isFloat, bool isSigned)
 		{
@@ -1273,8 +1280,6 @@ namespace ceresc::codegen
 					_usesStrlen = true;
 				if (p.callee == "__cc_memchr_index")
 					_usesMemchrIndex = true;
-				if (p.callee == "__cc_div64")
-					_usesDiv64 = true; // a 64-bit division/remainder site (F3.2)
 				if (!p.inlineAsm.empty())
 				{
 					// The author's own text, a line at a time: a line ending in ':' is a label and stands at the left
@@ -1340,14 +1345,9 @@ namespace ceresc::codegen
 							std::string dest = bankReg(slot.index, isFloat);
 							if (slot.wide)
 							{
-								// F3.4: the pair's address is in a register, and the two words are
-								// loaded from it (offset 0 = low, 4 = high) straight into the two
-								// argument registers. The address register is read before either
-								// destination is written, which the address is always allowed to be.
-								std::string base = valueIn(argValues[k], kScratchA, false, loc);
-								std::string destHigh = bankReg(slot.index + 1, false);
-								_emitter.instr(std::format("ldr {}, [{}]", dest, base), comment);
-								_emitter.instr(std::format("ldr {}, [{} + 4]", destHigh, base), comment);
+								// A 64-bit argument goes straight from its field into its pair,
+								// x0/x1 or d0/d1 (SPEC 6.7): one `ldrd`/`fldr.d`.
+								pairIn(argValues[k], slot.index / 2, isFloat, loc);
 								break;
 							}
 							std::string source = valueIn(argValues[k], isFloat ? kScratchB : kScratchA, isFloat, loc);
@@ -1359,14 +1359,10 @@ namespace ceresc::codegen
 						{
 							if (slot.wide)
 							{
-								// The pair's address is in a register; its two words go to the two
-								// outgoing stack words in order (low then high).
-								std::string base = valueIn(argValues[k], kScratchA, false, loc);
-								std::string scratch = intReg(kScratchB);
-								_emitter.instr(std::format("ldr  {}, [{}]", scratch, base), comment);
-								_emitter.instr(std::format("str  [sp + {}], {}", slot.index * 4, scratch), comment);
-								_emitter.instr(std::format("ldr  {}, [{} + 4]", scratch, base), comment);
-								_emitter.instr(std::format("str  [sp + {}], {}", (slot.index + 1) * 4, scratch), comment);
+								// Its two words go to two outgoing stack words, low first: the pair's
+								// bits through x2, whatever they mean.
+								std::string pair = pairIn(argValues[k], kPairScratchA, false, loc);
+								_emitter.instr(std::format("strd [sp + {}], {}", slot.index * 4, pair), comment);
 								break;
 							}
 							std::string source = valueIn(argValues[k], argIsFloat[k] ? kScratchB : kScratchA, argIsFloat[k], loc);
@@ -1411,50 +1407,19 @@ namespace ceresc::codegen
 				{
 					_emitter.instr(std::format("call {}", casmName(p.callee)), comment);
 				}
-				if (p.hasResult || p.hasWideResult)
+				if (p.hasWideResult)
 				{
-					// The callee's result is in ret0 (r0, or f0 for a float) - and, for a wide result,
-					// ret1 (r1). Both destinations are resolved before either move, because the
-					// optimizer assigns r0/r1 like any other register: a low result whose home IS r1
-					// would be written over the high word before it was read, and the pair can even come
-					// out swapped. A wide result's `result` is the low word and `resultHigh` the high
-					// one (wide results are never float, so ret0 is r0 on that path).
+					// A 64-bit result is in x0 (r0:r1), or d0 for a double: straight into its field.
+					storePair(p.result, pairReg(0, p.isFloat), p.isFloat, loc);
+				}
+				else if (p.hasResult)
+				{
+					// The callee's result is in ret0 (r0, or f0 for a float).
 					const std::string ret0 = bankReg(0, p.isFloat);
-					const std::string r1 = intReg(1);
-					std::string dLow = p.hasResult
-						? defineInto(p.result, p.isFloat ? kScratchB : kScratchA, p.isFloat)
-						: std::string{};
-					std::string dHigh = p.hasWideResult ? defineInto(p.resultHigh, kScratchB, false) : std::string{};
-					if (p.hasWideResult && dLow == r1 && dHigh == ret0)
-					{
-						// Swapped: rotate through a scratch holding neither return word.
-						_emitter.instr(std::format("mov {}, {}", intReg(kScratchA), ret0), comment);
-						_emitter.instr(std::format("mov {}, {}", ret0, r1), comment);
-						_emitter.instr(std::format("mov {}, {}", r1, intReg(kScratchA)), comment);
-					}
-					else if (p.hasWideResult && dLow == r1)
-					{
-						// Writing the low word into r1 would clobber the high word: save high first.
-						_emitter.instr(std::format("mov {}, {}", dHigh, r1), comment);
-						_emitter.instr(std::format("mov {}, {}", r1, ret0), comment);
-					}
-					else if (p.hasWideResult && dHigh == ret0)
-					{
-						// Writing the high word into r0 would clobber the low word: save low first.
-						_emitter.instr(std::format("mov {}, {}", dLow, ret0), comment);
-						_emitter.instr(std::format("mov {}, {}", ret0, r1), comment);
-					}
-					else
-					{
-						if (p.hasResult && dLow != ret0)
-							_emitter.instr(std::format("mov {}, {}", dLow, ret0), comment);
-						if (p.hasWideResult && dHigh != r1)
-							_emitter.instr(std::format("mov {}, {}", dHigh, r1), comment);
-					}
-					if (p.hasResult)
-						storeResult(p.result, dLow, loc);
-					if (p.hasWideResult)
-						storeResult(p.resultHigh, dHigh, loc);
+					std::string dest = defineInto(p.result, p.isFloat ? kScratchB : kScratchA, p.isFloat);
+					if (dest != ret0)
+						_emitter.instr(std::format("mov {}, {}", dest, ret0), comment);
+					storeResult(p.result, dest, loc);
 				}
 				break;
 			}
@@ -1543,6 +1508,9 @@ namespace ceresc::codegen
 					case Builtin::Memset:
 					case Builtin::StackPointer: // handled above, before this switch
 					case Builtin::Flags:        // ... and so is this one
+					case Builtin::Clzll:        // Wide instructions by the time they reach here
+					case Builtin::Ctzll:
+					case Builtin::Popcountll:
 						break;
 				}
 				if (mnemonic.empty())
@@ -1565,6 +1533,10 @@ namespace ceresc::codegen
 				storeResult(p.result, dest, loc);
 				break;
 			}
+
+			case IrOpcode::Wide:
+				generateWide(instr.as<IrWidePayload>(), loc);
+				break;
 
 			case IrOpcode::Jump:
 			{
@@ -1672,32 +1644,10 @@ namespace ceresc::codegen
 			case IrOpcode::Return:
 			{
 				const auto& p = instr.as<IrReturnPayload>();
-				if (p.hasWideValue)
+				if (p.isWide)
 				{
-					// F3.4: the low word goes in ret0 (r0) and the high word in ret1 (r1). Both sources
-					// are resolved BEFORE either move: the optimizer assigns r0/r1 like any other
-					// register, so a high word already sitting in r0 must be saved before the low word
-					// is written into r0 - and the pair can arrive exactly swapped.
-					std::string low = valueIn(p.value, kScratchA, false, loc);
-					std::string high = valueIn(p.highValue, kScratchB, false, loc);
-					const std::string r0 = intReg(0);
-					const std::string r1 = intReg(1);
-					if (high == r0 && low == r1)
-					{
-						// Swapped: rotate through a scratch holding neither return word.
-						_emitter.instr(std::format("mov {}, {}", intReg(kScratchA), r0), comment);
-						_emitter.instr(std::format("mov {}, {}", r0, r1), comment);
-						_emitter.instr(std::format("mov {}, {}", r1, intReg(kScratchA)), comment);
-					}
-					else
-					{
-						if (high == r0)
-							_emitter.instr(std::format("mov {}, {}", r1, high), comment);
-						if (low != r0)
-							_emitter.instr(std::format("mov {}, {}", r0, low), comment);
-						if (high != r1 && high != r0)
-							_emitter.instr(std::format("mov {}, {}", r1, high), comment);
-					}
+					// A 64-bit result goes back in x0 (r0:r1), or d0 for a double (SPEC 6.7).
+					pairIn(p.value, 0, p.isFloat, loc);
 				}
 				else if (p.hasValue)
 				{
@@ -1776,6 +1726,268 @@ namespace ceresc::codegen
 		}
 	}
 
+	// ---- 64-bit values (F6.2) -------------------------------------------------------------------
+
+	std::string CodeGen::pairIn(IrValue value, u32 scratchPair, bool isDouble, SourceLocation loc)
+	{
+		// Every pair lives in an 8-byte frame field for now (value_placement.cpp), so reading one is one
+		// `ldrd`/`fldr.d` into a scratch pair.
+		std::string pair = pairReg(scratchPair, isDouble);
+		Placement placement = _placement->temp(value);
+		if (placement.kind == PlacementKind::Slot)
+			_emitter.instr(std::format("{} {}, {}", isDouble ? "fldr.d" : "ldrd", pair, slotAddress(placement.index)), sourceComment(loc));
+		return pair;
+	}
+
+	void CodeGen::storePair(IrValue value, std::string_view pair, bool isDouble, SourceLocation loc)
+	{
+		Placement placement = _placement->temp(value);
+		if (placement.kind != PlacementKind::Slot)
+			return; // nothing reads it
+		_emitter.instr(std::format("{} {}, {}", isDouble ? "fstr.d" : "strd", slotAddress(placement.index), pair), sourceComment(loc));
+	}
+
+	void CodeGen::generateWide(const IrWidePayload& p, SourceLocation loc)
+	{
+		std::string comment = sourceComment(loc);
+		const bool isDouble = p.kind == IrNumKind::Double;
+		const bool isUnsigned = p.kind == IrNumKind::ULong;
+		const std::string pairA = pairReg(kPairScratchA, isDouble);
+		const std::string pairB = pairReg(kPairScratchB, isDouble);
+
+		switch (p.op)
+		{
+			case IrWideOp::Const:
+			{
+				// A double's bits are a pair's bits: both go through the literal pool as `li64`.
+				_emitter.instr(std::format("li64 {}, 0x{:016X}", pairReg(kPairScratchA, false), p.bits), comment);
+				storePair(p.result, pairReg(kPairScratchA, false), false, loc);
+				return;
+			}
+			case IrWideOp::Load:
+			{
+				std::string address = valueIn(p.a, kScratchA, false, loc);
+				_emitter.instr(std::format("{} {}, [{}]", isDouble ? "fldr.d" : "ldrd", pairA, address), comment);
+				storePair(p.result, pairA, isDouble, loc);
+				return;
+			}
+			case IrWideOp::Store:
+			{
+				// The value in x2 (r4:r5), so the address takes r6 - half of x3, which is free here.
+				std::string value = pairIn(p.b, kPairScratchA, isDouble, loc);
+				std::string address = valueIn(p.a, 6, false, loc);
+				_emitter.instr(std::format("{} [{}], {}", isDouble ? "fstr.d" : "strd", address, value), comment);
+				return;
+			}
+			case IrWideOp::Copy:
+			{
+				Placement from = _placement->temp(p.a);
+				Placement to = _placement->temp(p.result);
+				if (from.kind == PlacementKind::Slot && to.kind == PlacementKind::Slot && from.index == to.index)
+					return;
+				storePair(p.result, pairIn(p.a, kPairScratchA, false, loc), false, loc);
+				return;
+			}
+			case IrWideOp::Add: case IrWideOp::Sub: case IrWideOp::Mul: case IrWideOp::Div: case IrWideOp::Mod:
+			case IrWideOp::Min: case IrWideOp::Max: case IrWideOp::Copysign:
+			{
+				std::string_view mnemonic;
+				switch (p.op)
+				{
+					case IrWideOp::Add: mnemonic = isDouble ? "fadd.d" : "add64"; break;
+					case IrWideOp::Sub: mnemonic = isDouble ? "fsub.d" : "sub64"; break;
+					case IrWideOp::Mul: mnemonic = isDouble ? "fmul.d" : "mul64"; break;
+					case IrWideOp::Div: mnemonic = isDouble ? "fdiv.d" : (isUnsigned ? "div64" : "idiv64"); break;
+					case IrWideOp::Mod: mnemonic = isDouble ? "fmod.d" : (isUnsigned ? "mod64" : "imod64"); break;
+					case IrWideOp::Min: mnemonic = "fmin.d"; break;
+					case IrWideOp::Max: mnemonic = "fmax.d"; break;
+					default:            mnemonic = "fcopysign.d"; break;
+				}
+				std::string a = pairIn(p.a, kPairScratchA, isDouble, loc);
+				std::string b = pairIn(p.b, kPairScratchB, isDouble, loc);
+				_emitter.instr(std::format("{} {}, {}, {}", mnemonic, a, a, b), comment);
+				storePair(p.result, a, isDouble, loc);
+				return;
+			}
+			case IrWideOp::And: case IrWideOp::Or: case IrWideOp::Xor:
+			{
+				// No 64-bit form: the two words, each on its own - x2 is r4:r5 and x3 is r6:r7.
+				std::string_view mnemonic = p.op == IrWideOp::And ? "and" : (p.op == IrWideOp::Or ? "or" : "xor");
+				std::string a = pairIn(p.a, kPairScratchA, false, loc);
+				pairIn(p.b, kPairScratchB, false, loc);
+				_emitter.instr(std::format("{} r4, r4, r6", mnemonic), comment);
+				_emitter.instr(std::format("{} r5, r5, r7", mnemonic), comment);
+				storePair(p.result, a, false, loc);
+				return;
+			}
+			case IrWideOp::Shl: case IrWideOp::Shr:
+			{
+				std::string_view mnemonic = p.op == IrWideOp::Shl ? "shl64" : (p.kind == IrNumKind::Long ? "sar64" : "shr64");
+				std::string a = pairIn(p.a, kPairScratchA, false, loc);
+				std::optional<i64> count = immediateFor(p.b);
+				if (count && *count <= 63)
+					_emitter.instr(std::format("{} {}, {}, {}", mnemonic, a, a, *count), comment);
+				else
+					_emitter.instr(std::format("{} {}, {}, {}", mnemonic, a, a, valueIn(p.b, 6, false, loc)), comment);
+				storePair(p.result, a, false, loc);
+				return;
+			}
+			case IrWideOp::Neg:
+			{
+				std::string a = pairIn(p.a, kPairScratchA, isDouble, loc);
+				_emitter.instr(std::format("{} {}, {}", isDouble ? "fneg.d" : "neg64", a, a), comment);
+				storePair(p.result, a, isDouble, loc);
+				return;
+			}
+			case IrWideOp::Not:
+			{
+				std::string a = pairIn(p.a, kPairScratchA, false, loc);
+				_emitter.instr("not r4, r4", comment);
+				_emitter.instr("not r5, r5", comment);
+				storePair(p.result, a, false, loc);
+				return;
+			}
+			case IrWideOp::Sqrt: case IrWideOp::Abs: case IrWideOp::Floor: case IrWideOp::Ceil:
+			case IrWideOp::Trunc: case IrWideOp::Round:
+			{
+				std::string_view mnemonic;
+				switch (p.op)
+				{
+					case IrWideOp::Sqrt:  mnemonic = "fsqrt.d"; break;
+					case IrWideOp::Abs:   mnemonic = "fabs.d"; break;
+					case IrWideOp::Floor: mnemonic = "ffloor.d"; break;
+					case IrWideOp::Ceil:  mnemonic = "fceil.d"; break;
+					case IrWideOp::Trunc: mnemonic = "ftrunc.d"; break;
+					default:              mnemonic = "fround.d"; break;
+				}
+				std::string a = pairIn(p.a, kPairScratchA, true, loc);
+				_emitter.instr(std::format("{} {}, {}", mnemonic, a, a), comment);
+				storePair(p.result, a, true, loc);
+				return;
+			}
+			case IrWideOp::Cmp:
+			{
+				// `cmp64` (or `fcmp.d`) and the branch that reads its flags, then the 0/1 value - the
+				// shape materializeCmp() writes for a word. A double comparison reads the flags the way
+				// `fcmp` leaves them, through the unsigned branches.
+				std::string a = pairIn(p.a, kPairScratchA, isDouble, loc);
+				std::string b = pairIn(p.b, kPairScratchB, isDouble, loc);
+				_emitter.instr(std::format("{} {}, {}", isDouble ? "fcmp.d" : "cmp64", a, b), comment);
+				std::string trueLabel = std::format("cmp{}_true", _nextComparisonLabel);
+				std::string endLabel = std::format("cmp{}_end", _nextComparisonLabel);
+				++_nextComparisonLabel;
+				_emitter.instr(std::format("{} .{}", jumpMnemonic(p.predicate, isUnsigned || isDouble), trueLabel), comment);
+				std::string dest = defineInto(p.result, kScratchA, false);
+				_emitter.instr(std::format("li {}, 0", dest), comment);
+				_emitter.instr(std::format("jp .{}", endLabel), comment);
+				_emitter.localLabel(trueLabel);
+				_emitter.instr(std::format("li {}, 1", dest), comment);
+				_emitter.localLabel(endLabel);
+				storeResult(p.result, dest, loc);
+				return;
+			}
+			case IrWideOp::Clz: case IrWideOp::Ctz: case IrWideOp::Popcount:
+			{
+				std::string_view mnemonic = p.op == IrWideOp::Clz ? "clz64" : (p.op == IrWideOp::Ctz ? "ctz64" : "popcnt64");
+				std::string a = pairIn(p.a, kPairScratchA, false, loc);
+				std::string dest = defineInto(p.result, kScratchA, false);
+				_emitter.instr(std::format("{} {}, {}", mnemonic, dest, a), comment);
+				storeResult(p.result, dest, loc);
+				return;
+			}
+			case IrWideOp::Convert:
+				generateWideConvert(p, loc);
+				return;
+		}
+	}
+
+	void CodeGen::generateWideConvert(const IrWidePayload& p, SourceLocation loc)
+	{
+		std::string comment = sourceComment(loc);
+		const IrNumKind to = p.kind;
+		const IrNumKind from = p.fromKind;
+		auto isIntPair = [](IrNumKind kind) { return kind == IrNumKind::Long || kind == IrNumKind::ULong; };
+		auto isWord = [](IrNumKind kind) { return kind == IrNumKind::Int || kind == IrNumKind::UInt; };
+		// The fcvt letters of SPEC 6.5.
+		auto letter = [](IrNumKind kind) -> std::string_view
+		{
+			switch (kind)
+			{
+				case IrNumKind::Int: return "w";
+				case IrNumKind::UInt: return "wu";
+				case IrNumKind::Float: return "s";
+				case IrNumKind::Long: return "l";
+				case IrNumKind::ULong: return "lu";
+				case IrNumKind::Double: return "d";
+			}
+			return "w";
+		};
+
+		// Between the two integer pairs: the same bits.
+		if (isIntPair(to) && isIntPair(from))
+		{
+			storePair(p.result, pairIn(p.a, kPairScratchA, false, loc), false, loc);
+			return;
+		}
+		// A word into an integer pair: `sxt64`, or a zero high word for an unsigned one.
+		if (isIntPair(to) && isWord(from))
+		{
+			std::string source = valueIn(p.a, kScratchA, false, loc);
+			if (from == IrNumKind::Int)
+				_emitter.instr(std::format("sxt64 x2, {}", source), comment);
+			else
+			{
+				if (source != intReg(kScratchA))
+					_emitter.instr(std::format("mov r4, {}", source), comment);
+				_emitter.instr("li r5, 0", comment);
+			}
+			storePair(p.result, "x2", false, loc);
+			return;
+		}
+		// An integer pair into a word: its low word, which is the field's first word.
+		if (isWord(to) && isIntPair(from))
+		{
+			std::string dest = defineInto(p.result, kScratchA, false);
+			Placement source = _placement->temp(p.a);
+			if (source.kind == PlacementKind::Slot)
+				_emitter.instr(std::format("ldr {}, {}", dest, slotAddress(source.index)), comment);
+			storeResult(p.result, dest, loc);
+			return;
+		}
+
+		// Everything else crosses the float line (or widens a float to a double): one `fcvt`, whose
+		// operands are a word register, a float register or a pair of either as the kinds say.
+		std::string source;
+		if (isPairKind(from))
+			source = pairIn(p.a, kPairScratchA, from == IrNumKind::Double, loc);
+		else
+			source = valueIn(p.a, kScratchA, from == IrNumKind::Float, loc);
+		std::string dest;
+		if (isPairKind(to))
+			dest = pairReg(kPairScratchB, to == IrNumKind::Double);
+		else
+			dest = defineInto(p.result, kScratchB, to == IrNumKind::Float);
+		_emitter.instr(std::format("fcvt.{}.{} {}, {}", letter(to), letter(from), dest, source), comment);
+		if (isPairKind(to))
+			storePair(p.result, dest, to == IrNumKind::Double, loc);
+		else
+			storeResult(p.result, dest, loc);
+	}
+
+	std::string_view CodeGen::jumpMnemonic(IrCmpPredicate predicate, bool isUnsigned)
+	{
+		switch (predicate)
+		{
+			case IrCmpPredicate::Eq: return "jz";
+			case IrCmpPredicate::Ne: return "jnz";
+			case IrCmpPredicate::Lt: return isUnsigned ? "jbl" : "jls";
+			case IrCmpPredicate::Le: return isUnsigned ? "jbe" : "jle";
+			case IrCmpPredicate::Gt: return isUnsigned ? "jab" : "jgr";
+			case IrCmpPredicate::Ge: return isUnsigned ? "jae" : "jge";
+		}
+		return "jz";
+	}
+
 	// ---- interrupt handlers -----------------------------------------------------------------------
 
 	namespace
@@ -1806,6 +2018,14 @@ namespace ceresc::codegen
 						case IrOpcode::Param:   if (instr->as<IrParamPayload>().isFloat) return true; break;
 						case IrOpcode::Return:  if (instr->as<IrReturnPayload>().isFloat) return true; break;
 						case IrOpcode::CondJump: if (instr->as<IrCondJumpPayload>().isFloat) return true; break;
+						case IrOpcode::Wide:
+						{
+							const auto& p = instr->as<IrWidePayload>();
+							for (IrNumKind kind : { p.kind, p.fromKind })
+								if (kind == IrNumKind::Float || kind == IrNumKind::Double)
+									return true;
+							break;
+						}
 						case IrOpcode::Builtin:
 							if (ast::builtinTouchesFloatBank(instr->as<IrBuiltinPayload>().builtin))
 								return true;
@@ -1981,32 +2201,21 @@ namespace ceresc::codegen
 
 			if (arrival.wide)
 			{
-				// F3.4: a 64-bit parameter arrives as two words and its home is an 8-byte slot (a
-				// wide value is never register-placed - it is a pair in memory). The two words come
-				// from the two arrival registers, or from [fp + 8 + ...] two words apiece.
-				std::string low;
-				std::string high;
+				// A 64-bit parameter arrives in a pair - x0/x1, or d0/d1 for a double - or in two
+				// incoming stack words, and its home is an 8-byte field: one `strd` settles it.
+				const bool isDouble = arrival.kind == ArgSlotKind::FloatReg;
+				std::string pair;
 				if (arrival.kind == ArgSlotKind::Stack)
 				{
-					u32 base = 8 + 4 * _calleeSavedWords + arrival.index * 4;
-					low = bankReg(kScratchA, false);
-					high = bankReg(kScratchB, false);
-					_emitter.instr(std::format("ldr {}, [fp + {}]", low, base), comment);
-					_emitter.instr(std::format("ldr {}, [fp + {}]", high, base + 4), comment);
+					pair = pairReg(kPairScratchA, false);
+					_emitter.instr(std::format("ldrd {}, [fp + {}]", pair, 8 + 4 * _calleeSavedWords + arrival.index * 4), comment);
 				}
 				else
 				{
-					low = bankReg(arrival.index, false);
-					high = bankReg(arrival.index + 1, false);
+					pair = pairReg(arrival.index / 2, isDouble);
 				}
 				const u32 homeIndex = home.kind == PlacementKind::Slot ? home.index : i;
-				// A wide slot is 8 bytes and needs its high word at +4. The symbolic `[sp + Frame.f]`
-				// form can only name the field itself, so the address goes into a scratch register
-				// once and both words are stored through it.
-				_emitter.instr(std::format("la at, {}.{}", _frameName, slotFieldName(homeIndex)), comment);
-				_emitter.instr("add at, at, sp", comment);
-				_emitter.instr(std::format("str [at], {}", low), comment);
-				_emitter.instr(std::format("str [at + 4], {}", high), comment);
+				_emitter.instr(std::format("{} {}, {}", isDouble ? "fstr.d" : "strd", slotAddress(homeIndex), pair), comment);
 				continue;
 			}
 
@@ -2681,95 +2890,6 @@ namespace ceresc::codegen
 			_emitter.instr("ret");
 		}
 
-		// A 64-bit division or remainder (ir_builder.cpp's lowerWideArithmetic, F3.2). The operands
-		// travel as pointers because the 64-bit calling convention is F3.4: `dest` receives the
-		// quotient at +0 and the remainder at +8, `aPtr`/`bPtr` are the two operands' addresses and
-		// r3 is 1 for a signed operation. The restoring shift-subtract loop runs 64 times; `adc`/
-		// `sbc` do the cross-word shift and subtract, which is exactly what the ISA's carry chain is
-		// for. Signed operands are turned into magnitudes first and the signs reapplied at the end,
-		// C's truncating division (`-7 / 2 == -3`, `-7 % 2 == -1`). A zero divisor (undefined in C)
-		// stores zero rather than looping. r8-r11 are callee-saved, so `pushm`/`popm` bracket them.
-		if (_usesDiv64)
-		{
-			_emitter.raw("// emitted because a 64-bit division or remainder was lowered (docs/14 F3.2)");
-			_emitter.label("__cc_div64");
-			_emitter.instr(std::format("pushm 0x{:04X}", kDiv64SaveMask)); // r8-r11, the callee-saved half
-			_emitter.instr("ldr  r8,  [r1]");          // dividend low
-			_emitter.instr("ldr  r9,  [r1 + 4]");      // dividend high
-			_emitter.instr("ldr  r10, [r2]");          // divisor low
-			_emitter.instr("ldr  r11, [r2 + 4]");      // divisor high
-			_emitter.instr("or   r12, r10, r11");
-			_emitter.instr("ifne r12, 0, .div_nonzero");
-			_emitter.instr("li   r12, 0");             // /0 is UB in C: store zero instead of looping
-			_emitter.instr("str  [r0], r12");
-			_emitter.instr("str  [r0 + 4], r12");
-			_emitter.instr("str  [r0 + 8], r12");
-			_emitter.instr("str  [r0 + 12], r12");
-			_emitter.instr(std::format("popm 0x{:04X}", kDiv64SaveMask));
-			_emitter.instr("ret");
-			_emitter.localLabel("div_nonzero");
-			_emitter.instr("mov  r1, r3");             // r1 = isSigned, captured before r3 is reused
-			_emitter.instr("li   r2, 0");              // negRem
-			_emitter.instr("li   r3, 0");              // negQuot
-			_emitter.instr("ifeq r1, 0, .div_mag");
-			_emitter.instr("shr  r2, r9, 31");         // negRem = sign of the dividend
-			_emitter.instr("xor  r3, r9, r11");
-			_emitter.instr("shr  r3, r3, 31");         // negQuot = sign(a) ^ sign(b)
-			_emitter.instr("ifge r9, 0, .div_dsign");  // dividend >= 0: leave it
-			_emitter.instr("not  r8, r8");
-			_emitter.instr("not  r9, r9");
-			_emitter.instr("add  r8, r8, 1");
-			_emitter.instr("adc  r9, r9, 0");
-			_emitter.localLabel("div_dsign");
-			_emitter.instr("ifge r11, 0, .div_mag");   // divisor >= 0: leave it
-			_emitter.instr("not  r10, r10");
-			_emitter.instr("not  r11, r11");
-			_emitter.instr("add  r10, r10, 1");
-			_emitter.instr("adc  r11, r11, 0");
-			_emitter.localLabel("div_mag");
-			_emitter.instr("li   r4, 0");              // remainder = 0
-			_emitter.instr("li   r5, 0");
-			_emitter.instr("li   r6, 0");              // quotient = 0
-			_emitter.instr("li   r7, 0");
-			_emitter.instr("li   r12, 64");
-			_emitter.localLabel("div_loop");
-			_emitter.instr("shr  r1, r9, 31");         // the dividend's top bit
-			_emitter.instr("shl  r4, r4, 1");          // remainder <<= 1, carry = its old bit 31
-			_emitter.instr("adc  r5, r5, r5");
-			_emitter.instr("or   r4, r4, r1");         // bring the dividend's top bit in
-			_emitter.instr("shl  r8, r8, 1");          // dividend <<= 1
-			_emitter.instr("adc  r9, r9, r9");
-			_emitter.instr("shl  r6, r6, 1");          // quotient <<= 1
-			_emitter.instr("adc  r7, r7, r7");
-			_emitter.instr("ifbl r5, r11, .div_nosub");  // remainder < divisor, unsigned, high first
-			_emitter.instr("ifab r5, r11, .div_sub");
-			_emitter.instr("ifbl r4, r10, .div_nosub");
-			_emitter.localLabel("div_sub");
-			_emitter.instr("sub  r4, r4, r10");
-			_emitter.instr("sbc  r5, r5, r11");
-			_emitter.instr("or   r6, r6, 1");
-			_emitter.localLabel("div_nosub");
-			_emitter.instr("sub  r12, r12, 1");
-			_emitter.instr("ifne r12, 0, .div_loop");
-			_emitter.instr("ifeq r3, 0, .div_qpos");   // a quotient is negative only when one sign was negative
-			_emitter.instr("not  r6, r6");
-			_emitter.instr("not  r7, r7");
-			_emitter.instr("add  r6, r6, 1");
-			_emitter.instr("adc  r7, r7, 0");
-			_emitter.localLabel("div_qpos");
-			_emitter.instr("ifeq r2, 0, .div_rpos");   // the remainder takes the dividend's sign
-			_emitter.instr("not  r4, r4");
-			_emitter.instr("not  r5, r5");
-			_emitter.instr("add  r4, r4, 1");
-			_emitter.instr("adc  r5, r5, 0");
-			_emitter.localLabel("div_rpos");
-			_emitter.instr("str  [r0], r6");
-			_emitter.instr("str  [r0 + 4], r7");
-			_emitter.instr("str  [r0 + 8], r4");
-			_emitter.instr("str  [r0 + 12], r5");
-			_emitter.instr(std::format("popm 0x{:04X}", kDiv64SaveMask));
-			_emitter.instr("ret");
-		}
 	}
 
 	void CodeGen::emitJumpTables()
@@ -2911,7 +3031,6 @@ namespace ceresc::codegen
 		_usesMemcpy = false;
 		_usesStrlen = false;
 		_usesMemchrIndex = false;
-		_usesDiv64 = false;
 
 		// Before every section. `interrupt N: handler` is a top-level declaration that emits neither
 		// code nor data - only a binding the linker resolves and the loader applies before the

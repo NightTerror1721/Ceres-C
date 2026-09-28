@@ -1800,6 +1800,12 @@ namespace ceresc::sema
 					requireInteger(argument ? argument->type() : nullptr);
 				result = &Type::UInt;
 				break;
+			case Builtin::Clzll: case Builtin::Ctzll: case Builtin::Popcountll:
+				// Any integer, converted to unsigned long long; the count is an int, as in GCC.
+				for (ast::Expr* argument : node.args())
+					requireInteger(argument ? argument->type() : nullptr);
+				result = &Type::Int;
+				break;
 			case Builtin::Expect:
 				// Its value is the first operand's; the second is a hint. No bank is required.
 				result = (!node.args().empty() && node.args()[0]) ? decayArray(node.args()[0]->type()) : &Type::Int;

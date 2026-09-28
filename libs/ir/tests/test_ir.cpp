@@ -17,6 +17,11 @@ using namespace ceresc;
 
 namespace
 {
+	bool contains(std::string_view haystack, std::string_view needle)
+	{
+		return haystack.find(needle) != std::string_view::npos;
+	}
+
 	support::SourceId testSourceId() { return support::SourceId::make(1); }
 
 	// Parses, type-checks and lowers `source` to IR, then prints the named function's IR as text
@@ -145,11 +150,11 @@ TEST(ir, arithmetic_expression_respects_precedence_via_temporaries)
 		"}\n");
 }
 
-TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
+TEST(ir, a_64_bit_value_lowers_to_wide_instructions_on_a_pair)
 {
-	// F3.1b: a wide value is the address of its two words, so a local, an assignment, a comparison
-	// and the add/sub/bitwise operators all lower with no diagnostic. Values are checked end to end
-	// by examples/35_int64.c; this pins the shape.
+	// F6.2: a wide value is a pair temporary, so a local, an assignment, a comparison and the
+	// add/sub/bitwise operators all lower with no diagnostic. Values are checked end to end by
+	// examples/35_int64.c; this pins the shape.
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long x = 5; return (int)x; }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return (int)(a + b); }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; return a < b; }"), "not supported in generated code"));
@@ -158,17 +163,27 @@ TEST(ir, a_64_bit_value_lowers_as_a_two_word_pair)
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; bool b = a; return b; }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; long long b = a++; return (int)b; }"), "not supported in generated code"));
 
-	// A wide local's initializer writes both halves, and the high word is the sign extension.
+	// A wide local's initializer is the int sign-extended into a pair and stored whole, and reading
+	// it back is one pair load, truncated to the low word for the `(int)`.
 	std::string text = functionIr("int main() { long long x = 5; return (int)x; }");
-	CHECK(text.find("store.word") != std::string::npos);
-	CHECK(text.find("sar") != std::string::npos);
+	CHECK(contains(text, "wide.convert.l.w"));
+	CHECK(contains(text, "wide.store.l"));
+	CHECK(contains(text, "wide.load.l"));
+	CHECK(contains(text, "wide.convert.w.l"));
+	CHECK(contains(functionIr("int main() { long long a = 1, b = 2; return a < b; }"), "wide.cmp.lt.l"));
+	CHECK(contains(functionIr("int main() { unsigned long long a = 1, b = 2; return a < b; }"), "wide.cmp.lt.lu"));
 }
 
-TEST(ir, the_64_bit_operations_this_phase_lacks_are_refused)
+TEST(ir, a_64_bit_switch_and_the_64_bit_counts_lower_while_a_32_bit_builtin_still_refuses_a_pair)
 {
-	// A wide discriminant (F9) and a wide builtin operand (there is no 64-bit machine builtin) are
-	// still refused; F3.4 lowered the wide parameter and return conventions these once stood in for.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; switch (a) { case 1: return 0; } return 1; }"), "not supported in generated code"));
+	// F6.2: a wide discriminant compares each case as a pair, and __builtin_clzll/ctzll/popcountll
+	// count over one. A 32-bit machine builtin given a long long still has no encoding.
+	std::string sw = functionIr("int main() { long long a = 1; switch (a) { case 0x100000000LL: return 2; case 1: return 0; } return 1; }");
+	CHECK(contains(sw, "wide.cmp.eq.l"));
+	CHECK(contains(sw, "wide.const.l 0x0000000100000000"));
+	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; switch (a) { case 1: return 0; } return 1; }"), "not supported in generated code"));
+	CHECK(contains(functionIr("int main() { long long a = 1; return __builtin_clzll(a); }"), "wide.clz.lu"));
+	CHECK(contains(functionIr("int main() { unsigned x = 5; return __builtin_popcountll(x); }"), "wide.popcount.lu"));
 	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; return __builtin_clz(a); }"), "not supported in generated code"));
 }
 
@@ -192,18 +207,18 @@ TEST(ir, the_64_bit_shifts_and_conversions_lower)
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = -1; return (int)((a >> 1) + (a >> 32) + ((unsigned long long)a >> 1)); }"), "not supported in generated code"));
 }
 
-TEST(ir, the_64_bit_mul_div_mod_lower_to_the_symbol_and_the_emitted_routine)
+TEST(ir, the_64_bit_mul_div_mod_are_one_wide_instruction_each)
 {
-	// F3.2: a 64-bit multiply composes from the 32-bit mul and the unsigned multiply-high; a divide
-	// or remainder calls the compiler's own `__cc_div64`.
+	// F6.2: mul64, idiv64/div64 and imod64/mod64 - no call and no composed words.
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 3, b = 4; return (int)(a * b); }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 12, b = 4; return (int)(a / b); }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 12, b = 5; return (int)(a % b); }"), "not supported in generated code"));
 
-	std::string mul = functionIr("int main() { long long a = 3, b = 4; return (int)(a * b); }");
-	CHECK(mul.find("__builtin_mulhu") != std::string::npos);
-	CHECK(functionIr("int main() { long long a = 12, b = 4; return (int)(a / b); }").find("call __cc_div64") != std::string::npos);
-	CHECK(functionIr("int main() { long long a = 12, b = 5; return (int)(a % b); }").find("call __cc_div64") != std::string::npos);
+	CHECK(contains(functionIr("int main() { long long a = 3, b = 4; return (int)(a * b); }"), "wide.mul.l"));
+	std::string div = functionIr("int main() { long long a = 12, b = 4; return (int)(a / b); }");
+	CHECK(contains(div, "wide.div.l"));
+	CHECK(!contains(div, "__cc_div64"));
+	CHECK(contains(functionIr("int main() { unsigned long long a = 12, b = 5; return (int)(a % b); }"), "wide.mod.lu"));
 }
 
 TEST(ir, a_64_bit_parameter_and_return_lower_to_the_two_word_convention)
@@ -226,15 +241,12 @@ TEST(ir, a_64_bit_parameter_and_return_lower_to_the_two_word_convention)
 
 TEST(ir, a_64_bit_value_works_in_a_ternary_and_as_an_index)
 {
-	// A wide ternary copies the chosen arm's two words; a wide index is truncated to a word, which
-	// is the `int` C converts a subscript to. Both must lower with no diagnostic.
+	// A wide ternary copies the chosen arm's pair; a wide index is truncated to a word, which is the
+	// `int` C converts a subscript to. Both must lower with no diagnostic.
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1, b = 2; long long t = a < b ? a : b; return (int)t; }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; int arr[2]; arr[a] = 3; return arr[0]; }"), "not supported in generated code"));
 	CHECK(!containsMessage(loweringDiagnostics("int main() { long long a = 1; int arr[2]; long long* p = (long long*)arr; long long* q = p + a; return (int)q; }"), "not supported in generated code"));
-
-	// A wide discriminant (F9) and a wide builtin operand (F3.3) have no lowering yet.
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; switch (a) { case 1: return 0; } return 1; }"), "not supported in generated code"));
-	CHECK(containsMessage(loweringDiagnostics("int main() { long long a = 1; return __builtin_clz(a); }"), "not supported in generated code"));
+	CHECK(contains(functionIr("int main() { long long a = 1, b = 2; long long t = a < b ? a : b; return (int)t; }"), "wide.copy.l"));
 }
 
 TEST(ir, a_signed_min_or_max_ternary_lowers_to_one_builtin_when_enabled)
@@ -1422,11 +1434,6 @@ TEST(ir, a_word_sized_byte_aligned_struct_goes_through_memory)
 
 namespace
 {
-	bool contains(std::string_view haystack, std::string_view needle)
-	{
-		return haystack.find(needle) != std::string_view::npos;
-	}
-
 	usize countOccurrences(std::string_view haystack, std::string_view needle)
 	{
 		usize count = 0;
@@ -1649,7 +1656,7 @@ TEST(ir, a_soft_double_va_arg_reads_two_words_and_advances_eight_bytes)
 {
 	std::string text = softDoubleIr("double f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); return __builtin_va_arg(ap, double); }", "f");
 	CHECK(contains(text, "const 8"));
-	CHECK(contains(text, "const 4"));      // the second word, four bytes past the first
+	CHECK(contains(text, "wide.load.lu")); // both words in one pair load
 }
 
 TEST(ir, a_float_through_the_ellipsis_goes_as_a_soft_double)

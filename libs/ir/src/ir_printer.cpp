@@ -55,6 +55,59 @@ namespace ceresc::ir
 		return "<unknown-pred>";
 	}
 
+	std::string_view IrPrinter::wideOpName(IrWideOp op) noexcept
+	{
+		switch (op)
+		{
+			case IrWideOp::Const: return "const";
+			case IrWideOp::Load: return "load";
+			case IrWideOp::Store: return "store";
+			case IrWideOp::Copy: return "copy";
+			case IrWideOp::Add: return "add";
+			case IrWideOp::Sub: return "sub";
+			case IrWideOp::Mul: return "mul";
+			case IrWideOp::Div: return "div";
+			case IrWideOp::Mod: return "mod";
+			case IrWideOp::And: return "and";
+			case IrWideOp::Or: return "or";
+			case IrWideOp::Xor: return "xor";
+			case IrWideOp::Shl: return "shl";
+			case IrWideOp::Shr: return "shr";
+			case IrWideOp::Neg: return "neg";
+			case IrWideOp::Not: return "not";
+			case IrWideOp::Cmp: return "cmp";
+			case IrWideOp::Convert: return "convert";
+			case IrWideOp::Clz: return "clz";
+			case IrWideOp::Ctz: return "ctz";
+			case IrWideOp::Popcount: return "popcount";
+			case IrWideOp::Sqrt: return "sqrt";
+			case IrWideOp::Abs: return "abs";
+			case IrWideOp::Floor: return "floor";
+			case IrWideOp::Ceil: return "ceil";
+			case IrWideOp::Trunc: return "trunc";
+			case IrWideOp::Round: return "round";
+			case IrWideOp::Min: return "min";
+			case IrWideOp::Max: return "max";
+			case IrWideOp::Copysign: return "copysign";
+		}
+		return "<unknown-wide>";
+	}
+
+	std::string_view IrPrinter::kindName(IrNumKind kind) noexcept
+	{
+		// The fcvt letters (SPEC 6.5): w/wu a word, s a float, l/lu a long long, d a double.
+		switch (kind)
+		{
+			case IrNumKind::Int: return "w";
+			case IrNumKind::UInt: return "wu";
+			case IrNumKind::Float: return "s";
+			case IrNumKind::Long: return "l";
+			case IrNumKind::ULong: return "lu";
+			case IrNumKind::Double: return "d";
+		}
+		return "<unknown-kind>";
+	}
+
 	std::string_view IrPrinter::sizeName(IrMemSize size) noexcept
 	{
 		switch (size)
@@ -200,14 +253,13 @@ namespace ceresc::ir
 			{
 				const auto& payload = instr.as<IrCallPayload>();
 				// An indirect call names no symbol, so it prints the temporary it jumps through:
-				// `call %7, 1` rather than `call f, 1`. A 64-bit result defines two temporaries (the
-				// low word and the high, ret0/ret1), so it is printed as a pair.
+				// `call %7, 1` rather than `call f, 1`. A 64-bit result is one pair temporary.
 				std::string target = payload.isIndirect()
 					? std::string(valueName(payload.calleeValue))
 					: std::string(payload.callee);
 				if (payload.hasWideResult)
-					_output += std::format("{}:{} = call.wide {}, {}\n",
-						valueName(payload.result), valueName(payload.resultHigh), target, payload.argCount);
+					_output += std::format("{} = call.wide{} {}, {}\n", valueName(payload.result),
+						payload.isFloat ? ".f" : "", target, payload.argCount);
 				else if (payload.hasResult)
 					_output += payload.isFloat
 						? std::format("{} = call.f {}, {}\n", valueName(payload.result), target, payload.argCount)
@@ -238,6 +290,36 @@ namespace ceresc::ir
 				_output += '\n';
 				break;
 			}
+			case IrOpcode::Wide:
+			{
+				// `%5 = wide.add.l %3, %4`: the operation, then the kind of the pairs it works on - or, for
+				// a conversion, `wide.convert.d.l` (to a double from a long).
+				const auto& payload = instr.as<IrWidePayload>();
+				if (payload.result.isValid())
+					_output += std::format("{} = ", valueName(payload.result));
+				_output += std::format("wide.{}", wideOpName(payload.op));
+				if (payload.op == IrWideOp::Cmp)
+					_output += std::format(".{}", predName(payload.predicate));
+				_output += std::format(".{}", kindName(payload.kind));
+				if (payload.op == IrWideOp::Convert)
+					_output += std::format(".{}", kindName(payload.fromKind));
+				if (payload.isVolatile)
+					_output += ".v";
+				if (payload.op == IrWideOp::Const)
+					_output += std::format(" 0x{:016X}", payload.bits);
+				else if (payload.op == IrWideOp::Load)
+					_output += std::format(" [{}]", valueName(payload.a));
+				else if (payload.op == IrWideOp::Store)
+					_output += std::format(" [{}], {}", valueName(payload.a), valueName(payload.b));
+				else
+				{
+					_output += std::format(" {}", valueName(payload.a));
+					if (payload.b.isValid())
+						_output += std::format(", {}", valueName(payload.b));
+				}
+				_output += '\n';
+				break;
+			}
 			case IrOpcode::Jump:
 			{
 				const auto& payload = instr.as<IrJumpPayload>();
@@ -254,8 +336,8 @@ namespace ceresc::ir
 			case IrOpcode::Return:
 			{
 				const auto& payload = instr.as<IrReturnPayload>();
-				if (payload.hasWideValue)
-					_output += std::format("ret.wide {}:{}\n", valueName(payload.value), valueName(payload.highValue));
+				if (payload.isWide)
+					_output += std::format("ret.wide{} {}\n", payload.isFloat ? ".f" : "", valueName(payload.value));
 				else if (payload.hasValue)
 					_output += std::format("ret{} {}\n", payload.isFloat ? ".f" : "", valueName(payload.value));
 				else

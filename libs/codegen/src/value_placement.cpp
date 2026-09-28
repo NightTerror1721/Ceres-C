@@ -130,24 +130,33 @@ namespace ceresc::codegen
 		// Which bank a temporary belongs to, read off the instruction that defines it. A temporary
 		// is defined once per meaning - a phi-shaped result's several definitions all carry the one
 		// expression's type - so asking the first defining instruction is enough.
-		bool resultIsFloat(const IrInstr& instr)
+		IrBank resultBank(const IrInstr& instr)
 		{
 			switch (instr.opcode())
 			{
-				case IrOpcode::Const: return instr.as<IrConstPayload>().isFloat;
-				case IrOpcode::BinOp: return instr.as<IrBinOpPayload>().isFloat;
+				case IrOpcode::Const: return instr.as<IrConstPayload>().isFloat ? IrBank::Float : IrBank::Int;
+				case IrOpcode::BinOp: return instr.as<IrBinOpPayload>().isFloat ? IrBank::Float : IrBank::Int;
 				case IrOpcode::UnOp:
 				{
 					const auto& p = instr.as<IrUnOpPayload>();
-					return p.op == IrUnOp::IntToFloat || (p.isFloat && p.op == IrUnOp::Neg);
+					return (p.op == IrUnOp::IntToFloat || (p.isFloat && p.op == IrUnOp::Neg)) ? IrBank::Float : IrBank::Int;
 				}
-				case IrOpcode::Copy: return instr.as<IrCopyPayload>().isFloat;
-				case IrOpcode::Load: return instr.as<IrLoadPayload>().isFloat;
-				case IrOpcode::Call: return instr.as<IrCallPayload>().isFloat;
-				case IrOpcode::Builtin: return ast::builtinResultIsFloat(instr.as<IrBuiltinPayload>().builtin);
-				default: return false; // Cmp yields 0/1, FrameAddr/GlobalAddr an address
+				case IrOpcode::Copy: return instr.as<IrCopyPayload>().isFloat ? IrBank::Float : IrBank::Int;
+				case IrOpcode::Load: return instr.as<IrLoadPayload>().isFloat ? IrBank::Float : IrBank::Int;
+				case IrOpcode::Call:
+				{
+					const auto& p = instr.as<IrCallPayload>();
+					if (p.hasWideResult)
+						return p.isFloat ? IrBank::DoublePair : IrBank::IntPair;
+					return p.isFloat ? IrBank::Float : IrBank::Int;
+				}
+				case IrOpcode::Builtin: return ast::builtinResultIsFloat(instr.as<IrBuiltinPayload>().builtin) ? IrBank::Float : IrBank::Int;
+				case IrOpcode::Wide: return wideResultBank(instr.as<IrWidePayload>());
+				default: return IrBank::Int; // Cmp yields 0/1, FrameAddr/GlobalAddr an address
 			}
 		}
+
+		bool resultIsFloat(const IrInstr& instr) { return resultBank(instr) == IrBank::Float; }
 	}
 
 	ValuePlacement::ValuePlacement(const IrFunction& function, const support::OptimizationOptions& options)
@@ -159,6 +168,34 @@ namespace ceresc::codegen
 		_temps.assign(tempCount, Placement{});
 		_locals.assign(localCount, Placement{});
 		_virtualAddress.assign(tempCount, kInvalidLocal);
+
+		// Which temporaries are 64-bit pairs (F6.2). A pair never gets a register here - it lives in an
+		// 8-byte frame field, and codegen moves it through the scratch pairs - so the register passes
+		// below skip it and the slot pass gives it two words.
+		std::vector<bool> tempIsPair(tempCount, false);
+		bool usesIntPairs = false;
+		bool usesDoublePairs = false;
+		for (const auto& block : function.blocks())
+		{
+			for (const IrInstr* instr : block->instrs())
+			{
+				IrValue result = resultOf(*instr);
+				IrBank bank = result.isValid() ? resultBank(*instr) : IrBank::Int;
+				if (result.isValid() && result.id < tempCount && isPairBank(bank))
+					tempIsPair[result.id] = true;
+				if (instr->opcode() == IrOpcode::Wide)
+				{
+					const IrWidePayload& p = instr->as<IrWidePayload>();
+					for (IrNumKind kind : { p.kind, p.op == IrWideOp::Convert ? p.fromKind : p.kind })
+					{
+						if (kind == IrNumKind::Long || kind == IrNumKind::ULong)
+							usesIntPairs = true;
+						if (kind == IrNumKind::Double)
+							usesDoublePairs = true;
+					}
+				}
+			}
+		}
 
 		// Which values any surviving instruction still mentions. Temporary ids and local slots are
 		// handed out as the IR is BUILT and never renumbered, so an optimized function is full of
@@ -199,12 +236,11 @@ namespace ceresc::codegen
 		for (u32 i = 0; i < function.paramCount(); ++i)
 		{
 			paramIsFloat[i] = localSlots[i].isFloat;
-			// A 64-bit parameter has an 8-byte slot (F3.4): the only 8-byte local there is, since a
-			// wide value is an addressed pair and never register-placed. This has to agree with the
-			// CALLER's IrParamPayload::isWide, which IrBuilder derives from the SAME declared parameter
-			// type (a wide argument passed to a narrow parameter is truncated, not marked wide) - so
-			// both ends of a call number their slots identically.
-			paramIsWide[i] = localSlots[i].sizeInBytes == 8 && !localSlots[i].isFloat;
+			// A 64-bit parameter has an 8-byte slot, the only 8-byte parameter there is. This has to
+			// agree with the CALLER's IrParamPayload::isWide, which IrBuilder derives from the SAME
+			// declared parameter type (a wide argument passed to a narrow parameter is truncated, not
+			// marked wide) - so both ends of a call number their slots identically.
+			paramIsWide[i] = localSlots[i].sizeInBytes == 8;
 		}
 		_paramArrival = assignArgSlots(paramIsFloat, paramIsWide);
 
@@ -307,6 +343,17 @@ namespace ceresc::codegen
 
 		std::vector<u32> freeInt = allocatableIntRegisters(hasCalls);
 		std::vector<u32> freeFloat = allocatableFloatRegisters(hasCalls);
+		// A function that computes on 64-bit pairs needs a second scratch pair next to x2 (r4:r5) - a
+		// binary operation reads two - and x3 (r6:r7) is it, so r6/r7 leave the pool. Doubles take d3
+		// (f6:f7) the same way, next to d2 (f4:f5).
+		auto withoutSixAndSeven = [](std::vector<u32>& pool)
+		{
+			std::erase_if(pool, [](u32 reg) { return reg == 6 || reg == 7; });
+		};
+		if (usesIntPairs)
+			withoutSixAndSeven(freeInt);
+		if (usesDoublePairs)
+			withoutSixAndSeven(freeFloat);
 		auto takeRegister = [](std::vector<u32>& pool, u32 wanted) -> std::optional<u32>
 		{
 			if (pool.empty())
@@ -620,7 +667,7 @@ namespace ceresc::codegen
 
 			for (u32 t = 0; t < tempCount; ++t)
 			{
-				if (!tempReferenced[t])
+				if (!tempReferenced[t] || tempIsPair[t])
 					continue;
 				if (_temps[t].kind == PlacementKind::Virtual || _temps[t].kind == PlacementKind::Alias)
 					continue;
@@ -731,6 +778,8 @@ namespace ceresc::codegen
 						continue;
 					if (defCount[result.id] != 1 || liveness.liveOut[b][result.id] || !usedHere[result.id])
 						continue; // defined twice, or read outside this block - it needs a real home
+					if (tempIsPair[result.id])
+						continue; // a 64-bit pair keeps an 8-byte field (F6.2)
 
 					// No call may sit between the definition and the last read.
 					bool spansCall = false;
@@ -800,7 +849,7 @@ namespace ceresc::codegen
 			for (u32 t : spilled)
 			{
 				_temps[t] = Placement{ PlacementKind::Slot, static_cast<u32>(_slots.size()), false };
-				_slots.push_back(FrameSlotInfo{ 4, false });
+				_slots.push_back(FrameSlotInfo{ tempIsPair[t] ? 8u : 4u, false });
 			}
 		}
 		else if (!spilled.empty())
@@ -854,11 +903,14 @@ namespace ceresc::codegen
 
 			u32 firstTempSlot = static_cast<u32>(_slots.size());
 			std::vector<std::vector<u32>> occupants; // per shared slot, which temporaries already took it
+			std::vector<bool> occupantsArePairs;     // a word and a pair never share a field
 			for (u32 t : spilled)
 			{
 				u32 chosen = ~0u;
 				for (u32 candidate = 0; candidate < occupants.size(); ++candidate)
 				{
+					if (occupantsArePairs[candidate] != tempIsPair[t])
+						continue;
 					bool conflicts = std::any_of(occupants[candidate].begin(), occupants[candidate].end(),
 						[&](u32 other) { return interferes[t][other]; });
 					if (!conflicts)
@@ -871,7 +923,8 @@ namespace ceresc::codegen
 				{
 					chosen = static_cast<u32>(occupants.size());
 					occupants.emplace_back();
-					_slots.push_back(FrameSlotInfo{ 4, false });
+					occupantsArePairs.push_back(tempIsPair[t]);
+					_slots.push_back(FrameSlotInfo{ tempIsPair[t] ? 8u : 4u, false });
 				}
 				occupants[chosen].push_back(t);
 				_temps[t] = Placement{ PlacementKind::Slot, firstTempSlot + chosen, false };

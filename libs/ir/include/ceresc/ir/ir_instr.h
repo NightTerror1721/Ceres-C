@@ -8,7 +8,8 @@
 #include <variant>
 
 // IrInstr - the three-address-code opcode set: Const, BinOp, UnOp, Cmp, Copy, FrameAddr,
-// GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, TableJump, Return.
+// GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, TableJump, Return, MachineOp,
+// Builtin, and Wide - every operation on a 64-bit value (F6.2).
 //
 // Deliberately not SSA and with no dominator tree - a BasicBlock (ir_function.h) is a flat, linear
 // list of these, terminated by a jump or a return. There is no setcc-equivalent in the CASM ISA: a
@@ -56,7 +57,7 @@ namespace ceresc::ir
 	enum class IrOpcode : u8
 	{
 		Const, BinOp, UnOp, Cmp, Copy, FrameAddr, GlobalAddr, Load, Store, Param, Call, VaStart, Jump, CondJump, TableJump,
-		Return, MachineOp, Builtin
+		Return, MachineOp, Builtin, Wide
 	};
 
 	// Binary arithmetic/bitwise ops. Shr and Sar are two distinct opcodes - not one "Shr" opcode
@@ -231,9 +232,8 @@ namespace ceresc::ir
 		// See docs/09-Variadic-Convention.md.
 		bool isVariadicArg = false;
 
-		// F3.4: the argument is a 64-bit integer, so it travels in TWO consecutive argument
-		// registers (or two outgoing stack words) - the low word in this slot, the high word in the
-		// next. `value` is then the address of the pair, not a scalar.
+		// The argument is 64 bits wide (F6.2): `value` is a pair temporary (see IrWidePayload), and it
+		// travels in a register pair - x0/x1, or d0/d1 with `isFloat` (SPEC 6.7) - or in two stack words.
 		bool isWide = false;
 	};
 
@@ -242,11 +242,8 @@ namespace ceresc::ir
 		IrValue result;   // only meaningful when hasResult is true (the callee's return type is not void)
 		bool hasResult = false;
 		bool isFloat = false; // meaningful only when hasResult: the result comes back in f0/ret0 (§10)
-		// F3.4: a 64-bit result comes back in TWO registers/words (ret0 low, ret1 high). When
-		// hasWideResult is set, `result` holds the low word (which `resultOf()` names) and
-		// `resultHigh` the high one; codegen stores both into the caller's temp. The inliner refuses
-		// a body containing such a Call rather than remap the second result (ir_optimizer.cpp).
-		IrValue resultHigh;
+		// A 64-bit result (F6.2), with hasResult set too: `result` is a pair temporary, which comes back
+		// in x0 (r0:r1) - or in d0 (f0:f1) when isFloat is set as well.
 		bool hasWideResult = false;
 		// Exactly one of these two says where to jump. A name is the ordinary case and becomes
 		// `call label`; `calleeValue` is an address computed at run time and becomes `call rN`,
@@ -320,10 +317,8 @@ namespace ceresc::ir
 		                      // declared return type, not necessarily the return expression's raw
 		                      // type (IrBuilder converts a mismatched one first, see visit(ReturnStmt&))
 		IrValue value;
-		// F3.4: a 64-bit return goes back in two words - `value` is the low (ret0) and this the high
-		// (ret1). Read only when hasWideValue is set.
-		IrValue highValue;
-		bool hasWideValue = false;
+		// A 64-bit return (F6.2): `value` is a pair temporary, returned in x0 - or in d0 with isFloat.
+		bool isWide = false;
 	};
 
 	// One machine instruction with no operands and no result: `sti`, `cli` or `halt`. It exists
@@ -348,18 +343,70 @@ namespace ceresc::ir
 		IrValue a, b;
 	};
 
+	// ---- 64-bit values (F6.2) -----------------------------------------------------------------------
+	//
+	// A `long long` or a `double` is a temporary of its own - a PAIR temporary - rather than a word:
+	// it lives in a register pair (x0-x6 or d0-d7, SPEC 6.2) or in an 8-byte frame field, and only a
+	// Wide instruction defines or reads one (besides Param, Call and Return, whose isWide says so).
+	// Every other opcode keeps meaning what it meant, on words, so a pass that does not know about
+	// Wide cannot mistake a pair for a word: it leaves the opcode alone - isPure() says no, CSE does
+	// not number it, the folds do not evaluate it.
+	//
+	// A Wide instruction is one operation, and `op` says what its operands and result are:
+	//
+	//   Const               result = `bits`
+	//   Load / Store        result = [a]  /  [a] = b (no result); `isVolatile` marks the access
+	//   Copy                result = a (the phi of a pair, as IrCopyPayload is for a word)
+	//   Add Sub Mul Div Mod result = a op b; Div/Mod unsigned when `kind` is ULong; Mod on doubles is fmod
+	//   And Or Xor          result = a op b, integer pairs only
+	//   Shl Shr             result = a shifted by the WORD b (0..63); Shr is arithmetic when `kind` is Long
+	//   Neg Not             result = op a (Not on integer pairs only)
+	//   Cmp                 result = the WORD 0/1 of `a predicate b` (unsigned when `kind` is ULong)
+	//   Convert             result (of `kind`) = a (of `fromKind`); at least one of the two is a pair
+	//   Clz Ctz Popcount    result = the WORD count over the integer pair a
+	//   Sqrt Abs Floor Ceil Trunc Round   result = op a, doubles
+	//   Min Max Copysign    result = op(a, b), doubles
+	enum class IrWideOp : u8
+	{
+		Const, Load, Store, Copy,
+		Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Neg, Not,
+		Cmp, Convert, Clz, Ctz, Popcount,
+		Sqrt, Abs, Floor, Ceil, Trunc, Round, Min, Max, Copysign
+	};
+
+	// What a value is, as far as a Wide instruction cares: a word (signed or not), a float, an integer
+	// pair (signed or not) or a double pair.
+	enum class IrNumKind : u8 { Int, UInt, Float, Long, ULong, Double };
+
+	constexpr bool isPairKind(IrNumKind kind) noexcept
+	{
+		return kind == IrNumKind::Long || kind == IrNumKind::ULong || kind == IrNumKind::Double;
+	}
+
+	struct IrWidePayload
+	{
+		IrValue result;                       // invalid for a Store
+		IrWideOp op = IrWideOp::Copy;
+		IrNumKind kind = IrNumKind::Long;     // the pair operands' kind; for a Convert, the RESULT's
+		IrNumKind fromKind = IrNumKind::Long; // Convert only: the operand's kind
+		IrCmpPredicate predicate = IrCmpPredicate::Eq; // Cmp only
+		bool isVolatile = false;              // Load/Store only
+		IrValue a, b;
+		u64 bits = 0;                         // Const only
+	};
+
 	using IrInstrPayload = std::variant<
 		IrConstPayload, IrBinOpPayload, IrUnOpPayload, IrCmpPayload, IrCopyPayload,
 		IrFrameAddrPayload, IrGlobalAddrPayload, IrLoadPayload, IrStorePayload, IrParamPayload,
 		IrCallPayload, IrVaStartPayload, IrJumpPayload, IrCondJumpPayload, IrTableJumpPayload,
-		IrReturnPayload, IrMachineOpPayload, IrBuiltinPayload>;
+		IrReturnPayload, IrMachineOpPayload, IrBuiltinPayload, IrWidePayload>;
 	// Declaration order here must match IrOpcode's own order exactly - opcode() below derives the
 	// opcode from the variant's index() instead of storing a second, redundant tag. The size check
 	// alone only pins the *count*: swapping two payload types (e.g. Load/Store), or adding an
 	// IrOpcode enumerator without a matching payload, would keep the count at 18 while silently
 	// remapping opcode() and every switch in ir_printer.cpp/ir_function.cpp to the wrong payload -
 	// so each alternative's *position* is pinned individually too, not just the total.
-	static_assert(std::variant_size_v<IrInstrPayload> == 18, "IrInstrPayload must have exactly one alternative per IrOpcode");
+	static_assert(std::variant_size_v<IrInstrPayload> == 19, "IrInstrPayload must have exactly one alternative per IrOpcode");
 	template <IrOpcode Op, typename Payload>
 	concept OpcodeMapsToPayload = std::is_same_v<std::variant_alternative_t<static_cast<usize>(Op), IrInstrPayload>, Payload>;
 	static_assert(OpcodeMapsToPayload<IrOpcode::Const, IrConstPayload>);
@@ -380,6 +427,7 @@ namespace ceresc::ir
 	static_assert(OpcodeMapsToPayload<IrOpcode::Return, IrReturnPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::MachineOp, IrMachineOpPayload>);
 	static_assert(OpcodeMapsToPayload<IrOpcode::Builtin, IrBuiltinPayload>);
+	static_assert(OpcodeMapsToPayload<IrOpcode::Wide, IrWidePayload>);
 
 	// Declared before IrInstr so resultOf()/forEachOperand() below can be defined right after it -
 	// see their own comment for why they live here rather than in each consumer.
@@ -440,6 +488,7 @@ namespace ceresc::ir
 			case IrOpcode::Load:       return instr.as<IrLoadPayload>().result;
 			case IrOpcode::VaStart:    return instr.as<IrVaStartPayload>().result;
 			case IrOpcode::Builtin:    return instr.as<IrBuiltinPayload>().result;
+			case IrOpcode::Wide:       return instr.as<IrWidePayload>().result;
 			case IrOpcode::Call:
 			{
 				const IrCallPayload& payload = instr.as<IrCallPayload>();
@@ -448,11 +497,6 @@ namespace ceresc::ir
 			default: return IrValue{};
 		}
 	}
-
-	// F3.4: the SECOND result a Call defines, when it returns a 64-bit value (the high word in ret1).
-	// `resultOf()` names only the first (the low word); a consumer that needs the pair reads
-	// IrCallPayload::resultHigh directly (codegen.cpp stores it into the caller's temp) - there is no
-	// separate accessor, because the only reader knows a wide result is in play.
 
 	// Calls `fn(IrValue)` once per temporary `instr` READS, in operand order.
 	template <typename F>
@@ -504,8 +548,15 @@ namespace ceresc::ir
 				const IrReturnPayload& p = instr.as<IrReturnPayload>();
 				if (p.hasValue)
 					fn(p.value);
-				if (p.hasWideValue)
-					fn(p.highValue);
+				break;
+			}
+			case IrOpcode::Wide:
+			{
+				const IrWidePayload& p = instr.as<IrWidePayload>();
+				if (p.a.isValid())
+					fn(p.a);
+				if (p.b.isValid())
+					fn(p.b);
 				break;
 			}
 			// An indirect call reads the address it jumps to. A direct one reads nothing: its callee
@@ -520,4 +571,36 @@ namespace ceresc::ir
 			default: break; // Const/FrameAddr/GlobalAddr/Jump read no temporary
 		}
 	}
+
+	// ---- register banks ---------------------------------------------------------------------------
+
+	// Where a temporary's value is kept: a word register, a float register, or a pair of either
+	// (F6.2). Read off the instruction that defines it - see wideResultBank().
+	enum class IrBank : u8 { Int, Float, IntPair, DoublePair };
+
+	constexpr IrBank bankOfKind(IrNumKind kind) noexcept
+	{
+		switch (kind)
+		{
+			case IrNumKind::Float:  return IrBank::Float;
+			case IrNumKind::Long:
+			case IrNumKind::ULong:  return IrBank::IntPair;
+			case IrNumKind::Double: return IrBank::DoublePair;
+			default:                return IrBank::Int;
+		}
+	}
+
+	// The bank of what a Wide instruction defines (nothing, for a Store).
+	constexpr IrBank wideResultBank(const IrWidePayload& p) noexcept
+	{
+		switch (p.op)
+		{
+			case IrWideOp::Cmp: case IrWideOp::Clz: case IrWideOp::Ctz: case IrWideOp::Popcount:
+				return IrBank::Int;
+			default:
+				return bankOfKind(p.kind);
+		}
+	}
+
+	constexpr bool isPairBank(IrBank bank) noexcept { return bank == IrBank::IntPair || bank == IrBank::DoublePair; }
 }

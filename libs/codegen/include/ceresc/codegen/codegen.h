@@ -339,6 +339,19 @@ namespace ceresc::codegen
 		// i.e. it lives in a frame field rather than a register.
 		bool livesInSlot(ir::IrValue value) const;
 
+		// ---- 64-bit values (F6.2) -----------------------------------------------------------------
+		//
+		// A pair temporary lives in an 8-byte frame field (value_placement.cpp). pairIn() loads it into
+		// scratch pair `scratchPair` (x<n>, or d<n> for a double) and names the pair; storePair() writes
+		// a computed pair back to its field. generateWide() is one Wide instruction: its operands in x2
+		// and x3 (d2 and d3), the SPEC 6.4 instruction, the result stored.
+		std::string pairIn(ir::IrValue value, u32 scratchPair, bool isDouble, support::SourceLocation loc);
+		void storePair(ir::IrValue value, std::string_view pair, bool isDouble, support::SourceLocation loc);
+		void generateWide(const ir::IrWidePayload& payload, support::SourceLocation loc);
+		void generateWideConvert(const ir::IrWidePayload& payload, support::SourceLocation loc);
+		// The conditional jump that reads what `cmp64`/`fcmp.d` left in the flags.
+		static std::string_view jumpMnemonic(ir::IrCmpPredicate predicate, bool isUnsigned);
+
 	private:
 		const support::SourceManager& _sourceManager;
 		const support::LineMap* _lineMap = nullptr; // nullable - see setLineMap()
@@ -429,8 +442,6 @@ namespace ceresc::codegen
 		bool _usesMemcpy = false;
 		bool _usesStrlen = false;
 		bool _usesMemchrIndex = false;
-		// F3.2: a 64-bit division/remainder site calls the compiler's own `__cc_div64`.
-		bool _usesDiv64 = false;
 		// Emits every compiler-carried routine a call site asked for, at the end of `@text`.
 		void emitCarriedRoutines();
 
@@ -466,9 +477,6 @@ namespace ceresc::codegen
 		// callee-saved f8-f15, which only become reachable when value placement hands one out -
 		// calleeSavedFloatMask(), OR-ed in by emitInterruptPrologue().
 		static constexpr u32 kInterruptCallerSavedFloatMask = 0x00FF;
-		// r8-r11 (bits 8-11), the integer half a call must preserve: what `__cc_div64` brackets its
-		// body with. A named mask keeps the `pushm` and `popm` in sync.
-		static constexpr u32 kDiv64SaveMask = 0x0F00;
 
 		// The two halves of that, emitted around the frame the ordinary prologue/epilogue open.
 		void emitInterruptPrologue(const ir::IrFunction& function, std::string_view comment);

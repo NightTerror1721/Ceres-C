@@ -48,5 +48,7 @@ namespace ceresc::ir
 		static std::string_view opName(IrUnOp op) noexcept;
 		static std::string_view predName(IrCmpPredicate predicate) noexcept;
 		static std::string_view sizeName(IrMemSize size) noexcept;
+		static std::string_view wideOpName(IrWideOp op) noexcept;
+		static std::string_view kindName(IrNumKind kind) noexcept;
 	};
 }

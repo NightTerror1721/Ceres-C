@@ -2181,89 +2181,105 @@ TEST(codegen, recognized_search_loops_emit_and_call_their_word_routines)
 	CHECK(!contains(atO2Without(memchrSource, &support::OptimizationOptions::loopIdioms), "__cc_memchr_index"));
 }
 
-TEST(codegen, a_64_bit_division_emits_and_calls_the_divmod_routine)
+TEST(codegen, a_64_bit_operation_is_one_machine_instruction_on_the_scratch_pairs)
 {
-	// F3.2: `/` and `%` on a 64-bit value lower to a call to the compiler's own `__cc_div64`, whose
-	// body is emitted at the end of `@text` (file-level, so two units never collide).
+	// F6.2: each 64-bit operation loads its operands into x2 and x3 (`ldrd`), runs the SPEC 6.4
+	// instruction and stores the result back (`strd`). Division is `idiv64`/`div64` - no routine is
+	// carried any more.
 	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
 
-	std::string text = generateCasm("int main() { long long a = 100, b = 7; return (int)(a / b); }", o0);
-	CHECK(contains(text, "call __cc_div64"));
-	CHECK(contains(text, "__cc_div64:"));
-	CHECK(!contains(text, "global __cc_div64:"));
-	CHECK(contains(text, "pushm 0x0F00")); // the callee-saved half it borrows...
-	CHECK(contains(text, "popm 0x0F00"));  // ...and gives back, so the stack balances
-	CHECK(contains(text, "div_loop"));
-	CHECK(contains(text, "sbc  r5, r5, r11")); // the cross-word borrow
+	std::string div = generateCasm("int main() { long long a = 100, b = 7; return (int)(a / b) + (int)(a % b); }", o0);
+	CHECK(contains(div, "idiv64 x2, x2, x3"));
+	CHECK(contains(div, "imod64 x2, x2, x3"));
+	CHECK(!contains(div, "__cc_div64"));
+	CHECK(contains(generateCasm("unsigned long long f(unsigned long long a, unsigned long long b) { return a / b; }", o0), "div64 x2, x2, x3"));
 
-	// `/` and `%` share the one routine, emitted exactly once however many sites ask. The count is
-	// anchored on the routine's own label, not on `pushm 0x0F00` (which an ordinary call-making
-	// function emits for its own body too).
-	std::string both = generateCasm("int main() { long long a = 100, b = 7; return (int)(a / b) + (int)(a % b); }", o0);
-	CHECK_EQ(countOf(both, "call __cc_div64"), usize(2));
-	CHECK_EQ(countOf(both, "__cc_div64:"), usize(1));
-	CHECK_EQ(countOf(both, "div_loop:"), usize(1)); // the label, defined once
+	std::string arith = generateCasm("long long f(long long a, long long b, int n) { return ((a + b) * (a - b) << n) >> 3; }", o0);
+	CHECK(contains(arith, "add64 x2, x2, x3"));
+	CHECK(contains(arith, "sub64 x2, x2, x3"));
+	CHECK(contains(arith, "mul64 x2, x2, x3"));
+	CHECK(contains(arith, "shl64 x2, x2, r"));
+	CHECK(contains(arith, "ldrd x2, [sp + __frame_f.slot"));
+	CHECK(contains(arith, "strd [sp + __frame_f.slot"));
+	// A constant count is the instruction's own immediate - and a signed `>>` is arithmetic.
+	CHECK(contains(generateCasm("long long f(long long a) { return a >> 3; }", support::OptimizationOptions::forLevel(support::OptimizationLevel::O2)),
+		"sar64 x2, x2, 3"));
 
-	// A program that never divides never carries it.
-	CHECK(!contains(generateCasm("int main() { long long a = 3, b = 4; return (int)(a * b); }", o0), "__cc_div64"));
+	// A comparison is `cmp64` and the ordinary jumps after it, unsigned for an unsigned pair.
+	CHECK(contains(generateCasm("int f(long long a, long long b) { return a < b; }", o0), "cmp64 x2, x3"));
+	CHECK(contains(generateCasm("int f(long long a, long long b) { return a < b; }", o0), "jls ."));
+	CHECK(contains(generateCasm("int f(unsigned long long a, unsigned long long b) { return a < b; }", o0), "jbl ."));
+
+	// Conversions: an int is sign-extended, a float crosses with fcvt, and the counts are one each.
+	CHECK(contains(generateCasm("long long f(int a) { return a; }", o0), "sxt64 x2, r"));
+	CHECK(contains(generateCasm("float f(long long a) { return a; }", o0), "fcvt.s.l f"));
+	CHECK(contains(generateCasm("long long f(float a) { return a; }", o0), "fcvt.l.s x3, f"));
+	CHECK(contains(generateCasm("int f(long long a) { return __builtin_clzll(a); }", o0), "clz64 r"));
+	// The bitwise operators have no 64-bit form: two word instructions over r4:r5 and r6:r7.
+	std::string bits = generateCasm("long long f(long long a, long long b) { return a & b; }", o0);
+	CHECK(contains(bits, "and r4, r4, r6"));
+	CHECK(contains(bits, "and r5, r5, r7"));
 }
 
-TEST(codegen, a_64_bit_parameter_arrives_as_a_register_pair_and_is_homed_as_a_word_pair)
+TEST(codegen, a_function_with_64_bit_operations_keeps_r6_and_r7_as_the_second_scratch_pair)
 {
-	// F3.4: a 64-bit parameter takes two consecutive argument registers (r0/r1 for the first), and
-	// its home is an 8-byte frame field written low-then-high through one address.
+	// x3 (r6:r7) is where a binary 64-bit operation reads its second operand, so no value may live in
+	// r6 or r7 in a function that has one.
+	std::string wide = atO2("long long f(long long a, long long b, int n) { int k = n * 3; while (k > 0) { a = a + b; k = k - 1; } return a + n; }");
+	CHECK(!contains(wide, "mov r6,"));
+	CHECK(!contains(wide, "mov r7,"));
+}
+
+TEST(codegen, a_64_bit_parameter_arrives_in_an_aligned_pair_and_is_homed_with_one_strd)
+{
+	// SPEC 6.7: x0 (r0:r1) for the first, x1 (r2:r3) for the second; its home is an 8-byte field.
 	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
 
 	std::string text = generateCasm("long long id(long long v) { return v; } int main() { return 0; }", o0);
 	CHECK(contains(text, "u32[2]")); // the slot really is two words wide
-	// The arrival stores both registers through one address: low at +0, high at +4.
-	CHECK(contains(text, "str [at], r0"));
-	CHECK(contains(text, "str [at + 4], r1"));
+	CHECK(contains(text, "strd [sp + __frame_id.slot0], x0"));
 
-	// A second wide parameter takes the next pair, x1 = r2:r3.
 	std::string two = generateCasm("long long add2(long long a, long long b) { return a + b; } int main() { return 0; }", o0);
-	CHECK(contains(two, "str [at], r0"));
-	CHECK(contains(two, "str [at + 4], r1"));
-	CHECK(contains(two, "str [at], r2"));
-	CHECK(contains(two, "str [at + 4], r3"));
+	CHECK(contains(two, "strd [sp + __frame_add2.slot0], x0"));
+	CHECK(contains(two, "strd [sp + __frame_add2.slot1], x1"));
+	// `(int, long long)`: the pair skips r1 and arrives in x1.
+	CHECK(contains(generateCasm("long long g(int a, long long b) { return b + a; } int main() { return 0; }", o0), "strd [sp + __frame_g.slot1], x1"));
 }
 
-TEST(codegen, a_64_bit_argument_is_passed_as_two_consecutive_registers)
+TEST(codegen, a_64_bit_argument_is_loaded_into_its_pair)
 {
-	// The caller loads the pair through its address into r0/r1 (offset 0 = low, 4 = high).
 	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
 
-	std::string text = generateCasm("long long id(long long v) { return v; } long long g(long long a) { return a; } int main() { long long x = 5; return (int)g(x); }", o0);
-	CHECK(contains(text, "ldr r0, [r"));
-	CHECK(contains(text, "ldr r1, [r"));
+	std::string text = generateCasm("long long g(long long a) { return a; } int main() { long long x = 5; return (int)g(x); }", o0);
+	CHECK(contains(text, "ldrd x0, [sp + __frame_main.slot"));
+	CHECK(contains(generateCasm("long long g(int a, long long b) { return b; } int main() { return (int)g(1, 2); }", o0), "ldrd x1, "));
 }
 
-TEST(codegen, a_64_bit_result_comes_back_in_r0_and_r1)
+TEST(codegen, a_64_bit_result_comes_back_in_x0)
 {
-	// F3.4: the callee moves the low word to ret0 (r0) and the high to ret1 (r1); the caller stores
-	// both returned words into its own 8-byte temp.
+	// The callee loads its result into x0; the caller stores x0 into its own field.
 	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
 
 	std::string text = generateCasm("long long f(void) { return 0x100000000LL; } int main() { return (int)f(); }", o0);
-	CHECK(contains(text, "mov r0, r"));
-	CHECK(contains(text, "mov r1, r"));
+	CHECK(contains(text, "ldrd x0, "));
+	CHECK(contains(text, "strd [sp + __frame_main.slot"));
+	CHECK(contains(text, "], x0"));
+	CHECK(contains(text, "li64 x2, 0x0000000100000000"));
 }
 
 TEST(codegen, a_wide_parameter_whose_bank_is_full_goes_to_two_stack_words)
 {
 	// Four int argument registers hold two wide parameters exactly; the THIRD wide parameter has no
-	// register left and both of its words go to the outgoing stack area.
+	// pair left and its two words go to the outgoing stack area, one `strd`.
 	const support::OptimizationOptions o0 = support::OptimizationOptions::forLevel(support::OptimizationLevel::O0);
 
 	std::string text = generateCasm(
 		"long long add3(long long a, long long b, long long c) { return a + b + c; } "
 		"int main() { return (int)add3(1, 2, 3); }", o0);
 	// The callee reads the third parameter's two words from the incoming stack.
-	CHECK(contains(text, "ldr r"));
-	CHECK(contains(text, "[fp +"));
+	CHECK(contains(text, "ldrd x2, [fp + 8]"));
 	// The caller stores the third argument's two words to the outgoing stack.
-	CHECK(contains(text, "str  [sp + 0], r"));
-	CHECK(contains(text, "str  [sp + 4], r"));
+	CHECK(contains(text, "strd [sp + 0], x2"));
 }
 
 TEST(codegen, a_soft_double_global_folds_its_integer_pieces_by_the_integer_rules)
