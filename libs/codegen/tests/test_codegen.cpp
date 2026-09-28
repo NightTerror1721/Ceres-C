@@ -1280,9 +1280,11 @@ TEST(codegen, a_variadic_calls_tail_goes_to_the_stack_even_with_argument_registe
 
 TEST(codegen, a_float_in_the_tail_goes_to_the_stack_rather_than_to_a_float_register)
 {
+	// Even under -fshort-double, where it is not promoted to a `double` type, a variadic float travels as a
+	// binary64: two stack words.
 	std::string casm = generateCasm("int f(int a, ...); int main() { return f(1, 2.5f); }",
-		support::OptimizationOptions::forLevel(support::OptimizationLevel::O0), true);   // -fshort-double: a float goes as a float
-	CHECK(contains(casm, "str [sp + 0],"));
+		support::OptimizationOptions::forLevel(support::OptimizationLevel::O0), true);
+	CHECK(contains(casm, "strd [sp + 0],"));
 	CHECK(!contains(casm, "mov f0, "));
 }
 

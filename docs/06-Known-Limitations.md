@@ -77,7 +77,8 @@ that name a 64-bit value are real 8-byte types that compile to them:
 An unsuffixed floating literal is a `double`, as in C (`1.5f` is a `float`); a `float` passed through `...` is
 promoted to `double`; `%f` in a `printf` format reads a `double`. `-fshort-double` makes `double` and `long double`
 spellings of `float` instead, for a program that wants the single-precision machine it had before (and defines
-`__CERES_SHORT_DOUBLE__`).
+`__CERES_SHORT_DOUBLE__`); a `float` through `...` still travels as a binary64 there, so the variadic convention
+does not change with it (see [09-Variadic-Convention.md](09-Variadic-Convention.md)).
 
 Every operation is one instruction: `a / b` on two `long long`s is `idiv64`, `(double)n` is `fcvt.d.w`,
 `__builtin_sqrt(x)` on a double is `fsqrt.d`, `__builtin_clzll(v)` is `clz64`. A `switch` on a `long long`

@@ -1588,9 +1588,12 @@ namespace ceresc::ir
 			IrValue value = lowerExpr(arg);
 			if (paramType)
 				value = convertForStore(loc, value, argType, paramType);
-			// Through '...' a float goes as a double, as C has it - where there is a double (-fsoft-double).
+			// Through '...' a float goes as a double, as C has it - a real binary64 even under -fshort-double,
+			// so a variadic function sees the same arguments whichever way its caller was compiled (the
+			// library's printf is compiled without it). An argument with no parameter is always in the tail:
+			// `()` declares none.
 			const Type* passedType = paramType ? paramType : argType;
-			if (!paramType && !_shortDouble && argType && argType->isFloat())
+			if (!paramType && argType && argType->isFloat())
 			{
 				value = convertDouble(loc, value, argType, &Type::Double);
 				passedType = &Type::Double;
@@ -2156,14 +2159,24 @@ namespace ceresc::ir
 				const Type* argumentType = node.argumentType();
 				if (argumentType && argumentType->isWide())
 				{
-					// A 64-bit argument - a long long, or a double under -fsoft-double - takes two words, low
-					// first: one `ldrd` reads them, and the cursor moves eight bytes.
+					// A 64-bit argument - a long long or a double - takes two words, low first: one `ldrd`
+					// reads them, and the cursor moves eight bytes.
 					IrValue cursor = emitLoad(loc, listAddr, IrMemSize::Word);
 					_lastValue = emitWideLoad(loc, cursor, numKindOf(argumentType), false);
 					emitStore(loc, listAddr, IrMemSize::Word, emitBinOp(loc, IrBinOp::Add, cursor, emitConstInt(loc, 8), false, false));
 					return;
 				}
 				bool isFloat = argumentType && argumentType->isFloat();
+				if (isFloat && _shortDouble)
+				{
+					// -fshort-double: the `double` read here is a float, but a floating argument still
+					// arrived as a binary64 (see the call above) - two words, rounded back to a float.
+					IrValue cursor = emitLoad(loc, listAddr, IrMemSize::Word);
+					IrValue wide = emitWideLoad(loc, cursor, IrNumKind::Double, false);
+					_lastValue = emitWideConvert(loc, wide, IrNumKind::Double, IrNumKind::Float);
+					emitStore(loc, listAddr, IrMemSize::Word, emitBinOp(loc, IrBinOp::Add, cursor, emitConstInt(loc, 8), false, false));
+					return;
+				}
 				IrValue cursor = emitLoad(loc, listAddr, IrMemSize::Word);
 				IrValue value = emitLoad(loc, cursor, IrMemSize::Word, isFloat);
 				IrValue step = emitConstInt(loc, 4);

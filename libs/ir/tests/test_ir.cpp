@@ -1662,14 +1662,20 @@ TEST(ir, a_double_va_arg_reads_two_words_and_advances_eight_bytes)
 	CHECK(contains(text, "wide.load.d")); // both words in one pair load
 }
 
-TEST(ir, a_float_through_the_ellipsis_goes_as_a_double_unless_double_is_short)
+TEST(ir, a_float_through_the_ellipsis_goes_as_a_binary64_even_when_double_is_short)
 {
 	std::string text = functionIr("int v(int n, ...); int main() { return v(1, 1.5f); }");
 	CHECK(contains(text, "wide.convert.d.s"));
 	CHECK(contains(text, "param.wide.f.var"));
-	// With -fshort-double double is float: a float goes as it is, and nothing is a pair.
+	// With -fshort-double double is float, but the variadic tail keeps its binary64 - the library's printf
+	// is compiled without the option - and va_arg of the `double` (a float) reads it and rounds it back.
 	std::string shortText = shortDoubleIr("int v(int n, ...); int main() { return v(1, 1.5f); }");
-	CHECK(!contains(shortText, "wide."));
+	CHECK(contains(shortText, "wide.convert.d.s"));
+	CHECK(contains(shortText, "param.wide.f.var"));
+	std::string shortVaArg = shortDoubleIr("double f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); return __builtin_va_arg(ap, double); }", "f");
+	CHECK(contains(shortVaArg, "wide.load.d"));
+	CHECK(contains(shortVaArg, "wide.convert.s.d"));
+	// Everything else is a float there.
 	CHECK(!contains(shortDoubleIr("double f(double a, double b) { return a * b + 1.0; }", "f"), "wide."));
 	CHECK(contains(shortDoubleIr("int f(void) { return sizeof(double); }", "f"), "const 4"));
 }

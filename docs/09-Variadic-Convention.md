@@ -86,7 +86,9 @@ as the word `0xFFFFFFFF`, and an `unsigned char` holding `200` arrives as `200`.
 A `float` is promoted to `double`, as C has it: it travels as the two words of a binary64 and is read back with
 `__builtin_va_arg(ap, double)`, which moves the cursor eight bytes - `__builtin_va_arg(ap, float)` is refused,
 because no float ever arrives. A `long long` takes two words the same way. Under `-fshort-double`, where `double` is
-`float`, a `float` travels as the one word it is.
+`float`, a `float` still travels as a binary64, and `__builtin_va_arg(ap, double)` reads the two words and rounds
+them back to the `float` that `double` is there - so a variadic function, the library's `printf` among them, reads
+the same arguments whichever way its caller was compiled.
 
 ## `__builtin_va_list` and the four operations
 
