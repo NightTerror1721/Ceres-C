@@ -335,7 +335,7 @@ These are the codes a `#pragma warning(...)` can name.
 | Code | Means |
 | --- | --- |
 | `E5001` | A compound assignment to a `struct` that reached lowering. |
-| `E5002` | A 64-bit operation that is not lowered: a 64-bit `switch` discriminant, or a 64-bit operand to a one-instruction machine builtin. 64-bit add/sub/mul/div/mod, bitwise, shifts, comparisons, assignment, conversions and the by-value calling convention all work — see [06-Known-Limitations.md](06-Known-Limitations.md). |
+| `E5002` | A 64-bit operand to a one-instruction machine builtin that has no 64-bit form (the math builtins, `__builtin_clzll` and the like do have one). Every 64-bit operator, `switch`, the conversions and the by-value calling convention work — see [06-Known-Limitations.md](06-Known-Limitations.md). |
 
 ## Related pages
 

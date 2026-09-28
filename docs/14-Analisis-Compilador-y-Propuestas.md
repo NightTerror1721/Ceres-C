@@ -403,8 +403,9 @@ requisitos.
 > - Los builtins de F1/F2/F10 emiten la instrucción de la máquina (`CLZ`, `CTZ`, `POPCNT`, `BSWAP`, `ROL`/`ROR`,
 >   `MULH`/`IMULH`, `ABS`, `MIN`/`MAX`/`IMIN`/`IMAX`, `FSQRT`, `FABS`, `FMOD`, `FMIN`/`FMAX`, redondeos, `FCLASS`,
 >   `MFF`/`MTF`, el recíproco y su raíz), y existen `__builtin_add/sub/mul_overflow` y `<stdckdint.h>`.
-> - `-fsoft-double` da un `double` binario64 real, calculado en software (`ceres/f64.h`); sin la opción,
->   `double` sigue siendo `float`.
+> - `long long` y `double` son de 64 bits nativos (plan v2, F6): la máquina tiene pares de registros e
+>   instrucciones de 64 bits, y `<math.h>` da las dos familias (`sin` en `double`, `sinf` en `float`).
+>   `-fshort-double` hace `double` = `float`; `-fsoft-double` y `ceres/f64.h` ya no existen.
 > - La MMU tiene API (`ceres/mmu.h`, con el módulo opcional de fallos de página), y `ceres/backtrace.h` junto con
 >   `ceresc --symtab` nombran las funciones de una traza o de un fallo.
 > - La biblioteca se instala como sysroot (`tools/install.ps1`) y se enlaza con `ceresc --sysroot <dir> -lceres`
@@ -436,7 +437,7 @@ requisitos.
 Lo que ofrecen es C real adaptado a las limitaciones, y lo dicen:
 - `<stdint.h>` **omitía todo lo de 64 bits**, por honestidad (hoy define `int64_t`: ver la nota de arriba).
 - `<limits.h>`/`<float.h>`/`<stdlib.h>` documentaban que `long`/`long long` eran `int` y `double` era `float`
-  (hoy `long long` es de 64 bits, y `double` lo es con `-fsoft-double`).
+  (hoy los dos son de 64 bits).
 - `<math.h>` publica las funciones de una instrucción (`fabs`, `fmod`, `sqrt`, `floor`, `ceil`, `trunc`,
   `fmin`, `fmax`, `copysign`, `fma`, `rcp`, `rsqrt`, `fpclassify`, `isnan`, `isinf`, `signbit`, …) con
   implementación en CASM, y las de software (`sin`, `cos`, `pow`, `log`, `exp`, …) en C con precisión

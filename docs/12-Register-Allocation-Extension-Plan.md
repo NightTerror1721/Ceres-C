@@ -297,3 +297,24 @@ vivir en registro en una función que llama a otra**, porque los únicos registr
 un local que hoy se derrama a un slot del frame podrá quedarse en `r8` (o `f8`)
 durante toda la función, con un `pushm`/`popm` de coste fijo, sin romper la
 convención con el CASM a mano.
+
+---
+
+## 9. Pares de 64 bits (plan v2, F6.5)
+
+Un `long long` o un `double` vive en un par alineado: `xN` es `r2N:r2N+1` y `dN` es `f2N:f2N+1`. La
+colocación (`value_placement.cpp`) toma los dos registros del par a la vez de las mismas reservas:
+
+- Un parámetro de 64 bits en una hoja se queda en el par por el que llegó (`x0`/`x1`, `d0`/`d1`); un local o
+  un temporal toma `x0`/`x1` (`d0`/`d1`) si están libres en una hoja; en una función que llama, un temporal
+  que no cruza la llamada puede tomarlos si no es él mismo un argumento.
+- `x2`/`x3` (`d2`/`d3`) siguen siendo los pares de trabajo donde una operación lee un operando derramado, así
+  que una función con operaciones de 64 bits deja `r6`/`r7` (`f6`/`f7`) fuera de su reserva.
+- Cuando no queda par, o el valor cruza una llamada, un valor de 64 bits cae a un par callee-saved: `x4`/`x5`
+  o `d4`-`d7`, con el `pushm`/`fpushm` de la Fase 1. Sólo los de 64 bits lo hacen: una palabra sigue
+  derramándose, para no pagar el salvado por lo que ya cabía.
+- Una instrucción de pares lee sus operandos antes de escribir (SPEC 6.4), así que su resultado puede tomar el
+  par de un operando que muere en ella.
+- Lo que no encuentra par vive en un campo de 8 bytes del marco, como en F6.2.
+
+`35_int64.c` (instrucciones en el `.casm`): -O1 1142 → 929, -O2 1136 → 974.

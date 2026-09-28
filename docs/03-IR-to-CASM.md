@@ -60,6 +60,7 @@ Verified against CeresASM's `docs/05-Instruction-Set.md` and `docs/06-Pseudo-Ins
 | `VaStart` | `la rd, [fp + 8 + 4*S]` | `S` is how many incoming stack words this function's own fixed parameters took. |
 | `Jump` / `CondJump` | `jp` / the `ifXX` above | |
 | `Return` | `mov ret0, %v` then `leave`/`ret` | `main` halts the machine instead — see below. |
+| `Wide` (64-bit) | `add64`, `sub64`, `mul64`, `idiv64`/`div64`, `imod64`/`mod64`, `neg64`, `shl64`/`shr64`/`sar64`, `cmp64` · `fadd.d`, `fsub.d`, `fmul.d`, `fdiv.d`, `fneg.d`, `fcmp.d`, `fsqrt.d`... · `fcvt.<to>.<from>`, `sxt64` · `ldrd`/`strd`, `fldr.d`/`fstr.d` | A `long long` or `double` value is a pair temporary: it lives in a register pair (`xN` = `r2N:r2N+1`, `dN` = `f2N:f2N+1`) or, with none free, an 8-byte frame field read into the scratch pairs `x2`/`x3` (`d2`/`d3`). `&`, `\|`, `^` and `~` have no 64-bit form and are two word instructions. A constant is `li64` - or `li` and `sxt64` when it fits a word. A pair argument goes in `x0`/`x1` or `d0`/`d1`, a pair result comes back in `x0`/`d0`. |
 
 ### There is no `setcc`
 

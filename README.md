@@ -102,8 +102,9 @@ A function can answer a VM interrupt: `__interrupt void f(void)` declares the ha
 Function pointers work, including arrays of them and functions that return them: `int (*f)(int)`
 is a pointer, `f(1)` calls through it, and a function name used as a value is its own address.
 
-`long long`, `double` and `long double` are accepted and capped to 32 bits with a warning — the VM
-has no 64-bit register in either bank. No bitfields.
+`long long` is a real 64-bit integer and `double` (and `long double`, the same type) a real IEEE
+binary64, computed with the machine's 64-bit instructions on register pairs (`x0`–`x6`, `d0`–`d7`);
+`-fshort-double` makes `double` a spelling of `float` again. No bitfields.
 [docs/02-Grammar.md](docs/02-Grammar.md) is the contract;
 [docs/06-Known-Limitations.md](docs/06-Known-Limitations.md) is the honest list of what this version
 leaves out.

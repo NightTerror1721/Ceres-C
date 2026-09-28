@@ -108,7 +108,7 @@ What is done with them:
 | `pure`, `const` | Recorded on the function. A call whose result nothing reads may be removed, like any other computation with no observable effect. `const` also promises the function reads no memory; `pure` only that it has no side effects. |
 | `deprecated` | A call is warned about (W3003). Read wherever GCC allows it; a prototype's holds for its definition. |
 | `warn_unused_result` | Discarding a call's result is warned about (W3004). A prototype's holds for its definition. |
-| `format(printf, i, j)`, `format(scanf, i, j)` | Parameter `i` is a format string and the arguments from `j` on are what it describes (`j` is `0` for a function that takes them as a `va_list`). A call whose format is a string literal is checked against its arguments with this machine's rules: `%lld`, `%jd` and `%qd` take a 64-bit integer (two words), every other integer conversion takes one of 4 bytes or fewer, `%f`/`%e`/`%g` take a `float` (a variadic float is not promoted), `%s` a pointer to `char`, `%p` a pointer; scanf's conversions take a pointer to an object of the size the length modifier says. A mismatch or an unknown conversion is W3005, too few or too many arguments W3006. Other archetypes (`strftime`, ...) are accepted and not checked; numbers that do not name a `char *` parameter and the `...` make the attribute ignored (W2002). A prototype's holds for its definition. |
+| `format(printf, i, j)`, `format(scanf, i, j)` | Parameter `i` is a format string and the arguments from `j` on are what it describes (`j` is `0` for a function that takes them as a `va_list`). A call whose format is a string literal is checked against its arguments with this machine's rules: `%lld`, `%jd` and `%qd` take a 64-bit integer, every other integer conversion takes one of 4 bytes or fewer, `%f`/`%e`/`%g`/`%a` take a floating value (a `float` arrives promoted to `double`, as in C), `%s` a pointer to `char`, `%p` a pointer; scanf's conversions take a pointer to an object of the size the length modifier says. A mismatch or an unknown conversion is W3005, too few or too many arguments W3006. Other archetypes (`strftime`, ...) are accepted and not checked; numbers that do not name a `char *` parameter and the `...` make the attribute ignored (W2002). A prototype's holds for its definition. |
 | `aligned(N)` | `N` must be a power of two from 1 to 65536 (E2042). Up to 4 is what every scalar already has. Above 4 it is **ignored with a warning**: the linker puts every section on a 4-byte boundary, so a larger alignment could not be kept. |
 | `packed` | **An error** (E2043): the machine faults on a 16- or 32-bit access that is not aligned, so a member cannot sit off its natural boundary. |
 | `unused`, `used`, `fallthrough`, `cold`, `hot`, `nonnull`, `malloc`, `visibility`... | Accepted and dropped, silently: they tell a compiler how to check or optimize, and headers written for GCC are full of them. |
@@ -404,14 +404,14 @@ struct Padded { char tag; int value; char flag; };
 //              ^0        ^4          ^8           sizeof == 12
 ```
 
-`long long` and `unsigned long long` are real 8-byte types: `sizeof`, struct layout and an `ll`/`LL`
-literal suffix all see the full width, and a value lowers as an addressed pair of words, so
-arithmetic, shifts, the bitwise operators, comparisons, assignment and the `float` conversions
-(`float`↔`long long`) all compute on the full 64 bits. A 64-bit value crosses a function boundary by
-value too: a parameter arrives in two consecutive argument registers (or two outgoing stack words), an
-argument is passed as those two words, and a result comes back in `ret0`/`ret1`. A 64-bit `switch`
-discriminant and a 64-bit operand to a one-instruction machine builtin are refused with `E5002` rather
-than silently truncated. See [06-Known-Limitations.md](06-Known-Limitations.md).
+`long long` and `unsigned long long` are real 8-byte types, and `double` a real IEEE binary64: `sizeof`,
+struct layout and an `ll`/`LL` literal suffix all see the full width, and arithmetic, shifts, the bitwise
+operators, comparisons, assignment, `switch` and every conversion compute on the full 64 bits with the
+machine's instructions on register pairs (`add64`, `fmul.d`, `fcvt`...). A 64-bit value crosses a function
+boundary by value: a parameter arrives in an aligned pair, `x0`/`x1` or `d0`/`d1` (or two stack words once
+those are spent), and a result comes back in `x0` or `d0`. The one thing refused is a 64-bit operand to a
+one-instruction machine builtin that has no 64-bit form, with `E5002` rather than silently truncated. See
+[06-Known-Limitations.md](06-Known-Limitations.md).
 
 ## Errors
 
