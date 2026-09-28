@@ -339,14 +339,22 @@ namespace ceresc::codegen
 		// i.e. it lives in a frame field rather than a register.
 		bool livesInSlot(ir::IrValue value) const;
 
-		// ---- 64-bit values (F6.2) -----------------------------------------------------------------
+		// ---- 64-bit values (F6.2, F6.5) -----------------------------------------------------------
 		//
-		// A pair temporary lives in an 8-byte frame field (value_placement.cpp). pairIn() loads it into
-		// scratch pair `scratchPair` (x<n>, or d<n> for a double) and names the pair; storePair() writes
-		// a computed pair back to its field. generateWide() is one Wide instruction: its operands in x2
-		// and x3 (d2 and d3), the SPEC 6.4 instruction, the result stored.
+		// A pair temporary lives in a register pair or in an 8-byte frame field (value_placement.cpp).
+		// pairIn() names the pair that holds it, loading a field's into scratch pair `scratchPair` (x<n>,
+		// or d<n> for a double) - or moving one of the other bank across; pairDest() is the pair to
+		// compute a result in, its own or the scratch one; storePair() puts a computed pair where the
+		// value lives, and movePair() copies one pair into another (mov64, fmov.d, mtf.d or mff.d).
+		// generateWide() is one Wide instruction: its operands where they are, or in x2 and x3 (d2 and
+		// d3), the SPEC 6.4 instruction, the result where it lives.
 		std::string pairIn(ir::IrValue value, u32 scratchPair, bool isDouble, support::SourceLocation loc);
-		void storePair(ir::IrValue value, std::string_view pair, bool isDouble, support::SourceLocation loc);
+		std::string pairDest(ir::IrValue value, u32 scratchPair, bool isDouble) const;
+		void movePair(std::string_view dest, std::string_view source, support::SourceLocation loc);
+		void storePair(ir::IrValue value, std::string_view pair, support::SourceLocation loc);
+		// One word of a pair: pairWord("x1", 1) is r3. localPair() is the pair a register local lives in.
+		static std::string pairWord(std::string_view pair, u32 half);
+		std::string localPair(u32 localIndex) const;
 		void generateWide(const ir::IrWidePayload& payload, support::SourceLocation loc);
 		void generateWideConvert(const ir::IrWidePayload& payload, support::SourceLocation loc);
 		// The conditional jump that reads what `cmp64`/`fcmp.d` left in the flags.

@@ -450,6 +450,49 @@ namespace ceresc::ir
 							break;
 						}
 
+						case IrOpcode::Wide:
+						{
+							// A word or float constant widened to a pair is a pair constant: one `li64`
+							// instead of a `li` and a conversion, and no word register (F6.5).
+							const auto& p = instr->as<IrWidePayload>();
+							if (!options.constantFolding || p.op != IrWideOp::Convert)
+								break;
+							const ConstValue* operand = findConstant(constants, p.a);
+							if (!operand)
+								break;
+							std::optional<u64> bits;
+							const bool toLong = p.kind == IrNumKind::Long || p.kind == IrNumKind::ULong;
+							if (!operand->isFloat && p.fromKind == IrNumKind::Int)
+							{
+								i64 value = static_cast<i32>(operand->intValue);
+								if (toLong)
+									bits = static_cast<u64>(value);
+								else if (p.kind == IrNumKind::Double)
+									bits = std::bit_cast<u64>(static_cast<f64>(value));
+							}
+							else if (!operand->isFloat && p.fromKind == IrNumKind::UInt)
+							{
+								u64 value = static_cast<u32>(operand->intValue);
+								if (toLong)
+									bits = value;
+								else if (p.kind == IrNumKind::Double)
+									bits = std::bit_cast<u64>(static_cast<f64>(value));
+							}
+							else if (operand->isFloat && p.fromKind == IrNumKind::Float && p.kind == IrNumKind::Double)
+							{
+								bits = std::bit_cast<u64>(static_cast<f64>(operand->floatValue));
+							}
+							if (!bits)
+								break;
+							IrWidePayload constant;
+							constant.op = IrWideOp::Const;
+							constant.kind = p.kind;
+							constant.result = p.result;
+							constant.bits = *bits;
+							replacement = arena.create<IrInstr>(instr->location(), constant);
+							break;
+						}
+
 						case IrOpcode::Cmp:
 						{
 							const auto& p = instr->as<IrCmpPayload>();
@@ -4464,23 +4507,8 @@ namespace ceresc::ir
 				return false;
 			if (function.blocks().empty())
 				return false;
-			// A 64-bit parameter or return, and any 64-bit value at all in the body, are left to F6.5:
-			// the splice settles a parameter with one word Store and turns a Return into one word
-			// Copy, neither of which moves a pair.
-			if (function.returnType() && function.returnType()->isWide())
-				return false;
-			{
-				std::span<const IrLocalSlot> slots = function.localSlots();
-				for (u32 i = 0; i < function.paramCount() && i < slots.size(); ++i)
-					if (slots[i].sizeInBytes == 8)
-						return false;
-			}
-			for (const auto& block : function.blocks())
-				for (const IrInstr* instr : block->instrs())
-					if (instr->opcode() == IrOpcode::Wide ||
-						(instr->opcode() == IrOpcode::Call && instr->as<IrCallPayload>().hasWideResult) ||
-						(instr->opcode() == IrOpcode::Param && instr->as<IrParamPayload>().isWide))
-						return false;
+			// 64-bit parameters, results and values inline like any other (F6.5): the splice settles a
+			// pair parameter with a 64-bit Store and turns a pair Return into a 64-bit Copy.
 			// The last block has to end in a terminator: an unterminated one falls through to whatever
 			// block is emitted next, and a splice moves the body somewhere else entirely.
 			std::span<IrInstr* const> lastInstrs = function.blocks().back()->instrs();
@@ -4695,12 +4723,37 @@ namespace ceresc::ir
 			addr.localIndex = localMap[i];
 			out.push_back(arena.create<IrInstr>(loc, addr));
 
+			if (slot.sizeInBytes == 8)
+			{
+				// A 64-bit parameter: its pair, stored whole.
+				IrWidePayload store;
+				store.op = IrWideOp::Store;
+				store.kind = slot.isFloat ? IrNumKind::Double : IrNumKind::Long;
+				store.a = addr.result;
+				store.b = argValues[i];
+				out.push_back(arena.create<IrInstr>(loc, store));
+				return;
+			}
+
 			IrStorePayload store;
 			store.size = irMemSizeForBytes(slot.sizeInBytes);
 			store.isFloat = slot.isFloat;
 			store.address = addr.result;
 			store.value = argValues[i];
 			out.push_back(arena.create<IrInstr>(loc, store));
+		}
+
+		// The copy a spliced Return becomes: of a word, or of a pair for a 64-bit result.
+		IrInstr* makeResultCopy(support::Arena& arena, support::SourceLocation loc, const IrCallPayload& call, IrValue source)
+		{
+			if (!call.hasWideResult)
+				return makeCopy(arena, loc, call.result, source, call.isFloat);
+			IrWidePayload copy;
+			copy.op = IrWideOp::Copy;
+			copy.kind = call.isFloat ? IrNumKind::Double : IrNumKind::Long;
+			copy.result = call.result;
+			copy.a = source;
+			return arena.create<IrInstr>(loc, copy);
 		}
 
 		// Splices `callee`'s body over the Call at `instrs[callIndex]`, whose preceding `argCount`
@@ -4818,7 +4871,7 @@ namespace ceresc::ir
 					if (instr->opcode() == IrOpcode::Return)
 					{
 						if (call.hasResult)
-							rewritten.push_back(makeCopy(arena, instr->location(), call.result, mapCalleeValue(caller, tempMap, instr->as<IrReturnPayload>().value), call.isFloat));
+							rewritten.push_back(makeResultCopy(arena, instr->location(), call, mapCalleeValue(caller, tempMap, instr->as<IrReturnPayload>().value)));
 						break;
 					}
 					IrInstr* copied = remapInstr(*instr, arena, caller, tempMap, localMap, noBlocks);
@@ -4870,7 +4923,7 @@ namespace ceresc::ir
 					if (instr->opcode() == IrOpcode::Return)
 					{
 						if (call.hasResult)
-							body.push_back(makeCopy(arena, instr->location(), call.result, mapCalleeValue(caller, tempMap, instr->as<IrReturnPayload>().value), call.isFloat));
+							body.push_back(makeResultCopy(arena, instr->location(), call, mapCalleeValue(caller, tempMap, instr->as<IrReturnPayload>().value)));
 						body.push_back(arena.create<IrInstr>(instr->location(), IrJumpPayload{ continuation }));
 						terminated = true;
 						break;

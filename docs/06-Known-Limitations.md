@@ -63,7 +63,7 @@ is all a program needs: `--sysroot` puts `<dir>/include` on the include path, an
 `examples/08_strings.c` writes the string routines it needs and prints by storing each character, as a 32-bit word, into the
 terminal's output register at `0xFF000004`, and `examples/interop/io.c` wraps them into something reusable.
 
-### 64-bit values live in memory between operations
+### 64-bit values and the register pairs
 
 The machine has 64-bit instructions on register pairs (CeresASM's
 [64-bit operations](https://github.com/Krampus1721/CeresASM/blob/main/docs/34-64-bit.md)), and the four C types
@@ -88,10 +88,13 @@ A 64-bit argument travels in a register pair - `x0`/`x1` for a `long long`, `d0`
 odd register to start on an even one - or in two stack words once the pairs are spent, and a 64-bit result comes
 back in `x0` or `d0` (CeresASM's [calling convention](https://github.com/Krampus1721/CeresASM/blob/main/docs/24-Calling-Convention.md)).
 
-What is still simple is where a 64-bit value **waits**: between two operations it lives in an 8-byte frame field,
-not in a register pair, so each operation reads its operands with `ldrd`/`fldr.d` and writes its result with
-`strd`/`fstr.d`. A function with a 64-bit value is not inlined, and a call that passes or returns one is not turned
-into a tail call.
+Between two operations a 64-bit value waits in a register pair, from -O1 on: a parameter stays in the pair it
+arrived in, and a local or an intermediate takes `x0`/`x1` (`d0`/`d1`) in a function that calls nothing, or a
+callee-saved pair - `x4`/`x5`, `d4`-`d7`, saved with `pushm`/`fpushm` around the body - when those are taken or the
+value has to survive a call. `x2`/`x3` (`d2`/`d3`) stay the scratch pairs a 64-bit operation reads a spilled operand
+into, so a function with 64-bit values leaves `r6`/`r7` (`f6`/`f7`) out of its word pool. What finds no pair, and
+everything at -O0, lives in an 8-byte frame field, read with `ldrd`/`fldr.d` and written with `strd`/`fstr.d`.
+Functions with 64-bit values are inlined, and calls that pass or return one become tail calls, like any other.
 
 A decimal literal with an `ll`/`LL` suffix whose value does not fit a signed `long long` (e.g.
 `18446744073709551615LL`) is out of range in C; here it warns (`W0015`) and keeps its 64-bit bit

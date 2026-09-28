@@ -157,6 +157,46 @@ namespace ceresc::codegen
 		}
 
 		bool resultIsFloat(const IrInstr& instr) { return resultBank(instr) == IrBank::Float; }
+
+		// The pair (xN / dN, N = its even register / 2) whose two registers are both still in `pool`,
+		// taken out of it: `wanted` first when it is one, then the highest, the way a single register
+		// is picked. A register in `reserved` (another parameter's arrival) is skipped unless it is
+		// `wanted`'s own.
+		std::optional<u32> takePair(std::vector<u32>& pool, u32 wanted, const std::vector<bool>* reserved = nullptr)
+		{
+			auto has = [&](u32 reg) { return std::find(pool.begin(), pool.end(), reg) != pool.end(); };
+			auto blocked = [&](u32 reg) { return reserved && reg < reserved->size() && (*reserved)[reg]; };
+			std::optional<u32> chosen;
+			if (wanted % 2 == 0 && has(wanted) && has(wanted + 1))
+				chosen = wanted;
+			for (u32 low = 14; !chosen && low-- > 0;)
+				if (low % 2 == 0 && has(low) && has(low + 1) && !blocked(low) && !blocked(low + 1))
+					chosen = low;
+			if (!chosen)
+				return std::nullopt;
+			std::erase_if(pool, [&](u32 reg) { return reg == *chosen || reg == *chosen + 1; });
+			return chosen;
+		}
+
+		// A word Load or a 64-bit one: its address and result.
+		bool loadOf(const IrInstr& instr, IrValue& address, IrValue& result)
+		{
+			if (instr.opcode() == IrOpcode::Load)
+			{
+				const auto& p = instr.as<IrLoadPayload>();
+				address = p.address;
+				result = p.result;
+				return true;
+			}
+			if (instr.opcode() == IrOpcode::Wide && instr.as<IrWidePayload>().op == IrWideOp::Load)
+			{
+				const auto& p = instr.as<IrWidePayload>();
+				address = p.a;
+				result = p.result;
+				return true;
+			}
+			return false;
+		}
 	}
 
 	ValuePlacement::ValuePlacement(const IrFunction& function, const support::OptimizationOptions& options)
@@ -169,10 +209,11 @@ namespace ceresc::codegen
 		_locals.assign(localCount, Placement{});
 		_virtualAddress.assign(tempCount, kInvalidLocal);
 
-		// Which temporaries are 64-bit pairs (F6.2). A pair never gets a register here - it lives in an
-		// 8-byte frame field, and codegen moves it through the scratch pairs - so the register passes
-		// below skip it and the slot pass gives it two words.
+		// Which temporaries are 64-bit pairs (F6.2), and which of those are doubles. The register passes
+		// below give a pair two registers at once (F6.5); one that finds none gets two words from the
+		// slot pass, and codegen moves it through the scratch pairs.
 		std::vector<bool> tempIsPair(tempCount, false);
+		std::vector<bool> tempIsDoublePair(tempCount, false);
 		bool usesIntPairs = false;
 		bool usesDoublePairs = false;
 		for (const auto& block : function.blocks())
@@ -182,7 +223,10 @@ namespace ceresc::codegen
 				IrValue result = resultOf(*instr);
 				IrBank bank = result.isValid() ? resultBank(*instr) : IrBank::Int;
 				if (result.isValid() && result.id < tempCount && isPairBank(bank))
+				{
 					tempIsPair[result.id] = true;
+					tempIsDoublePair[result.id] = bank == IrBank::DoublePair;
+				}
 				if (instr->opcode() == IrOpcode::Wide)
 				{
 					const IrWidePayload& p = instr->as<IrWidePayload>();
@@ -295,7 +339,8 @@ namespace ceresc::codegen
 						const auto& p = instr->as<IrLoadPayload>();
 						u32 local = (p.address.isValid() && p.address.id < tempCount) ? frameAddrLocal[p.address.id] : kInvalidLocal;
 						if (local != kInvalidLocal &&
-							(p.size != irMemSizeForBytes(localSlots[local].sizeInBytes) || p.isFloat != localSlots[local].isFloat))
+							(p.size != irMemSizeForBytes(localSlots[local].sizeInBytes) || p.isFloat != localSlots[local].isFloat
+								|| localSlots[local].sizeInBytes == 8))
 							localEscapes[local] = true; // a reinterpreting access - keep it in memory
 						break;
 					}
@@ -304,9 +349,28 @@ namespace ceresc::codegen
 						const auto& p = instr->as<IrStorePayload>();
 						u32 local = (p.address.isValid() && p.address.id < tempCount) ? frameAddrLocal[p.address.id] : kInvalidLocal;
 						if (local != kInvalidLocal &&
-							(p.size != irMemSizeForBytes(localSlots[local].sizeInBytes) || p.isFloat != localSlots[local].isFloat))
+							(p.size != irMemSizeForBytes(localSlots[local].sizeInBytes) || p.isFloat != localSlots[local].isFloat
+								|| localSlots[local].sizeInBytes == 8))
 							localEscapes[local] = true;
 						markEscape(p.value); // an address STORED somewhere is an address that got away
+						break;
+					}
+					case IrOpcode::Wide:
+					{
+						// A 64-bit Load/Store is an access like the word ones: the address of an 8-byte
+						// local of the same bank does not escape through it (F6.5).
+						const auto& p = instr->as<IrWidePayload>();
+						if (p.op != IrWideOp::Load && p.op != IrWideOp::Store)
+						{
+							forEachOperand(*instr, markEscape);
+							break;
+						}
+						u32 local = (p.a.isValid() && p.a.id < tempCount) ? frameAddrLocal[p.a.id] : kInvalidLocal;
+						if (local != kInvalidLocal &&
+							(localSlots[local].sizeInBytes != 8 || localSlots[local].isFloat != (p.kind == IrNumKind::Double)))
+							localEscapes[local] = true;
+						if (p.op == IrWideOp::Store)
+							markEscape(p.b);
 						break;
 					}
 					default:
@@ -414,6 +478,24 @@ namespace ceresc::codegen
 			return reg;
 		};
 
+		// The callee-saved pools: a call-making function's locals, and - in any function - a 64-bit value
+		// that finds no caller-saved pair (F6.5), at the price of the pushm/popm pair around the body.
+		// An interrupt handler takes them too - its own save/restore is the interrupt
+		// prologue/epilogue's job, whose mask already covers the whole allocatable set (codegen.h), so no
+		// extra pushm/popm is emitted around the body for it.
+		std::vector<u32> calleeFreeInt = allocatableCalleeSavedIntRegisters();
+		std::vector<u32> calleeFreeFloat = allocatableCalleeSavedFloatRegisters();
+		auto markCalleeSaved = [&](u32 low, bool isFloat, bool isPair)
+		{
+			if (low < 8)
+				return;
+			u32 bits = (1u << low) | (isPair ? (1u << (low + 1)) : 0u);
+			if (isFloat)
+				_calleeSavedFloatMask |= bits;
+			else
+				_calleeSavedIntMask |= bits;
+		};
+
 		if (options.registerAllocation)
 		{
 			// Locals first: they are live for the whole function, so whatever they take is gone for
@@ -440,13 +522,6 @@ namespace ceresc::codegen
 			// have gone through has nothing left to do. The one place that is not automatic is a
 			// parameter, which arrives from outside this function - codegen's prologue narrows
 			// one on the way into its register, exactly as the store into a field used to.
-			// The callee-saved pools, reached only by a call-making function. An interrupt handler
-			// takes them too - its own save/restore is the interrupt prologue/epilogue's job, whose
-			// mask already covers the whole allocatable set (codegen.h), so no extra pushm/popm is
-			// emitted around the body for it.
-			std::vector<u32> calleeFreeInt = allocatableCalleeSavedIntRegisters();
-			std::vector<u32> calleeFreeFloat = allocatableCalleeSavedFloatRegisters();
-
 			auto assignLocals = [&](bool requested)
 			{
 				for (u32 i = 0; i < localCount; ++i)
@@ -456,7 +531,8 @@ namespace ceresc::codegen
 						continue;
 
 					bool paramOnStack = i < function.paramCount() && _paramArrival[i].kind == ArgSlotKind::Stack;
-					if (!localReferenced[i] || localEscapes[i] || slot.isVolatile || slot.sizeInBytes > 4 || paramOnStack)
+					if (!localReferenced[i] || localEscapes[i] || slot.isVolatile || paramOnStack
+						|| (slot.sizeInBytes > 4 && slot.sizeInBytes != 8))
 						continue;
 
 					// A leaf's local goes in the caller-saved pool; a call-making function's goes in
@@ -472,6 +548,22 @@ namespace ceresc::codegen
 					// (see intArrivalReserved/floatArrivalReserved above).
 					bool isParam = i < function.paramCount();
 					u32 preferred = (!hasCalls && isParam) ? _paramArrival[i].index : ~0u;
+
+					if (slot.sizeInBytes == 8)
+					{
+						// A 64-bit local takes an aligned pair: x0/x1 (d0/d1) in a leaf, x4/x5 (d4-d7)
+						// in a function that calls - or in a leaf that has no caller-saved pair left. A
+						// parameter prefers the pair it arrived in.
+						std::optional<u32> low = takePair(pool, preferred,
+							(!hasCalls && isParam) ? (slot.isFloat ? &floatArrivalReserved : &intArrivalReserved) : nullptr);
+						if (!low && !hasCalls)
+							low = takePair(slot.isFloat ? calleeFreeFloat : calleeFreeInt, ~0u);
+						if (!low)
+							continue;
+						_locals[i] = Placement{ PlacementKind::Register, *low, slot.isFloat, true };
+						markCalleeSaved(*low, slot.isFloat, true);
+						continue;
+					}
 
 					std::optional<u32> reg = (!hasCalls && isParam)
 						? takeRegisterAvoiding(pool, preferred, slot.isFloat ? floatArrivalReserved : intArrivalReserved)
@@ -531,16 +623,14 @@ namespace ceresc::codegen
 			{
 				for (const IrInstr* instr : block->instrs())
 				{
-					if (instr->opcode() != IrOpcode::Load)
+					IrValue address, result;
+					if (!loadOf(*instr, address, result) || !address.isValid() || address.id >= tempCount)
 						continue;
-					const auto& p = instr->as<IrLoadPayload>();
-					if (!p.address.isValid() || p.address.id >= tempCount)
-						continue;
-					u32 local = frameAddrLocal[p.address.id];
+					u32 local = frameAddrLocal[address.id];
 					if (local == kInvalidLocal || _locals[local].kind != PlacementKind::Register)
 						continue;
-					if (p.result.isValid() && p.result.id < tempCount)
-						loadsOfLocal[local].push_back(p.result.id);
+					if (result.isValid() && result.id < tempCount)
+						loadsOfLocal[local].push_back(result.id);
 				}
 			}
 
@@ -551,10 +641,14 @@ namespace ceresc::codegen
 				for (usize raw = instrs.size(); raw-- > 0;)
 				{
 					const IrInstr& instr = *instrs[raw];
+					IrValue storeAddress;
 					if (instr.opcode() == IrOpcode::Store)
+						storeAddress = instr.as<IrStorePayload>().address;
+					else if (instr.opcode() == IrOpcode::Wide && instr.as<IrWidePayload>().op == IrWideOp::Store)
+						storeAddress = instr.as<IrWidePayload>().a;
+					if (storeAddress.isValid())
 					{
-						const auto& p = instr.as<IrStorePayload>();
-						u32 local = (p.address.isValid() && p.address.id < tempCount) ? frameAddrLocal[p.address.id] : kInvalidLocal;
+						u32 local = storeAddress.id < tempCount ? frameAddrLocal[storeAddress.id] : kInvalidLocal;
 						if (local != kInvalidLocal && local < localCount)
 							for (u32 r : loadsOfLocal[local])
 								if (live[r])
@@ -576,21 +670,17 @@ namespace ceresc::codegen
 		{
 			for (const IrInstr* instr : block->instrs())
 			{
-				if (instr->opcode() != IrOpcode::Load)
-					continue;
-				const auto& p = instr->as<IrLoadPayload>();
-				IrValue address = p.address;
-				if (!address.isValid() || address.id >= tempCount)
+				IrValue address, result;
+				if (!loadOf(*instr, address, result) || !address.isValid() || address.id >= tempCount)
 					continue;
 				u32 local = frameAddrLocal[address.id];
 				if (local == kInvalidLocal || _locals[local].kind != PlacementKind::Register)
 					continue;
-				IrValue result = p.result;
 				if (!result.isValid() || result.id >= tempCount)
 					continue;
 				if (loadResultClobbered[result.id])
 					continue;
-				_temps[result.id] = Placement{ PlacementKind::Alias, _locals[local].index, _locals[local].isFloat };
+				_temps[result.id] = Placement{ PlacementKind::Alias, _locals[local].index, _locals[local].isFloat, _locals[local].isPair };
 			}
 		}
 
@@ -635,7 +725,7 @@ namespace ceresc::codegen
 						if (firstDefPos[result.id] == kNoPosition)
 						{
 							firstDefPos[result.id] = position;
-							tempIsFloat[result.id] = resultIsFloat(*instr);
+							tempIsFloat[result.id] = resultIsFloat(*instr) || tempIsDoublePair[result.id];
 						}
 					}
 					forEachOperand(*instr, [&](IrValue value)
@@ -667,7 +757,7 @@ namespace ceresc::codegen
 
 			for (u32 t = 0; t < tempCount; ++t)
 			{
-				if (!tempReferenced[t] || tempIsPair[t])
+				if (!tempReferenced[t])
 					continue;
 				if (_temps[t].kind == PlacementKind::Virtual || _temps[t].kind == PlacementKind::Alias)
 					continue;
@@ -685,28 +775,46 @@ namespace ceresc::codegen
 				for (usize callPosition : callPositions)
 					if (callPosition > firstDefPos[t] && callPosition <= lastUsePos[t])
 						spansCall = true;
-				if (spansCall)
+				const bool pair = tempIsPair[t];
+				// A 64-bit value may still take a callee-saved pair, which a call leaves alone (F6.5).
+				if (spansCall && !pair)
 					continue;
 
 				// Highest-numbered registers first, mirroring the per-block scan's own pop_back
 				// preference, so a leaf's lone result lands where a single-block value would.
-				const std::vector<u32>& pool = tempIsFloat[t] ? crossFloat : crossInt;
+				// A pair takes an even register and the one after it, both from the pool (F6.5), and
+				// falls back to the callee-saved pools.
 				std::vector<std::vector<bool>>& reserved = tempIsFloat[t] ? reservedFloat : reservedInt;
-				for (auto it = pool.rbegin(); it != pool.rend(); ++it)
+				auto tryPool = [&](const std::vector<u32>& pool) -> bool
 				{
-					u32 reg = *it;
-					bool free = true;
-					for (usize b = 0; b < function.blocks().size() && free; ++b)
-						if (liveness.liveIn[b][t] || liveness.liveOut[b][t])
-							free = !reserved[b][reg];
-					if (!free)
-						continue;
-					for (usize b = 0; b < function.blocks().size(); ++b)
-						if (liveness.liveIn[b][t] || liveness.liveOut[b][t])
-							reserved[b][reg] = true;
-					_temps[t] = Placement{ PlacementKind::Register, reg, tempIsFloat[t] };
-					break;
-				}
+					for (auto it = pool.rbegin(); it != pool.rend(); ++it)
+					{
+						u32 reg = *it;
+						if (pair && (reg % 2 != 0 || std::find(pool.begin(), pool.end(), reg + 1) == pool.end()))
+							continue;
+						bool free = true;
+						for (usize b = 0; b < function.blocks().size() && free; ++b)
+							if (liveness.liveIn[b][t] || liveness.liveOut[b][t])
+								free = !reserved[b][reg] && !(pair && reserved[b][reg + 1]);
+						if (!free)
+							continue;
+						for (usize b = 0; b < function.blocks().size(); ++b)
+							if (liveness.liveIn[b][t] || liveness.liveOut[b][t])
+							{
+								reserved[b][reg] = true;
+								if (pair)
+									reserved[b][reg + 1] = true;
+							}
+						_temps[t] = Placement{ PlacementKind::Register, reg, tempIsFloat[t], pair };
+						markCalleeSaved(reg, tempIsFloat[t], pair);
+						return true;
+					}
+					return false;
+				};
+				if (!spansCall && tryPool(tempIsFloat[t] ? crossFloat : crossInt))
+					continue;
+				if (pair)
+					tryPool(tempIsFloat[t] ? calleeFreeFloat : calleeFreeInt);
 			}
 		}
 
@@ -749,21 +857,40 @@ namespace ceresc::codegen
 				// a temporary that is NOT itself a call argument (see callArg[] above). A leaf already
 				// has them in freeInt/freeFloat.
 				std::vector<u32> blockFreeIntArg = hasCalls ? std::vector<u32>{ 0, 1, 2, 3 } : std::vector<u32>{};
+				// The callee-saved registers no local and no cross-block value holds here, for a 64-bit
+				// value that finds no other pair (F6.5).
+				std::vector<u32> blockCalleeInt;
+				std::vector<u32> blockCalleeFloat;
+				for (u32 reg : calleeFreeInt)
+					if (!reservedInt[b][reg])
+						blockCalleeInt.push_back(reg);
+				for (u32 reg : calleeFreeFloat)
+					if (!reservedFloat[b][reg])
+						blockCalleeFloat.push_back(reg);
 				std::vector<u32> blockFreeFloatArg = hasCalls ? std::vector<u32>{ 0, 1, 2, 3 } : std::vector<u32>{};
-				struct Held { u32 reg; bool isFloat; bool fromArgPool; usize until; };
+				struct Held { u32 reg; bool isFloat; bool fromArgPool; bool isPair; usize until; bool fromCalleePool = false; };
 				std::vector<Held> held;
 
 				for (usize i = 0; i < instrs.size(); ++i)
 				{
-					// Return registers freed by everything whose last read was before this point.
+					// Return registers freed by everything whose last read was before this point - and,
+					// for a 64-bit result, by what this very instruction reads for the last time: a pair
+					// instruction reads its operands before it writes (SPEC 6.4), so its result may take
+					// their registers (F6.5).
+					IrValue definedHere = resultOf(*instrs[i]);
+					const bool pairDefinedHere = definedHere.isValid() && definedHere.id < tempCount && tempIsPair[definedHere.id];
 					for (usize h = held.size(); h-- > 0;)
 					{
-						if (held[h].until >= i)
+						if (held[h].until > i || (held[h].until == i && !pairDefinedHere))
 							continue;
-						if (held[h].fromArgPool)
-							(held[h].isFloat ? blockFreeFloatArg : blockFreeIntArg).push_back(held[h].reg);
-						else
-							(held[h].isFloat ? blockFreeFloat : blockFreeInt).push_back(held[h].reg);
+						std::vector<u32>& back = held[h].fromCalleePool
+							? (held[h].isFloat ? blockCalleeFloat : blockCalleeInt)
+							: held[h].fromArgPool
+							? (held[h].isFloat ? blockFreeFloatArg : blockFreeIntArg)
+							: (held[h].isFloat ? blockFreeFloat : blockFreeInt);
+						back.push_back(held[h].reg);
+						if (held[h].isPair)
+							back.push_back(held[h].reg + 1);
 						held.erase(held.begin() + static_cast<std::ptrdiff_t>(h));
 					}
 
@@ -778,23 +905,48 @@ namespace ceresc::codegen
 						continue;
 					if (defCount[result.id] != 1 || liveness.liveOut[b][result.id] || !usedHere[result.id])
 						continue; // defined twice, or read outside this block - it needs a real home
-					if (tempIsPair[result.id])
-						continue; // a 64-bit pair keeps an 8-byte field (F6.2)
 
-					// No call may sit between the definition and the last read.
+					// No call may sit between the definition and the last read - unless the value is a
+					// 64-bit one, which can wait in a callee-saved pair.
 					bool spansCall = false;
 					for (usize k = i + 1; k <= lastUse[result.id] && k < instrs.size(); ++k)
 						if (instrs[k]->opcode() == IrOpcode::Call)
 							spansCall = true;
-					if (spansCall)
+					if (spansCall && !tempIsPair[result.id])
 						continue;
 
-					bool isFloat = resultIsFloat(*instrs[i]);
+					bool isFloat = resultIsFloat(*instrs[i]) || tempIsDoublePair[result.id];
 
 					std::vector<u32>& pool = isFloat ? blockFreeFloat : blockFreeInt;
 					std::vector<u32>& argPool = isFloat ? blockFreeFloatArg : blockFreeIntArg;
 					bool fromArgPool = false;
 					u32 reg;
+					if (tempIsPair[result.id])
+					{
+						// A 64-bit value takes a pair (F6.5): from the pool, else - when it is not an
+						// argument itself - from the argument registers, else a callee-saved one. Across
+						// a call, only the last will do.
+						std::optional<u32> low;
+						bool fromCalleePool = false;
+						if (!spansCall)
+							low = takePair(pool, ~0u);
+						if (!low && !spansCall && !callArg[result.id])
+						{
+							low = takePair(argPool, ~0u);
+							fromArgPool = low.has_value();
+						}
+						if (!low)
+						{
+							low = takePair(isFloat ? blockCalleeFloat : blockCalleeInt, ~0u);
+							fromCalleePool = low.has_value();
+						}
+						if (!low)
+							continue;
+						_temps[result.id] = Placement{ PlacementKind::Register, *low, isFloat, true };
+						markCalleeSaved(*low, isFloat, true);
+						held.push_back(Held{ *low, isFloat, fromArgPool, true, lastUse[result.id], fromCalleePool });
+						continue;
+					}
 					if (!pool.empty())
 					{
 						reg = pool.back();
@@ -811,7 +963,7 @@ namespace ceresc::codegen
 						continue;
 					}
 					_temps[result.id] = Placement{ PlacementKind::Register, reg, isFloat };
-					held.push_back(Held{ reg, isFloat, fromArgPool, lastUse[result.id] });
+					held.push_back(Held{ reg, isFloat, fromArgPool, false, lastUse[result.id] });
 				}
 			}
 		}

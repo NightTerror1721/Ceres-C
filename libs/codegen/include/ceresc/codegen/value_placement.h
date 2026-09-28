@@ -33,6 +33,10 @@
 //      temporaries then go through a per-block linear scan that frees a register again after the
 //      temporary's last read, avoiding those reservations.
 //
+//      A 64-bit value (a pair temporary, or an 8-byte local) takes an aligned register pair the
+//      same way, both of its registers out of the pool at once (F6.5); what finds no pair keeps an
+//      8-byte field.
+//
 //   4. Frame slots for everything left over, reusing one slot for several temporaries whose live
 //      ranges do not overlap.
 //
@@ -72,6 +76,9 @@ namespace ceresc::codegen
 		PlacementKind kind = PlacementKind::Slot;
 		u32 index = 0;
 		bool isFloat = false;
+		// A 64-bit value in a register pair (F6.5): `index` is the pair's even register, so it lives in
+		// x(index/2) - d(index/2) with isFloat - and holds `index + 1` too.
+		bool isPair = false;
 	};
 
 	// One frame field: the size and bank codegen declares it with in the function's CASM `struct`.

@@ -1296,6 +1296,39 @@ TEST(e2e, mixed_word_and_64_bit_arguments_follow_the_pair_abi)
 		"3");
 }
 
+TEST(e2e, 64_bit_values_in_register_pairs_run_the_same_at_every_level)
+{
+	// F6.5: pairs in registers. Each check a '1', so a wrong answer names which one:
+	//  - a snapshot of a pair local taken before a store to it keeps the old value (the alias rule);
+	//  - a pair that lives across calls sits in a callee-saved pair (and the callee's are restored);
+	//  - parameters homed in pairs other than their arrival ones, with a narrow one between them;
+	//  - a 64-bit function inlined, and 64-bit tail calls, integer and double;
+	//  - a long long used as the words of a pair (&, |, ^, ~, shifts, the low word) and a loop.
+	runsTheSameAtEveryLevel("pairs_in_registers",
+		"void put(int ok) { volatile unsigned int* term = (volatile unsigned int*)0xFF000004; *term = ok ? '1' : '0'; }"
+		"long long twice(long long v) { return v * 2; }"
+		"double half(double v) { return v / 2.0; }"
+		"static long long sq(long long x) { return x * x; }"
+		"long long snap(long long s) { long long old = s; s = s + 0x100000000LL; return old * 3 + s; }"
+		"long long keep(long long a, double d) { long long b = twice(a); double e = half(d); long long c = twice(b); return a + b + c + (long long)(d + e); }"
+		"long long spread(long long a, int n, long long b, int m) { long long s = 0; for (int i = 0; i < n; i++) s += a * i + b - m; return s; }"
+		"long long tailw(long long a) { return twice(a + 1); }"
+		"double taild(double a) { return half(a * 3.0); }"
+		"long long bits(long long a, long long b, int k) { return ((a & b) | (a ^ ~b)) + (a << k) + (b >> k) + (unsigned int)a; }"
+		"int main() {"
+		"    put(snap(0x0000000200000005LL) == 0x0000000200000005LL * 3 + 0x0000000300000005LL);"
+		"    put(keep(0x0000000100000001LL, 6.0) == 0x0000000100000001LL * 7 + 9);"
+		"    put(spread(0x0000000100000000LL, 5, 7, 2) == 0x0000000100000000LL * 10 + 25);"
+		"    put(sq(0x10000) + 1 == 0x100000001LL && sq(-3) == 9);"
+		"    put(tailw(0x7FFFFFFFLL) == 0x100000000LL && taild(5.0) == 7.5);"
+		"    long long a = 0x123456789ABCDEF0LL, b = 0x0F0F0F0F0F0F0F0FLL;"
+		"    put(bits(a, b, 4) == (((a & b) | (a ^ ~b)) + (a << 4) + (b >> 4) + (long long)(unsigned int)a));"
+		"    put(bits(-1, 1, 63) == ((-1LL & 1) | (-1LL ^ ~1LL)) + (long long)((unsigned long long)-1 << 63) + 0 + 0xFFFFFFFFLL);"
+		"    return 0;"
+		"}",
+		"1111111");
+}
+
 TEST(e2e, a_double_is_a_real_binary64_at_every_level)
 {
 	// F6.3: double arithmetic, conversions and comparisons on the machine's own binary64, each check a

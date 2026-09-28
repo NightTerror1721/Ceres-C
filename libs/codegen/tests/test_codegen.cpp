@@ -2214,9 +2214,11 @@ TEST(codegen, a_64_bit_operation_is_one_machine_instruction_on_the_scratch_pairs
 	CHECK(contains(arith, "shl64 x2, x2, r"));
 	CHECK(contains(arith, "ldrd x2, [sp + __frame_f.slot"));
 	CHECK(contains(arith, "strd [sp + __frame_f.slot"));
-	// A constant count is the instruction's own immediate - and a signed `>>` is arithmetic.
-	CHECK(contains(generateCasm("long long f(long long a) { return a >> 3; }", support::OptimizationOptions::forLevel(support::OptimizationLevel::O2)),
-		"sar64 x2, x2, 3"));
+	// A constant count is the instruction's own immediate - and a signed `>>` is arithmetic. At -O2 the
+	// parameter stays in the pair it arrived in and the count is no register at all (F6.5).
+	std::string shift = generateCasm("long long f(long long a) { return a >> 3; }", support::OptimizationOptions::forLevel(support::OptimizationLevel::O2));
+	CHECK(contains(shift, "sar64 x1, x0, 3"));
+	CHECK(!contains(shift, "li r"));
 
 	// A comparison is `cmp64` and the ordinary jumps after it, unsigned for an unsigned pair.
 	CHECK(contains(generateCasm("int f(long long a, long long b) { return a < b; }", o0), "cmp64 x2, x3"));
@@ -2241,6 +2243,54 @@ TEST(codegen, a_function_with_64_bit_operations_keeps_r6_and_r7_as_the_second_sc
 	std::string wide = atO2("long long f(long long a, long long b, int n) { int k = n * 3; while (k > 0) { a = a + b; k = k - 1; } return a + n; }");
 	CHECK(!contains(wide, "mov r6,"));
 	CHECK(!contains(wide, "mov r7,"));
+}
+
+TEST(codegen, a_64_bit_leaf_keeps_its_values_in_register_pairs)
+{
+	// F6.5: the parameters stay in x0/x1, the local and every intermediate take a pair, and nothing
+	// goes through memory - no frame, no ldrd/strd. With the caller-saved pairs taken, a value falls back
+	// to a callee-saved one (x4/x5), saved around the body.
+	std::string loop = atO2("long long k(long long a, long long b) { long long s = 0; for (int i = 0; i < 10; i++) s += a * i + b; return s; }");
+	CHECK(!contains(loop, "ldrd "));
+	CHECK(!contains(loop, "strd "));
+	CHECK(contains(loop, "mul64 x"));
+	CHECK(contains(loop, "pushm 0x0F00"));
+
+	std::string doubles = atO2("double h(double x, double y) { return x * y + 1.0; }");
+	CHECK(contains(doubles, "fmul.d d"));
+	CHECK(!contains(doubles, "fstr.d "));
+	CHECK(!contains(doubles, "enter"));
+}
+
+TEST(codegen, a_64_bit_value_waits_out_a_call_in_a_callee_saved_pair)
+{
+	// A caller-saved pair would be clobbered by the call, so the parameter moves to x5 and back.
+	std::string text = atO2("long long g(void); long long f(long long a) { long long b = g(); return a + b; }");
+	CHECK(contains(text, "mov64 x5, x0"));
+	CHECK(contains(text, "add64 x1, x5, x4"));
+	CHECK(!contains(text, "strd "));
+}
+
+TEST(codegen, a_64_bit_call_can_be_inlined_or_a_tail_call)
+{
+	// F6.5 lifts F6.2's refusals: the splice stores a pair parameter and copies a pair result, and a
+	// pair result is already in x0 (d0) where the caller reads it.
+	std::string inlined = atO2("static long long sq(long long x) { return x * x; } long long u(long long a) { return sq(a) + 1; }");
+	CHECK(!contains(inlined, "call "));
+	CHECK(contains(inlined, "mul64 "));
+
+	CHECK(contains(atO2("long long g2(long long); long long t(long long a) { return g2(a + 1); }"), "jp g2"));
+	CHECK(contains(atO2("double dt(double); double v(double x) { return dt(x * 2.0); }"), "jp dt"));
+}
+
+TEST(codegen, a_small_64_bit_constant_is_a_word_sign_extended)
+{
+	// `+ 1` on a long long is a pair constant after folding; one that fits a word is `li` and `sxt64`,
+	// without a literal, and a wider one is `li64`.
+	std::string small = atO2("long long f(long long a) { return a + 1; }");
+	CHECK(contains(small, "sxt64 x"));
+	CHECK(!contains(small, "li64 "));
+	CHECK(contains(atO2("long long f(long long a) { return a + 0x100000000LL; }"), "li64 x"));
 }
 
 TEST(codegen, a_64_bit_parameter_arrives_in_an_aligned_pair_and_is_homed_with_one_strd)
