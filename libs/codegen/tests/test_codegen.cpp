@@ -1764,6 +1764,18 @@ TEST(codegen, the_register_pairs_and_the_64_bit_types_are_reserved_words_too)
 	CHECK(contains(text, "global let x8: u32 = 6"));   // there is no x8
 }
 
+TEST(codegen, a_register_alias_in_capitals_is_reserved_too)
+{
+	// The assembler reads `AT` and `Sp` as the registers at and sp, so a C table called AT is written __c_AT.
+	std::string text = atO0(
+		"static const int AT[2] = { 1, 2 };\n"
+		"int Sp = 3;\n"
+		"int main(void) { return AT[1] + Sp; }");
+	CHECK(contains(text, "let __c_AT: u32[2]"));
+	CHECK(contains(text, "global let __c_Sp: u32 = 3"));
+	CHECK(!contains(text, "la r12, AT"));
+}
+
 TEST(codegen, names_that_only_look_like_reserved_words_are_left_alone)
 {
 	std::string text = atO0(

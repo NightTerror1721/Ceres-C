@@ -153,8 +153,12 @@ namespace ceresc::codegen
 				if (name == reserved) return true;
 			for (std::string_view reserved : kLiterals)
 				if (name == reserved) return true;
+			// The register names are read in either case, as the assembler reads them: a C table called `AT` is the
+			// register `at` to it just as much as `at` is.
 			for (std::string_view reserved : kRegisterAliases)
-				if (name == reserved) return true;
+				if (name.size() == reserved.size() &&
+					std::equal(name.begin(), name.end(), reserved.begin(), [](char a, char b) { return (a | 0x20) == b; }))
+					return true;
 
 			// rN / fN, the two register banks, and xN / dN, the register pairs of the 64-bit instructions (x0-x7 and
 			// d0-d7; the assembler names x7 only to refuse it). Only with a decimal number attached - `r` and `f1x` are
