@@ -144,6 +144,7 @@ namespace
 		options.optimization = ceresc::support::OptimizationOptions::forLevel(level);
 		options.ceresPath = ceresDir->string();
 		options.run = true; // the driver assembles, links and runs; the program prints nothing
+		options.runArguments = { "--headless", "--speed", "max" }; // no window, which would wait for a key when the program ends
 		return ceresc::driver::run(options);
 	}
 }
@@ -1071,10 +1072,10 @@ TEST(e2e, a_parameter_displaced_by_a_register_local_does_not_land_on_another_par
 
 TEST(e2e, a_displaced_parameter_does_not_clobber_a_wide_parameters_high_arrival_register)
 {
-	// A 64-bit parameter arrives as a consecutive register PAIR (r1/r2 here), and the prologue reads
-	// BOTH words before it settles the pair. A displaced narrow parameter must not be homed on the
-	// high word: reserving only the pair's first register let `a` land on r2, and its `mov r2, r0`
-	// overwrote `w`'s high word, so the returned high half was 1 instead of 0.
+	// A 64-bit parameter arrives as a register PAIR (x1 = r2:r3 here), and the prologue reads BOTH
+	// words before it settles the pair. A displaced narrow parameter must not be homed on the high
+	// word: reserving only the pair's first register let `a` land on it, and its move overwrote `w`'s
+	// high word, so the returned high half was 1 instead of 0.
 	runsTheSameAtEveryLevel("wide_arrival_pair_preserved",
 		"long long f(int a, long long w, int b) {"
 		"    register int p = a, q = b, r = a, s = b, t = a;"
@@ -1272,6 +1273,27 @@ TEST(e2e, a_64_bit_value_crosses_a_call_by_value_at_every_level)
 		"    return 0;"
 		"}",
 		"4");
+}
+
+TEST(e2e, mixed_word_and_64_bit_arguments_follow_the_pair_abi)
+{
+	// SPEC 6.7 (F6.1): `(int, long long)` puts the int in r0 and the pair in x1 (r2:r3), leaving r1
+	// empty; with more than four words a pair that finds no register left goes to two stack words
+	// and every later argument follows it onto the stack. Both ends of each call agree, at every level.
+	runsTheSameAtEveryLevel("wide_abi_mixed",
+		"long long pick(int a, long long b) { return b + a; }"
+		"long long mix(int a, long long b, int c, long long d, int e)"
+		"    { return a + b * 10 + c * 100 + d * 1000 + e * 10000; }"
+		"long long tail(int a, int b, int c, long long d, int e) { return d - a - b - c - e; }"
+		"int main() {"
+		"    volatile unsigned int* term = (volatile unsigned int*)0xFF000004;"
+		"    long long p = pick(3, 0x0000000100000004LL);"          // 0x100000007
+		"    long long m = mix(1, 2LL, 3, 4LL, 5);"                  // 1 + 20 + 300 + 4000 + 50000
+		"    long long t = tail(1, 2, 3, 0x0000000200000010LL, 4);"  // 0x200000006
+		"    *term = 48 + (int)(p == 0x0000000100000007LL) + (int)(m == 54321) + (int)(t == 0x0000000200000006LL);"
+		"    return 0;"
+		"}",
+		"3");
 }
 
 TEST(e2e, a_struct_wider_than_a_word_survives_a_round_trip_through_a_call_by_value)

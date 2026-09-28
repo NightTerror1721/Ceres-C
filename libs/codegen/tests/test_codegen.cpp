@@ -1425,9 +1425,9 @@ TEST(codegen, a_displaced_parameter_is_not_homed_on_another_parameters_arrival_r
 
 TEST(codegen, a_wide_parameters_high_arrival_register_is_reserved_too)
 {
-	// A 64-bit parameter arrives as a consecutive register PAIR (r1/r2 here) and the prologue reads
-	// both words before settling it, so the HIGH register is an arrival as well. A displaced narrow
-	// parameter homed on r2 would `mov r2, arrived` over the high word first.
+	// A 64-bit parameter arrives as an aligned register PAIR (x1 = r2:r3 here, SPEC 6.7) and the
+	// prologue reads both words before settling it, so the HIGH register is an arrival as well. A
+	// displaced narrow parameter homed on r3 would `mov r3, arrived` over the high word first.
 	std::string casm = atO2(
 		"long long f(int a, long long w, int b) {"
 		"    register int p = a, q = b, r = a, s = b, t = a;"
@@ -1436,7 +1436,33 @@ TEST(codegen, a_wide_parameters_high_arrival_register_is_reserved_too)
 		"    return w + p + q + r + s + t + a + b;"
 		"}");
 	std::string prologue = casm.substr(0, casm.find(".L0:"));
-	CHECK(!contains(prologue, "mov r2, r0")); // `a` did not land on `w`'s high word
+	CHECK(!contains(prologue, "mov r3, r0")); // `a` did not land on `w`'s high word
+	CHECK(!contains(prologue, "mov r2, r0")); // ... nor on its low word
+}
+
+TEST(codegen, a_64_bit_argument_takes_an_aligned_register_pair)
+{
+	// SPEC 6.7 (F6.1): a long long goes in x0 (r0:r1) or x1 (r2:r3) and a double in d0 (f0:f1) or d1
+	// (f2:f3). The odd register a pair skips stays empty, and once a pair has gone to the stack the
+	// bank is spent: a later word argument follows it there.
+	auto slots = codegen::assignArgSlots({ false, false }, { false, true });
+	CHECK(slots[0].kind == codegen::ArgSlotKind::IntReg && slots[0].index == 0);
+	CHECK(slots[1].kind == codegen::ArgSlotKind::IntReg && slots[1].index == 2 && slots[1].wide); // (int, long long): r0, r2:r3
+
+	auto doubles = codegen::assignArgSlots({ true, false, true }, { true, false, true });
+	CHECK(doubles[0].kind == codegen::ArgSlotKind::FloatReg && doubles[0].index == 0); // d0
+	CHECK(doubles[1].kind == codegen::ArgSlotKind::IntReg && doubles[1].index == 0);   // r0
+	CHECK(doubles[2].kind == codegen::ArgSlotKind::FloatReg && doubles[2].index == 2); // d1
+
+	auto floats = codegen::assignArgSlots({ true, true, true }, { false, true, false });
+	CHECK(floats[0].index == 0);                                                     // f0
+	CHECK(floats[1].kind == codegen::ArgSlotKind::FloatReg && floats[1].index == 2); // d1, f1 skipped
+	CHECK(floats[2].kind == codegen::ArgSlotKind::Stack && floats[2].index == 0);    // no backfill of f1
+
+	auto many = codegen::assignArgSlots({ false, false, false, false, false }, { false, false, false, true, false });
+	CHECK(many[2].kind == codegen::ArgSlotKind::IntReg && many[2].index == 2);
+	CHECK(many[3].kind == codegen::ArgSlotKind::Stack && many[3].index == 0);   // no pair left: two stack words
+	CHECK(many[4].kind == codegen::ArgSlotKind::Stack && many[4].index == 2);   // and r3 is not taken afterwards
 }
 
 TEST(codegen, register_never_relaxes_a_rule_that_is_there_for_correctness)
@@ -2194,7 +2220,7 @@ TEST(codegen, a_64_bit_parameter_arrives_as_a_register_pair_and_is_homed_as_a_wo
 	CHECK(contains(text, "str [at], r0"));
 	CHECK(contains(text, "str [at + 4], r1"));
 
-	// A second wide parameter takes the NEXT two registers, r2/r3 - not r1/r2.
+	// A second wide parameter takes the next pair, x1 = r2:r3.
 	std::string two = generateCasm("long long add2(long long a, long long b) { return a + b; } int main() { return 0; }", o0);
 	CHECK(contains(two, "str [at], r0"));
 	CHECK(contains(two, "str [at + 4], r1"));

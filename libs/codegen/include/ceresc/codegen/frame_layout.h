@@ -58,8 +58,9 @@ namespace ceresc::codegen
 	// rule is identical on both ends of the same call. Takes `const vector<bool>&`, not a span:
 	// vector<bool>'s bit-packed specialization has no contiguous `bool*` to span over.
 	//
-	// `isWideArg` (F3.4) marks each argument that is a 64-bit integer: it consumes two consecutive
-	// slots of its kind, so a register/stack budget that cannot fit both falls to the stack.
+	// `isWideArg` marks each argument that is 64 bits wide: it takes an aligned register pair of its
+	// bank (x0/x1, d0/d1 - SPEC 6.7), skipping an odd register to get one, or two stack words when no
+	// pair is left - and then the bank is spent for every later argument (see frame_layout.cpp).
 	//
 	// `fixedArgCount` is where the callee's declared parameter list ends. Arguments at or past it
 	// are the variadic tail and go to the outgoing stack area unconditionally - never to an

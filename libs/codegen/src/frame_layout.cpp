@@ -24,31 +24,28 @@ namespace ceresc::codegen
 				result.push_back(ArgSlot{ ArgSlotKind::Stack, stackUsed, isWide });
 				stackUsed += isWide ? 2 : 1;
 			}
-			else if (isFloat)
-			{
-				if (floatUsed < 4)
-					result.push_back(ArgSlot{ ArgSlotKind::FloatReg, floatUsed++, isWide });
-				else
-				{
-					result.push_back(ArgSlot{ ArgSlotKind::Stack, stackUsed, isWide });
-					stackUsed += isWide ? 2 : 1;
-				}
-			}
 			else
 			{
-				// A 64-bit argument needs two consecutive registers; it fits only when the bank has
-				// TWO left, and otherwise the whole pair goes to the stack (so the callee always
-				// reads the second word at `index + 1` of the same kind).
+				// SPEC 6.7 (F6.1): a 64-bit argument takes a register PAIR - `x0` (r0:r1) or `x1` (r2:r3)
+				// for a long long, `d0` (f0:f1) or `d1` (f2:f3) for a double - so it starts on an even
+				// register, and the odd one it skips stays empty: `(int, long long)` is r0 and r2:r3.
+				// When no pair is left the value goes to the stack as two words, and the bank counts as
+				// spent, so a later word argument follows it there rather than slipping into the
+				// register it skipped. A word argument takes the next register, as it always did.
+				u32& used = isFloat ? floatUsed : intUsed;
+				if (isWide)
+					used = (used + 1) & ~1u;
 				u32 needed = isWide ? 2u : 1u;
-				if (intUsed + needed <= 4)
+				if (used + needed <= 4)
 				{
-					result.push_back(ArgSlot{ ArgSlotKind::IntReg, intUsed, isWide });
-					intUsed += needed;
+					result.push_back(ArgSlot{ isFloat ? ArgSlotKind::FloatReg : ArgSlotKind::IntReg, used, isWide });
+					used += needed;
 				}
 				else
 				{
 					result.push_back(ArgSlot{ ArgSlotKind::Stack, stackUsed, isWide });
 					stackUsed += needed;
+					used = 4;
 				}
 			}
 		}

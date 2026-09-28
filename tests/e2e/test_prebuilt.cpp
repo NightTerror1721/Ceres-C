@@ -90,6 +90,7 @@ namespace
 			options.declsFiles.push_back(d.string());
 		options.outputPath = (scratch.dir / "main.cres").string();
 		options.run = true;
+		options.runArguments = { "--headless", "--speed", "max" }; // no window, which would wait for a key when the program ends
 		options.clean = clean;
 		options.ceresPath = ceresDir.string();
 		return ceresc::driver::run(options);
@@ -159,6 +160,7 @@ TEST(prebuilt, a_library_found_with_l_brings_its_declarations_and_its_soft_doubl
 		options.softDouble = softDouble;
 		options.outputPath = (scratch.dir / "main.cres").string();
 		options.run = true;
+		options.runArguments = { "--headless", "--speed", "max" }; // no window, which would wait for a key when the program ends
 		options.ceresPath = ceresDir->string();
 		return ceresc::driver::run(options);
 	};
@@ -272,6 +274,7 @@ TEST(prebuilt, an_object_only_program_needs_no_c_at_all)
 	options.inputPaths = { program->object.string() };
 	options.outputPath = (scratch.dir / "prog.cres").string();
 	options.run = true;
+	options.runArguments = { "--headless", "--speed", "max" }; // no window, which would wait for a key when the program ends
 	options.ceresPath = ceresDir->string();
 	CHECK_EQ(ceresc::driver::run(options), 7);
 }
@@ -305,6 +308,7 @@ TEST(prebuilt, assembling_a_source_beside_a_given_object_of_the_same_name_would_
 	options.inputPaths = { scratch.write("main.c", "int main(void) { return 0; }\n").string(),
 		(scratch.dir / "util.casm").string(), lib->object.string() };
 	options.run = true;
+	options.runArguments = { "--headless", "--speed", "max" }; // no window, which would wait for a key when the program ends
 	options.ceresPath = ceresDir->string();
 	CHECK_EQ(ceresc::driver::run(options), 1);
 }
@@ -425,10 +429,11 @@ TEST(prebuilt, run_arg_hands_extra_arguments_to_ceres_run)
 	options.outputPath = (scratch.dir / "main.cres").string();
 	options.run = true;
 	options.ceresPath = ceresDir->string();
-	options.runArguments = { "--port", "0=" + stick.string() };
+	// No window, which would wait for a key when the program ends.
+	options.runArguments = { "--headless", "--speed", "max", "--port", "0=" + stick.string() };
 	CHECK_EQ(ceresc::driver::run(options), 3);   // three sectors
 
 	// The same program without the argument sees an empty port
-	options.runArguments.clear();
+	options.runArguments = { "--headless", "--speed", "max" };
 	CHECK_EQ(ceresc::driver::run(options), 0);
 }
