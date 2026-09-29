@@ -41,8 +41,9 @@ Visual Studio users: open the folder, not a solution. VS reads `CMakePresets.jso
 ## Pointing Ceres-C at CeresASM
 
 `ceresc --run` assembles and runs what it just compiled by launching the `ceres` binary as a
-subprocess. Set `CERES_PATH` to the directory that holds it (or to the executable) once, and every build finds it;
-otherwise it is looked for on `PATH`, and `--ceres-path` overrides both for one command:
+subprocess. Set `CERES_PATH` to the directory Ceres is installed in (the one that holds `ceres`, or the executable
+itself) once, and every build finds it; otherwise it is looked for beside `ceresc` and then on `PATH`, and
+`--ceres-path` overrides them for one command:
 
 ```sh
 export CERES_PATH=/path/to/CeresASM
@@ -50,7 +51,10 @@ ceresc examples/07_structs.c --run
 ceresc examples/07_structs.c --run --ceres-path ../CeresASM
 ```
 
-The order and the errors are in [05-CLI.md](05-CLI.md#finding-ceres).
+In an installation (the Ceres installer, from the Ceres Binaries project) the same directory holds the C library,
+and `--stdlib` compiles against it: `ceresc prog.c --stdlib -O2 --run`.
+
+The order and the errors are in [05-CLI.md](05-CLI.md#finding-ceres-and-the-c-library).
 
 The test suites need the same binary, and take it from the `CERESC_CERES_PATH` environment variable
 (a directory containing `ceres`/`ceres.exe`) or from a CeresASM checkout sitting next to this one:

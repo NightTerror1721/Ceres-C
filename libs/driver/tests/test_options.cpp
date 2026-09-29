@@ -80,10 +80,10 @@ TEST(options, the_ordinary_switches_are_recognized)
 	CHECK(result.options->warningsAsErrors);
 }
 
-TEST(options, the_library_and_sysroot_switches_are_recognized)
+TEST(options, the_library_and_stdlib_switches_are_recognized)
 {
-	// Both spellings of -L and -l, and --sysroot, in command-line order.
-	ParseResult result = parse({ "main.c", "-L", "libs", "-Lmore", "-lceres", "-l", "extra", "--sysroot", "C:/sdk" });
+	// Both spellings of -L and -l, and --stdlib, in command-line order.
+	ParseResult result = parse({ "main.c", "-L", "libs", "-Lmore", "-lceres", "-l", "extra", "--stdlib" });
 	CHECK(result.options.has_value());
 	CHECK_EQ(result.options->libraryDirectories.size(), std::size_t(2));
 	CHECK_EQ(result.options->libraryDirectories[0], std::string("libs"));
@@ -91,7 +91,11 @@ TEST(options, the_library_and_sysroot_switches_are_recognized)
 	CHECK_EQ(result.options->libraries.size(), std::size_t(2));
 	CHECK_EQ(result.options->libraries[0], std::string("ceres"));
 	CHECK_EQ(result.options->libraries[1], std::string("extra"));
-	CHECK_EQ(result.options->sysroot, std::string("C:/sdk"));
+	CHECK(result.options->standardLibrary);
+	CHECK(!parse({ "main.c" }).options->standardLibrary);
+
+	// There is no sysroot any more: --stdlib finds the library where Ceres is installed.
+	CHECK(!parse({ "main.c", "--sysroot", "C:/sdk" }).options.has_value());
 }
 
 TEST(options, the_size_and_debug_levels_and_the_stats_switch_are_recognized)

@@ -8,7 +8,8 @@
 #include <fstream>
 #include <string>
 
-// Where `--run` finds `ceres`: --ceres-path, then CERES_PATH, then PATH, most specific first. The lookup takes
+// Where `--run` finds `ceres` (--ceres-path, then CERES_PATH, then beside ceresc, then PATH) and `--stdlib` the C
+// library, most specific first. The lookup takes
 // its environment as an argument, so every combination is tried here against real (empty) files in a temporary
 // tree, without touching the environment the tests themselves run in.
 
@@ -246,4 +247,105 @@ TEST(ceres_locator, the_process_environment_is_read_from_ceres_path_and_path)
 #endif
 	CHECK(!driver::CeresEnvironment::fromProcess().ceresPath.has_value() ||
 		driver::CeresEnvironment::fromProcess().ceresPath->empty());
+}
+
+TEST(ceres_locator, the_process_environment_knows_where_ceresc_is)
+{
+	// The test binary stands in for ceresc: its directory is known, and exists.
+	driver::CeresEnvironment environment = driver::CeresEnvironment::fromProcess();
+	CHECK(!environment.executableDirectory.empty());
+	CHECK(fs::is_directory(environment.executableDirectory));
+}
+
+// ---- ceresc's own directory ----------------------------------------------------------------------
+
+TEST(ceres_locator, ceres_beside_ceresc_comes_after_ceres_path_and_before_path)
+{
+	Tree tree;
+	fs::path beside = tree.withCeres("installed");
+	fs::path onPath = tree.withCeres("onpath");
+	fs::path variable = tree.withCeres("variable");
+
+	driver::CeresEnvironment environment = env(onPath.string());
+	environment.executableDirectory = beside;
+	driver::CeresLookup lookup = driver::locateCeres("", environment);
+	CHECK_EQ(lookup.executable.string(), (beside / kName).lexically_normal().string());
+	CHECK_EQ(lookup.source, std::string("ceresc's directory"));
+
+	environment.ceresPath = variable.string();
+	CHECK_EQ(driver::locateCeres("", environment).source, std::string("CERES_PATH"));
+
+	// A ceresc with no ceres beside it goes on to PATH.
+	environment = env(onPath.string());
+	environment.executableDirectory = tree.withoutCeres("alone");
+	CHECK_EQ(driver::locateCeres("", environment).source, std::string("PATH"));
+}
+
+// ---- --stdlib ------------------------------------------------------------------------------------
+
+namespace
+{
+	fs::path withStdlib(Tree& tree, const std::string& name)
+	{
+		fs::path directory = tree.withoutCeres(name);
+		fs::create_directories(directory / "stdlib" / "include");
+		fs::create_directories(directory / "stdlib" / "lib");
+		return directory;
+	}
+}
+
+TEST(ceres_locator, the_stdlib_is_in_ceres_path_and_then_beside_ceresc)
+{
+	Tree tree;
+	fs::path variable = withStdlib(tree, "variable");
+	fs::path beside = withStdlib(tree, "beside");
+
+	driver::CeresEnvironment environment = env("", variable.string());
+	environment.executableDirectory = beside;
+	driver::StdlibLookup lookup = driver::locateStdlib("", environment);
+	CHECK(lookup.found());
+	CHECK_EQ(lookup.includeDirectory.string(), (variable / "stdlib" / "include").lexically_normal().string());
+	CHECK_EQ(lookup.libraryDirectory.string(), (variable / "stdlib" / "lib").lexically_normal().string());
+
+	// A CERES_PATH without a library - one that only says where ceres is - does not stop the search.
+	environment.ceresPath = tree.withCeres("tools").string();
+	lookup = driver::locateStdlib("", environment);
+	CHECK_EQ(lookup.includeDirectory.string(), (beside / "stdlib" / "include").lexically_normal().string());
+
+	// CERES_PATH may name a file in the directory, ceres itself say.
+	environment.ceresPath = (tree.withCeres("variable") / kName).string();
+	lookup = driver::locateStdlib("", environment);
+	CHECK_EQ(lookup.includeDirectory.string(), (variable / "stdlib" / "include").lexically_normal().string());
+}
+
+TEST(ceres_locator, the_flag_alone_says_where_the_stdlib_is)
+{
+	Tree tree;
+	fs::path flag = withStdlib(tree, "flag");
+	fs::path beside = withStdlib(tree, "beside");
+	driver::CeresEnvironment environment = env();
+	environment.executableDirectory = beside;
+	driver::StdlibLookup lookup = driver::locateStdlib(flag.string(), environment);
+	CHECK_EQ(lookup.includeDirectory.string(), (flag / "stdlib" / "include").lexically_normal().string());
+
+	fs::path empty = tree.withoutCeres("empty");
+	lookup = driver::locateStdlib(empty.string(), environment);
+	CHECK(!lookup.found());
+	CHECK(contains(lookup.error, "--ceres-path"));
+	CHECK(contains(lookup.error, empty.string()));
+}
+
+TEST(ceres_locator, no_stdlib_anywhere_lists_where_it_looked)
+{
+	Tree tree;
+	fs::path variable = tree.withoutCeres("variable");
+	fs::path beside = tree.withoutCeres("beside");
+	driver::CeresEnvironment environment = env("", variable.string());
+	environment.executableDirectory = beside;
+	driver::StdlibLookup lookup = driver::locateStdlib("", environment);
+	CHECK(!lookup.found());
+	CHECK(contains(lookup.error, "CERES_PATH"));
+	CHECK(contains(lookup.error, variable.string()));
+	CHECK(contains(lookup.error, beside.string()));
+	CHECK(!driver::locateStdlib("", env()).found());
 }

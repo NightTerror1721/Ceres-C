@@ -61,7 +61,7 @@ namespace ceresc::driver
 	{
 		out <<
 			"usage: ceresc <file.c|file.casm|file.cobj|file.car>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]\n"
-			"               [-L <dir>] [-l <name>] [--sysroot <dir>]\n"
+			"               [-L <dir>] [-l <name>] [--stdlib]\n"
 			"               [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]\n"
 			"               [--decls <file.casm>]... [--emit-decls <file.casm>]\n"
 			"               [--ceres-path <dir|file>] [--run-arg <arg>]... [--symtab] [--gc-sections]\n"
@@ -79,8 +79,10 @@ namespace ceresc::driver
 			"  -I <dir>            a directory to search for #include <...> and #include \"...\"\n"
 			"  -D <name>[=<val>]   predefine an object-like macro (a bare name means 1)\n"
 			"  -L <dir>            a directory to search for -l libraries (lib<name>.car or .cobj)\n"
-			"  -l <name>           link lib<name>, found through -L and --sysroot/lib; only with --run\n"
-			"  --sysroot <dir>     <dir>/include joins the include search, <dir>/lib the library search\n"
+			"  -l <name>           link lib<name>, found through -L (and --stdlib's lib); only with --run\n"
+			"  --stdlib            compile against the Ceres C library where Ceres is installed (CERES_PATH, or\n"
+			"                      where ceresc is): its stdlib/include joins the include search, and with --run\n"
+			"                      libceres is linked and stdlib/lib joins the -l search (-lceres_irq, ...)\n"
 			"  --emit-ast          print the annotated AST (s-expression form) and stop\n"
 			"  --emit-ir           print the IR and stop\n"
 			"  -E                  print the preprocessed source and stop\n"
@@ -88,8 +90,9 @@ namespace ceresc::driver
 			"  --run               assemble, link and run the program with `ceres asm`/`ceres run`\n"
 			"  --clean             after --run, remove generated .casm, .decls.casm, .cobj and .cres files\n"
 			"  --clean-keep-casm   after --run, keep generated .casm but remove .decls.casm, .cobj and .cres\n"
-			"  --ceres-path <path> where to find `ceres`: its directory, or the executable itself. Without it the\n"
-			"                      CERES_PATH environment variable says, and then PATH\n"
+			"  --ceres-path <path> where Ceres is installed: the directory of `ceres` (and of --stdlib's library), or\n"
+			"                      the executable itself. Without it the CERES_PATH environment variable says, then\n"
+			"                      the directory ceresc is in, and then PATH (only for `ceres`)\n"
 			"  --gc-sections       leave out of the program the functions nothing reaches (`ceres link --gc-sections`);\n"
 			"                      only with --run, the build that links\n"
 			"  --symtab            link a table of the program's function names into it (`ceres link --symtab`),\n"
@@ -252,12 +255,9 @@ namespace ceresc::driver
 				options.ceresPath = std::move(*value);
 				continue;
 			}
-			if (arg == "--sysroot")
+			if (arg == "--stdlib")
 			{
-				std::optional<std::string> value = valueFor(arg, "--sysroot", i);
-				if (!value)
-					return std::nullopt;
-				options.sysroot = std::move(*value);
+				options.standardLibrary = true;
 				continue;
 			}
 

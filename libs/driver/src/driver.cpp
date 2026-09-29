@@ -382,20 +382,38 @@ namespace ceresc::driver
 			return 1;
 		}
 
-		// -l <name>: find lib<name>.car (an archive) or lib<name>.cobj (an object) through -L and
-		// <sysroot>/lib, then hand the result to the linker exactly as a .car/.cobj named on the
-		// command line. This is what lets a program say `-l ceres` instead of spelling out the
-		// STDLIB archive's path. Only `--run` links, so without it the flags are reported as unused
-		// rather than resolved against a filesystem nothing is going to read.
+		// --stdlib: the C library of the installation (ceres_locator.h has where it is looked for).
+		// Its headers join the include search after the -I directories, the same place a system
+		// include directory would sit; with --run its lib directory joins the -l search after the -L
+		// ones, and libceres is linked as if -lceres had been written.
+		std::vector<std::string> includeDirectories = options.includeDirectories;
 		std::vector<std::string> libraryDirectories = options.libraryDirectories;
-		if (!options.sysroot.empty())
-			libraryDirectories.push_back((fs::path(options.sysroot) / "lib").string());
+		std::vector<std::string> libraries = options.libraries;
+		if (options.standardLibrary)
+		{
+			StdlibLookup stdlib = locateStdlib(options.ceresPath, CeresEnvironment::fromProcess());
+			if (!stdlib.found())
+			{
+				std::cerr << stdlib.error;
+				return 1;
+			}
+			includeDirectories.push_back(stdlib.includeDirectory.string());
+			libraryDirectories.push_back(stdlib.libraryDirectory.string());
+			if (options.run && std::ranges::find(libraries, std::string("ceres")) == libraries.end())
+				libraries.push_back("ceres");
+		}
+
+		// -l <name>: find lib<name>.car (an archive) or lib<name>.cobj (an object) through -L (and
+		// --stdlib's lib), then hand the result to the linker exactly as a .car/.cobj named on the
+		// command line. This is what lets a program say `-l ceres` instead of spelling out the
+		// archive's path. Only `--run` links, so without it the flags are reported as unused
+		// rather than resolved against a filesystem nothing is going to read.
 		std::vector<std::string> declsFiles = options.declsFiles;
 		if (!options.run && !options.libraries.empty())
 			std::cerr << "ceresc: warning: '-l' is only used when linking; add --run\n";
 		if (options.run)
 		{
-			for (const std::string& name : options.libraries)
+			for (const std::string& name : libraries)
 			{
 				std::string found;
 				for (const std::string& directory : libraryDirectories)
@@ -417,7 +435,7 @@ namespace ceresc::driver
 				{
 					std::cerr << "ceresc: cannot find library 'lib" << name << ".car' (or '.cobj')";
 					if (libraryDirectories.empty())
-						std::cerr << ": no -L directory and no --sysroot were given\n";
+						std::cerr << ": no -L directory and no --stdlib were given\n";
 					else
 					{
 						std::cerr << " in:";
@@ -440,12 +458,6 @@ namespace ceresc::driver
 					objectInputs.push_back(std::move(found));
 			}
 		}
-
-		// --sysroot <dir>: `<dir>/include` joins the include search after the -I directories, the
-		// same place a system include directory would sit.
-		std::vector<std::string> includeDirectories = options.includeDirectories;
-		if (!options.sysroot.empty())
-			includeDirectories.push_back((fs::path(options.sysroot) / "include").string());
 
 		// What was built before is not read by the compiler, only handed on, so a missing file is reported
 		// here rather than by the linker after the whole compile.

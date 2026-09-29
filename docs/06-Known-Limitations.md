@@ -53,13 +53,13 @@ without the prefix.
 
 The compiler ships no C library of its own: `printf`, `malloc`, `memcpy` and the rest come from the
 **Ceres STDLIB** (`../Ceres Projects/Ceres STDLIB`), the C library of this machine - the standard headers,
-the devices under `ceres/`, and `printf`/`scanf`/`strtod` that convert exactly. Its
-`tools/install.ps1 -Prefix <dir>` lays out a sysroot, and then
+the devices under `ceres/`, and `printf`/`scanf`/`strtod` that convert exactly. The Ceres installer puts it in
+`stdlib/` of the directory Ceres is installed in (`CERES_PATH`), and then
 
-    ceresc prog.c --sysroot <dir> -lceres -O2 --run
+    ceresc prog.c --stdlib -O2 --run
 
-is all a program needs: `--sysroot` puts `<dir>/include` on the include path, and `-lceres` links
-`<dir>/lib/libceres.car` with its declarations `libceres.decls.casm`. Without the library a program still runs on its own:
+is all a program needs: `--stdlib` puts `stdlib/include` on the include path and links `stdlib/lib/libceres.car`
+with its declarations `libceres.decls.casm`. Without the library a program still runs on its own:
 `examples/08_strings.c` writes the string routines it needs and prints by storing each character, as a 32-bit word, into the
 terminal's output register at `0xFF000004`, and `examples/interop/io.c` wraps them into something reusable.
 

@@ -65,7 +65,7 @@ namespace ceresc::driver
 		bool clean = false;
 		bool cleanKeepCasm = false;
 
-		std::string ceresPath;       // --ceres-path <dir or executable> - empty means "CERES_PATH, then PATH" (ceres_locator.h)
+		std::string ceresPath;       // --ceres-path <dir or executable> - empty means "CERES_PATH, then ceresc's directory, then PATH" (ceres_locator.h)
 		std::vector<std::string> runArguments;   // --run-arg <arg>, in order: more for `ceres run` after the program's name
 		std::vector<std::string> programArguments;   // after --: the program's own argv[1...], passed on as `ceres run ... -- <args>`
 		bool symbolTable = false;                // --symtab: `ceres link --symtab`, a table of the code's names in the program
@@ -82,15 +82,14 @@ namespace ceresc::driver
 		std::vector<std::string> includeDirectories;                  // -I <dir>, in order
 		std::vector<std::pair<std::string, std::string>> defines;     // -D NAME[=value], in order
 
-		// -L <dir> and -l <name>: where to find `lib<name>.car`/`.cobj`, and which to link. A
-		// program built against the Ceres STDLIB names one archive; this and --sysroot are what let
-		// it say so without spelling the path out. Resolved by the driver, then linked exactly like
-		// a .car/.cobj given by name.
+		// -L <dir> and -l <name>: where to find `lib<name>.car`/`.cobj`, and which to link. Resolved by
+		// the driver, then linked exactly like a .car/.cobj given by name.
 		std::vector<std::string> libraryDirectories;                  // -L <dir>, in order
 		std::vector<std::string> libraries;                           // -l <name>, in order
-		// --sysroot <dir>: `<dir>/include` joins the include search and `<dir>/lib` the library
-		// search, so a toolchain or the STDLIB install lives under one root.
-		std::string sysroot;
+		// --stdlib: compile against the Ceres C library of the installation (ceres_locator.h): its
+		// stdlib/include joins the include search after the -I directories, and with --run its
+		// stdlib/lib the library search after the -L ones, and libceres is linked.
+		bool standardLibrary = false;
 
 		// -O<n> and the -f switches, already resolved into the individual toggles every stage reads.
 		// A later -f<name>/-fno-<name> overrides what the -O level set, in command-line order, the

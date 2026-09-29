@@ -4,7 +4,7 @@
 
 ```
 usage: ceresc <file.c|file.casm|file.cobj|file.car>... [-o <output>] [-I <dir>] [-D <name>[=<value>]]
-               [-L <dir>] [-l <name>] [--sysroot <dir>]
+               [-L <dir>] [-l <name>] [--stdlib]
                [--emit-ast] [--emit-ir] [-E] [-S | --run] [--clean | --clean-keep-casm]
                [--decls <file.casm>]... [--emit-decls <file.casm>]
                [--ceres-path <dir|file>]
@@ -26,8 +26,8 @@ alongside the compiled ones, which is how a routine written in assembly becomes 
 | `-I <dir>` | A directory to search for `#include`. Repeatable; searched in order. Also spelled `-Idir`. |
 | `-D <name>[=<value>]` | Predefine an object-like macro. A bare name means `1`. Also spelled `-DNAME=1`. |
 | `-L <dir>` | A directory to search for `-l` libraries. Repeatable; searched in order. Also spelled `-Ldir`. |
-| `-l <name>` | Link `lib<name>.car` (an archive) or `lib<name>.cobj`, found through `-L` and `--sysroot/lib`. Repeatable, and only used with `--run`. Also spelled `-lname`. A `lib<name>.decls.casm` beside the library is taken along as if given with `--decls`. |
-| `--sysroot <dir>` | `<dir>/include` joins the include search (after the `-I` directories) and `<dir>/lib` the `-l` search, so a toolchain or the STDLIB install lives under one root: the STDLIB's `tools/install.ps1 -Prefix <dir>` lays one out, after which `ceresc prog.c --sysroot <dir> -lceres --run` is the whole command. |
+| `-l <name>` | Link `lib<name>.car` (an archive) or `lib<name>.cobj`, found through `-L` (and, with `--stdlib`, the library's `lib`). Repeatable, and only used with `--run`. Also spelled `-lname`. A `lib<name>.decls.casm` beside the library is taken along as if given with `--decls`. |
+| `--stdlib` | Compile against the Ceres C library where Ceres is installed (see [Finding `ceres` and the C library](#finding-ceres-and-the-c-library)): its `stdlib/include` joins the include search after the `-I` directories, and with `--run` `libceres.car` is linked (as if `-lceres` were written, with its `libceres.decls.casm`) and `stdlib/lib` joins the `-l` search after the `-L` directories, so `-lceres_irq` and the other optional modules are found there. `ceresc prog.c --stdlib -O2 --run` is the whole command. |
 | `--emit-ast` | Print the type-checked syntax tree and stop. |
 | `--emit-ir` | Print the IR — after optimization, so it is what the back end will actually be handed — and stop. |
 | `-E` | Print the preprocessed source and stop. |
@@ -41,7 +41,7 @@ alongside the compiled ones, which is how a routine written in assembly becomes 
 | `--symtab` | Links the program with `ceres link --symtab`: a table of its code's global names and their addresses, between `__symtab_start` and `__symtab_end`, which the STDLIB's `ceres/backtrace.h` and fault reports read to name functions. Used only with `--run`. |
 | `--run-arg <arg>` | Repeatable: one more argument for `ceres run`, after the program's name, in order. For what only `ceres run` can do - `--run-arg --port --run-arg 0=stick.img` plugs a file into a peripheral port, `--run-arg --disk --run-arg disk.img` backs the disk. Used only with `--run`. |
 | `-- <argument>...` | Everything after `--` is the program's own: `main(int argc, char** argv)` gets the program's path as `argv[0]` and these after it (passed on as `ceres run <program> -- <arguments>`). An environment variable goes through `--run-arg --env --run-arg NAME=value`. Used only with `--run`. |
-| `--ceres-path <dir\|file>` | Where to find `ceres`: the directory that holds it, or the executable itself. Without it the `CERES_PATH` variable says, and then `PATH` — see [Finding `ceres`](#finding-ceres). |
+| `--ceres-path <dir\|file>` | Where Ceres is installed: the directory that holds `ceres` (and `--stdlib`'s library), or the executable itself. Without it the `CERES_PATH` variable says, then the directory `ceresc` is in, and then `PATH` (only for `ceres`) — see [Finding `ceres` and the C library](#finding-ceres-and-the-c-library). |
 | `-Werror` | Treat warnings as errors. A `#pragma warning(...)` outranks it in both directions - see [11-Diagnostics.md](11-Diagnostics.md). |
 | `--stats`, `-fstats` | After optimizing each unit, print what the IR optimizer did (functions, IR instructions before and after, calls inlined, jump tables) on stderr. |
 | `--version` | Print the version and stop. Works anywhere on the line and needs no input file. |
@@ -173,25 +173,39 @@ reports everything it can see. A diagnostic about a line that came from a header
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `CERES_PATH` | the compiler, for `--run` | Where `ceres` is: the directory that holds it, or the executable itself. The standard way to say so; see [Finding `ceres`](#finding-ceres). |
+| `CERES_PATH` | the compiler, for `--run` and `--stdlib` | The directory Ceres is installed in (a path to the executable in it works too). The standard way to say so; see [Finding `ceres` and the C library](#finding-ceres-and-the-c-library). |
 | `CERESC_CERES_PATH` | the test suites, not the compiler | Directory holding `ceres`/`ceres.exe`. Without it the `e2e` and `examples` suites skip instead of failing. |
 
-The compiler does not read that one: it takes `--ceres-path`, `CERES_PATH` or `PATH`. `CERESC_CERES_PATH`
+The compiler does not read that one: it takes `--ceres-path`, `CERES_PATH`, its own directory or `PATH`. `CERESC_CERES_PATH`
 exists so CI can point the suites at a CeresASM checkout it built in the same job.
 
-### Finding `ceres`
+### Finding `ceres` and the C library
 
-`--run` launches `ceres asm`, `ceres link` and `ceres run`. Three places can say where the executable is, and
+Ceres is installed in one directory (the Ceres installer, from the Ceres Binaries project, lays it out):
+
+```
+<dir>/ceres, <dir>/ceresc              the tools (ceres.exe and ceresc.exe on Windows)
+<dir>/shell/shell.cres                 the shell `ceres run` starts
+<dir>/stdlib/include                   the C library's headers
+<dir>/stdlib/lib                       libceres.car, libceres.decls.casm and the optional modules
+```
+
+`--run` launches `ceres asm`, `ceres link` and `ceres run`. Four places can say where the executable is, and
 the most specific wins:
 
 1. `--ceres-path <where>` on the command line;
 2. the `CERES_PATH` environment variable, the standard way to tell every tool where Ceres lives;
-3. `PATH`: the first directory that holds `ceres` (`ceres.exe` on Windows).
+3. the directory `ceresc` itself is in, where an installation keeps `ceres` too;
+4. `PATH`: the first directory that holds `ceres` (`ceres.exe` on Windows).
 
 `<where>` and `CERES_PATH` are each the directory that holds the executable or the executable itself. Unset
 and empty both mean "not given". A place that **is** given but holds no `ceres` is an error and does not fall
 through to the next: a stale `CERES_PATH` that quietly gave way to whatever `PATH` finds would run a different
 binary from the one you set up. The message says which place it was, and how to get out of it.
+
+`--stdlib` looks for `stdlib/` in `--ceres-path` alone when it is given, and otherwise in `CERES_PATH` and then in
+the directory `ceresc` is in: the first that has one wins, so a `CERES_PATH` that only says where `ceres` is does
+not hide an installed library. `PATH` is not searched for it.
 
 The search happens before anything is compiled, so a machine with no `ceres` fails at once and says where it
 looked. What is launched is the full path it found, never the bare name: the call `--run` makes on Windows does
